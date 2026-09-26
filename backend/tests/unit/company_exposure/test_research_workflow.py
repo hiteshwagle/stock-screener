@@ -12,6 +12,8 @@ from app.infra.db.repositories.company_exposure_work_repo import WorkLeaseError
 from app.models.company_exposure import (
     AssessmentRevision,
     ExposureClaimRevision,
+    ExposureDocument,
+    ExposureDocumentRevision,
     ResearchProviderAttempt,
     ResearchWorkItem,
 )
@@ -25,6 +27,7 @@ from app.tasks import company_exposure_tasks
 from tests.fixtures.company_exposure.factory import make_theme
 from tests.fixtures.company_exposure.research_harness import (
     ADMIN,
+    REPORT_URL,
     SHADOW,
     TICKERS,
     Harness,
@@ -259,6 +262,54 @@ def test_unexamined_pdf_pages_make_coverage_partial(harness, db_session):
     )
     gaps = [c for c in revision.coverage if c["reason"] == "pages_not_examined"]
     assert gaps and gaps[0]["detail"]["omitted_ranges"] == [[300, 412]]
+
+
+def test_throttled_filing_fetch_retries_acquire_instead_of_sealing(harness, db_session):
+    harness.serve_sec()
+    harness.sec.serve_status(REPORT_URL, 429, {"retry-after": "900"})
+    harness.request()
+    harness.step()
+    acquired = harness.step()
+    assert (acquired.stage, acquired.status) == ("acquire", "retryable")
+    item = db_session.execute(
+        select(ResearchWorkItem).where(ResearchWorkItem.stage == "acquire")
+    ).scalar_one()
+    assert as_utc(item.available_at) >= harness.clock.now() + timedelta(seconds=900)
+    assert (
+        db_session.execute(
+            select(ResearchWorkItem).where(ResearchWorkItem.stage == "verify")
+        ).scalar_one_or_none()
+        is None
+    )
+
+
+def test_retained_filings_are_bound_to_the_resolved_issuer(harness, db_session):
+    harness.serve_sec()
+    harness.request()
+    resolved, acquired = harness.step(), harness.step()
+    documents = [
+        db_session.get(
+            ExposureDocument,
+            db_session.get(ExposureDocumentRevision, UUID(r)).document_id,
+        )
+        for r in acquired.detail["document_revision_ids"]
+    ]
+    assert documents
+    assert {str(d.issuer_id) for d in documents} == {resolved.detail["issuer_id"]}
+
+
+def test_missing_retained_original_is_a_coverage_gap(harness, db_session):
+    harness.serve_sec()
+    harness.request()
+    harness.step(), harness.step()
+    for blob in (harness.store.root / "sha256").glob("*/*"):
+        blob.unlink()
+    verified = harness.step()
+    assert verified.stage == "verify" and verified.status == "completed"
+    revision = db_session.get(
+        AssessmentRevision, UUID(verified.detail["assessment_revision_id"])
+    )
+    assert "evidence_blob_missing" in {c["reason"] for c in revision.coverage}
 
 
 def test_slow_io_renews_the_lease_instead_of_losing_the_stage(harness):

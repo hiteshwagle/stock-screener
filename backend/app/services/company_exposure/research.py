@@ -85,6 +85,7 @@ from app.services.company_exposure.preparation import (
     select_passages,
 )
 from app.services.company_exposure.research_requests import enqueue_stage
+from app.services.company_exposure.storage import StorageUnavailable
 
 ANNUAL_REPORTS = DocumentQuery(document_kinds=("annual_report",), max_documents=2)
 MAX_STAGE_ATTEMPTS = 4
@@ -503,10 +504,22 @@ class ResearchStageRunner:
                 issuer, ANNUAL_REPORTS, AcquisitionLimits(), budget
             )
             coverage.extend(discovery.coverage)
+            transient = next(
+                (c for c in discovery.coverage if c.outcome in _RETRYABLE_COVERAGE),
+                None,
+            )
+            if transient is not None:
+                self.commit()
+                return self._coverage_outcome(transient)
             for target in discovery.targets:
                 capture = route.adapter.fetch(target, budget)
                 coverage.append(capture.coverage)
-                if capture.coverage.reason == "paused_storage":
+                if (
+                    capture.coverage.reason == "paused_storage"
+                    or capture.coverage.outcome in _RETRYABLE_COVERAGE
+                ):
+                    # Throttled or failed fetches retry the stage (honouring
+                    # Retry-After) rather than sealing a partial assessment.
                     self.commit()
                     return self._coverage_outcome(capture.coverage)
                 if capture.revision_id is not None:
@@ -569,6 +582,11 @@ class ResearchStageRunner:
             try:
                 prepared = self.preparer.prepare(revision, questions)
             except PreparationFailed as exc:
+                partial(exc.code, revision_id)
+                continue
+            except StorageUnavailable as exc:
+                # Missing, tombstoned or unreadable original: record the gap
+                # instead of failing the step on every reclaim.
                 partial(exc.code, revision_id)
                 continue
             unexamined = {

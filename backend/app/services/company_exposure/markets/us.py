@@ -296,7 +296,11 @@ class USDocumentAdapter:
         ]
         limit = min(query.max_documents, limits.max_documents)
         chosen = sorted(matching, key=lambda r: r["filingDate"], reverse=True)[:limit]
-        targets = tuple(self.resolve_target({**row, "cik": cik}) for row in chosen)
+        issuer_id = getattr(issuer, "issuer_id", None)
+        targets = tuple(
+            replace(self.resolve_target({**row, "cik": cik}), issuer_id=issuer_id)
+            for row in chosen
+        )
         if not targets:
             coverage.append(
                 CoverageItem(
