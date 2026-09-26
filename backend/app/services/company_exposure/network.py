@@ -25,9 +25,12 @@ Additional rules for research acquisition:
 from __future__ import annotations
 
 import ipaddress
+import math
 import socket
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -72,6 +75,28 @@ class FetchResponse:
     last_modified: str | None = None
     retry_after: str | None = None
     hops: tuple[str, ...] = ()
+
+
+def retry_after_seconds(value: str | None, now: datetime) -> int | None:
+    """Parse an HTTP ``Retry-After`` (delta seconds or HTTP date).
+
+    Whole seconds, rounded up, so the value is canonical-JSON safe and a
+    retry is never scheduled early.
+    """
+
+    if not value:
+        return None
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            return None
+        delay = (retry_at - now).total_seconds()
+    return max(0, math.ceil(delay)) if math.isfinite(delay) else None
 
 
 def sanitize_url(url: str) -> str:

@@ -417,6 +417,7 @@ class SecMock:
 
     def __init__(self):
         self.routes: dict[str, bytes] = {}
+        self.statuses: dict[str, tuple[int, dict]] = {}
         self.requests: list = []
 
     def serve_json(self, url: str, payload: dict):
@@ -438,11 +439,17 @@ class SecMock:
     def serve_bytes(self, url: str, body: bytes):
         self.routes[url] = body
 
+    def serve_status(self, url: str, status: int, headers: dict | None = None):
+        self.statuses[url] = (status, headers or {})
+
     def handler(self, request):
         import httpx
 
         self.requests.append(request)
         url = f"https://{request.headers['host']}{request.url.path}"
+        if url in self.statuses:
+            status, headers = self.statuses[url]
+            return httpx.Response(status, headers=headers, stream=httpx.ByteStream(b""))
         body = self.routes.get(url)
         if body is None:
             return httpx.Response(404, stream=httpx.ByteStream(b""))

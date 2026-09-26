@@ -22,6 +22,7 @@ Requests are accepted by ``research_requests.ResearchRequests``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -366,7 +367,7 @@ class ResearchStageRunner:
 
     # ------------------------------------------------------------- helpers
     def _retry_at(self, outcome: StageOutcome, attempts: int) -> datetime:
-        """Local backoff, but never before the provider's advertised delay."""
+        """Local backoff, but never before an advertised Retry-After."""
 
         delay = RETRY_BASE * (2 ** max(0, attempts - 1))
         advertised = outcome.detail.get("retry_after_seconds")
@@ -400,6 +401,9 @@ class ResearchStageRunner:
     def _coverage_outcome(item: CoverageItem) -> StageOutcome:
         detail = {"coverage": [item.to_dict()]}
         if item.outcome in _RETRYABLE_COVERAGE:
+            delay = item.detail.get("retry_after_seconds")
+            if delay is not None:
+                detail["retry_after_seconds"] = delay
             return StageOutcome.retry(item.reason, **detail)
         state = (
             ResearchJobState.PAUSED_STORAGE
@@ -472,6 +476,16 @@ class ResearchStageRunner:
         issuer = self._issuer(request)
         if issuer is None:
             return _issuer_link_required()
+        acquired = self._collect(request, issuer)
+        if isinstance(acquired, StageOutcome):
+            return acquired
+        return StageOutcome.complete(
+            ResearchJobState.EVIDENCE_READY, "verify", **acquired.to_detail()
+        )
+
+    def _collect(self, request, issuer: _Issuer) -> AcquiredEvidence | StageOutcome:
+        """Fetch and retain the issuer's primary documents."""
+
         coverage: list[CoverageItem] = []
         revision_ids: list[UUID] = []
         route = self.markets.get(request.market)
@@ -510,13 +524,10 @@ class ResearchStageRunner:
         revision_ids += [
             r.id for r in self._retained(issuer.issuer_id) if r.id not in revision_ids
         ]
-        acquired = AcquiredEvidence(
+        return AcquiredEvidence(
             issuer.issuer_id,
             tuple(revision_ids[:MAX_RETAINED_DOCUMENTS]),
             tuple(coverage),
-        )
-        return StageOutcome.complete(
-            ResearchJobState.EVIDENCE_READY, "verify", **acquired.to_detail()
         )
 
     def _acquired(self, request_id: UUID) -> AcquiredEvidence | None:
@@ -584,7 +595,7 @@ class ResearchStageRunner:
             if not batch.retryable:
                 return StageOutcome.fail(batch.failure_code)
             delay = batch.retry_after_seconds
-            detail = {} if delay is None else {"retry_after_seconds": delay}
+            detail = {} if delay is None else {"retry_after_seconds": math.ceil(delay)}
             return StageOutcome.retry(batch.failure_code, **detail)
         return None
 
@@ -614,6 +625,12 @@ class ResearchStageRunner:
         if issuer is None:
             return _issuer_link_required()
         acquired = self._acquired(request.id) or AcquiredEvidence(issuer.issuer_id)
+        if acquired.issuer_id != issuer.issuer_id:
+            # The accepted link changed after acquisition: never assess one
+            # issuer with another issuer's documents.
+            acquired = self._collect(request, issuer)
+            if isinstance(acquired, StageOutcome):
+                return acquired
         evidence, preparation_gaps = self._prepare(
             acquired.document_revision_ids, QuestionSet(terms=theme.terms)
         )

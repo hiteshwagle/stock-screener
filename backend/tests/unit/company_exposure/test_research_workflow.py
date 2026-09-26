@@ -103,6 +103,36 @@ def test_identical_refresh_reuses_artifact_without_new_spend(harness, db_session
     )
 
 
+def test_link_change_after_acquire_reacquires_for_the_current_issuer(
+    harness, db_session
+):
+    harness.serve_sec()
+    harness.go.queue_builder(claims_for)
+    harness.request()
+    resolved, acquired = harness.step(), harness.step()
+    assert acquired.detail["document_revision_ids"]
+    identity = IssuerIdentityAdapter(db_session)
+    relink = identity.propose_link(
+        LinkProposal(
+            security_id=harness.security.id,
+            issuer_id=None,
+            identifiers=(),
+            evidence={"reference": "corrected listing"},
+            requested_by="test:admin",
+            reason="listing belongs to another issuer",
+        )
+    )
+    ref = identity.apply_link(relink.link_revision_id, ADMIN, relink.proposal_hash)
+    db_session.commit()
+    assert ref.issuer_id != UUID(resolved.detail["issuer_id"])
+
+    verified = harness.step()
+    assert verified.stage == "verify"
+    # The new issuer has no retained filings: the old issuer's are not used.
+    assert harness.go.requests == []
+    assert verified.detail["claims"] == 0
+
+
 def test_ambiguous_cik_pauses_for_review_then_resumes_after_admin_link(
     harness, db_session
 ):
@@ -194,6 +224,21 @@ def test_provider_retry_after_delays_the_retry(harness, db_session):
     ).scalar_one()
     # The local backoff would retry after 2 minutes; the provider asked 1 hour.
     assert as_utc(item.available_at) >= harness.clock.now() + timedelta(hours=1)
+
+
+def test_sec_retry_after_delays_the_retry(harness, db_session):
+    for name in ("company_tickers_exchange", "company_tickers"):
+        harness.sec.serve_status(
+            f"https://www.sec.gov/files/{name}.json", 429, {"retry-after": "7200"}
+        )
+    harness.request()
+    step = harness.step()
+    assert (step.stage, step.status) == ("resolve_issuer", "retryable")
+    item = db_session.execute(
+        select(ResearchWorkItem).where(ResearchWorkItem.stage == "resolve_issuer")
+    ).scalar_one()
+    # The local backoff would retry after 2 minutes; SEC asked for 2 hours.
+    assert as_utc(item.available_at) >= harness.clock.now() + timedelta(hours=2)
 
 
 def test_slow_io_renews_the_lease_instead_of_losing_the_stage(harness):

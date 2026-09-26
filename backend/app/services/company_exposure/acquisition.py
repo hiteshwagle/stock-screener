@@ -44,6 +44,7 @@ from app.models.company_exposure import (
 from app.services.company_exposure.network import (
     FetchRequest,
     PublicDocumentTransport,
+    retry_after_seconds,
     sniff_media_type,
 )
 from app.services.company_exposure.pacing import PacingUnavailable, ResearchRateGate
@@ -159,7 +160,13 @@ class DocumentAcquisitionRegistry:
         return event
 
     def _gap(
-        self, target: DocumentTarget, code: str, *, document=None, capture=None
+        self,
+        target: DocumentTarget,
+        code: str,
+        *,
+        document=None,
+        capture=None,
+        detail: dict | None = None,
     ) -> CaptureResult:
         outcome = _GAP_OUTCOMES.get(code, CoverageOutcome.FETCH_FAILED)
         return CaptureResult(
@@ -172,7 +179,7 @@ class DocumentAcquisitionRegistry:
                 route=target.adapter,
                 outcome=outcome,
                 reason=code,
-                detail={"identity_key": target.identity_key},
+                detail={"identity_key": target.identity_key, **(detail or {})},
             ),
         )
 
@@ -272,8 +279,13 @@ class DocumentAcquisitionRegistry:
             self.commit()
             if response.not_modified:
                 return self._unchanged(target, document, capture)
+            delay = retry_after_seconds(response.retry_after, self.clock())
             return self._gap(
-                target, response.failure_code, document=document, capture=capture
+                target,
+                response.failure_code,
+                document=document,
+                capture=capture,
+                detail=None if delay is None else {"retry_after_seconds": delay},
             )
 
         media_type, refusal = sniff_media_type(response.body, response.content_type)

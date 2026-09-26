@@ -311,6 +311,38 @@ def test_negated_or_modal_language_cannot_support_shipping(text, hold):
     assert hold in result.hold_reasons
 
 
+@pytest.mark.parametrize(
+    ("kind", "text", "basis"),
+    [
+        (
+            "role",
+            "The ET-9000 does not support HBM testing.",
+            SupportBasis.INFERRED_UNVERIFIED,
+        ),
+        (
+            "customer_relationship",
+            "We no longer sell ET-9000 HBM testers to Example Memory.",
+            SupportBasis.INFERRED_UNVERIFIED,
+        ),
+        (
+            "role",
+            "The ET-9000 supports HBM testing but has not begun volume shipments.",
+            SupportBasis.PRIMARY_EXPLICIT,
+        ),
+    ],
+)
+def test_negated_support_cannot_verify_a_relationship(kind, text, basis):
+    result = validate_candidate(
+        claim(kind, support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == basis
+    negated = basis == SupportBasis.INFERRED_UNVERIFIED
+    assert ("negated_support" in result.hold_reasons) is negated
+    assert (result.conclusion == Conclusion.UNKNOWN) is negated
+
+
 def test_primary_conflict_marks_the_claim_disputed():
     p1 = item("P1", "The ET-9000 supports HBM testing.")
     p2 = item("P2", "The ET-9000 does not support HBM devices.")

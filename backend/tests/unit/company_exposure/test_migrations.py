@@ -16,7 +16,7 @@ import app.models  # noqa: F401
 from app.database import Base
 
 VERSIONS = Path(__file__).resolve().parents[3] / "alembic/versions"
-PRECEDING_HEAD = "20260925_0057"
+PRECEDING_HEAD = "20260926_0058"
 EXTERNAL_TABLES = ("stock_universe", "economic_themes")
 
 
