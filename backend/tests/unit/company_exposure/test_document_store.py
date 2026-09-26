@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -137,3 +137,57 @@ def test_gc_keeps_referenced_and_recent_blobs_and_tombstones_removals(
     assert (tombstone.reason, tombstone.byte_length) == ("unreferenced_gc", 6)
     with pytest.raises(StorageUnavailable, match="evidence_removed"):
         store.read(orphan.key)
+
+
+def test_gc_of_a_crash_orphan_does_not_credit_bytes_it_never_charged(
+    db_session, tmp_path, clock
+):
+    store = _store(db_session, tmp_path, clock, max_bytes=10_000)
+    kept = store.put(
+        b"kept", "text/plain", store.reserve(10, purpose="t", operation_key="k")
+    )
+    make_revision(db_session, make_document(db_session, "sec:accession:kept"), b"kept")
+    ticket = store.reserve(20, purpose="t", operation_key="crash")
+    db_session.commit()
+    # The worker writes the blob, then dies before its transaction commits.
+    orphan = store.put(b"orphan!!", "text/plain", ticket)
+    db_session.rollback()
+    clock.advance_to(datetime.now(timezone.utc) + timedelta(hours=2))
+    assert store.release_abandoned_reservations() == (ticket.reservation_id,)
+    assert _pool(db_session).reserved_amount == 4  # only the kept blob
+
+    _age(store.path_for(orphan.key), 40)
+    clock.advance_to(datetime.now(timezone.utc))
+    report = store.collect_unreferenced_blobs(dry_run=False)
+    assert report.unreferenced == (orphan.key,)
+    assert store.path_for(kept.key).exists()
+    assert _pool(db_session).reserved_amount == 4
+
+
+def test_reacquired_bytes_are_readable_and_charged_once_after_gc(
+    db_session, tmp_path, clock
+):
+    store = _store(db_session, tmp_path, clock, max_bytes=10_000)
+
+    def put(key):
+        return store.put(
+            b"filing", "text/plain", store.reserve(10, purpose="t", operation_key=key)
+        )
+
+    first = put("first")
+    _age(store.path_for(first.key), 40)
+    clock.advance_to(datetime.now(timezone.utc))
+    store.collect_unreferenced_blobs(dry_run=False)
+    db_session.commit()
+    assert _pool(db_session).reserved_amount == 0
+    with pytest.raises(StorageUnavailable, match="evidence_removed"):
+        store.read(first.key)
+
+    again = put("again")
+    db_session.commit()
+    assert store.read(again.key) == b"filing"
+    assert _pool(db_session).reserved_amount == 6
+    _age(store.path_for(again.key), 40)
+    store.collect_unreferenced_blobs(dry_run=False)
+    # Only the second incarnation's charge is credited, not both.
+    assert _pool(db_session).reserved_amount == 0

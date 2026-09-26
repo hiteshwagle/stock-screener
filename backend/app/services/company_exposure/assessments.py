@@ -334,6 +334,7 @@ class ExposureAssessmentService:
                 IssuerThemeAssessment.economic_theme_id == scope.economic_theme_id,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one()
 
     @staticmethod

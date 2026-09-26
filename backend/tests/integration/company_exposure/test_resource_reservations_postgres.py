@@ -62,3 +62,43 @@ def test_concurrent_dispatches_share_the_last_daily_unit():
     check = factory()
     assert check.query(ResearchProviderAttempt).count() == 1
     check.close()
+
+
+def test_row_lock_reads_the_committed_counter_not_a_cached_copy():
+    from app.infra.db.repositories.company_exposure_work_repo import (
+        ReservationLedger,
+    )
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def pool(session):
+        return ReservationLedger(session).ensure_pool(
+            pool_key="storage:race",
+            unit="blob_bytes",
+            period="all",
+            period_end=None,
+            capacity=100,
+        )
+
+    early, late = factory(), factory()
+    try:
+        # The identity map is weak: whether a pool read earlier in a session
+        # is still cached at lock time depends on garbage collection. Holding
+        # a reference makes the stale-counter case deterministic.
+        cached = pool(early)
+        assert cached.reserved_amount == 0
+        early.commit()
+        winner = ReservationLedger(late).reserve(
+            pool_id=pool(late).id, amount=60, purpose="t", logical_operation_key="b"
+        )
+        late.commit()
+        loser = ReservationLedger(early).reserve(
+            pool_id=pool(early).id, amount=60, purpose="t", logical_operation_key="a"
+        )
+        assert winner.allowed
+        assert (loser.allowed, loser.reason) == (False, "capacity_exhausted")
+        assert cached.reserved_amount == 60
+    finally:
+        early.rollback()
+        early.close()
+        late.close()

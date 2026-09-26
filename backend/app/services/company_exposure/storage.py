@@ -19,6 +19,7 @@ tombstone. Published history is never evicted to make room.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from collections.abc import Callable
@@ -295,19 +296,29 @@ class OriginalStore:
             ReservationState.RECONCILED,
             dispatch_phase="dispatched",
             actual_amount=len(data),
+            detail={"blob_key": key},
         )
         return BlobRef(digest, media_type, len(data), key)
 
     def read(self, key: str) -> bytes:
+        """Stored bytes; a tombstone only explains why a file is missing.
+
+        Blobs are content-addressed, so bytes stored again after an earlier
+        unreferenced-blob GC are the same evidence and readable again.
+        """
+
+        path = self.path_for(key)
+        if path.is_file():
+            return path.read_bytes()
         tombstone = self.session.execute(
-            select(EvidenceTombstoneEvent).where(EvidenceTombstoneEvent.blob_key == key)
+            select(EvidenceTombstoneEvent)
+            .where(EvidenceTombstoneEvent.blob_key == key)
+            .order_by(EvidenceTombstoneEvent.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
         if tombstone is not None:
             raise StorageUnavailable(f"evidence_removed:{tombstone.reason}")
-        path = self.path_for(key)
-        if not path.is_file():
-            raise StorageUnavailable("evidence_blob_missing")
-        return path.read_bytes()
+        raise StorageUnavailable("evidence_blob_missing")
 
     # -- garbage collection -----------------------------------------------------
 
@@ -321,6 +332,44 @@ class OriginalStore:
             is not None
         )
 
+    def _uncredited_charge(self, key: str) -> int:
+        """Bytes charged to the pool for this blob and not yet credited back.
+
+        Each charge records its blob key; each GC tombstone records what it
+        credited. Crash orphans were never charged (their ticket is
+        released), and an earlier incarnation's charge was already credited.
+        """
+
+        events = self.session.execute(
+            select(ResearchReservationEvent)
+            .join(
+                ResearchReservation,
+                ResearchReservation.id == ResearchReservationEvent.reservation_id,
+            )
+            .join(
+                ResearchResourcePool,
+                ResearchResourcePool.id == ResearchReservation.pool_id,
+            )
+            .where(
+                ResearchResourcePool.pool_key == STORAGE_POOL,
+                ResearchReservationEvent.state == ReservationState.RECONCILED.value,
+                ResearchReservationEvent.actual_amount > 0,
+            )
+        ).scalars()
+        charged = sum(
+            int(event.actual_amount)
+            for event in events
+            if (event.detail or {}).get("blob_key") == key
+        )
+        tombstones = self.session.execute(
+            select(EvidenceTombstoneEvent).where(EvidenceTombstoneEvent.blob_key == key)
+        ).scalars()
+        credited = sum(
+            int(json.loads(t.detail).get("credited_bytes", 0)) if t.detail else 0
+            for t in tombstones
+        )
+        return max(0, charged - credited)
+
     def collect_unreferenced_blobs(
         self, as_of: datetime | None = None, *, dry_run: bool = True
     ) -> StorageGCReport:
@@ -331,7 +380,7 @@ class OriginalStore:
             return StorageGCReport(dry_run=dry_run)
         storage_lock(self.session, exclusive=True)
         unreferenced, abandoned, skipped, tombstones = [], [], [], []
-        reclaimed = 0
+        reclaimed = credited = 0
         blob_root = self.root / "sha256"
         for path in sorted(blob_root.glob("*/*")) if blob_root.exists() else []:
             key = str(path.relative_to(self.root))
@@ -344,14 +393,17 @@ class OriginalStore:
             unreferenced.append(key)
             if not dry_run:
                 size = path.stat().st_size
+                credit = self._uncredited_charge(key)
                 path.unlink()
                 reclaimed += size
+                credited += credit
                 tombstone = EvidenceTombstoneEvent(
                     blob_key=key,
                     content_hash=path.name,
                     byte_length=size,
                     reason="unreferenced_gc",
                     authority="system:company-exposure-storage-gc",
+                    detail=json.dumps({"credited_bytes": credit}),
                 )
                 self.session.add(tombstone)
                 self.session.flush()
@@ -364,8 +416,8 @@ class OriginalStore:
             abandoned.append(path.name)
             if not dry_run:
                 path.unlink(missing_ok=True)
-        if reclaimed and not dry_run:
-            self.ledger.adjust_pool(self._pool().id, -reclaimed)
+        if credited and not dry_run:
+            self.ledger.adjust_pool(self._pool().id, -credited)
         return StorageGCReport(
             dry_run=dry_run,
             unreferenced=tuple(unreferenced),

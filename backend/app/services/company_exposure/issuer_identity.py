@@ -289,7 +289,9 @@ class IssuerIdentityAdapter:
         statement = select(StockUniverse).where(StockUniverse.id == security_id)
         if lock:
             # Serializes link decisions and revision numbering per listing.
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(
+                populate_existing=True
+            )
         security = self.session.execute(statement).scalar_one_or_none()
         if security is None:
             raise IssuerIdentityError("security_not_found")

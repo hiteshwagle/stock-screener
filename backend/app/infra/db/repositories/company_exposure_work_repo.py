@@ -275,6 +275,7 @@ class CompanyExposureWorkRepository:
             select(ResearchWorkItem)
             .where(ResearchWorkItem.id == work_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one_or_none()
         if (
             item is None
@@ -326,6 +327,7 @@ class CompanyExposureWorkRepository:
                 ResearchWorkItem.status == "paused",
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalars()
         for item in paused:
             item.status = "pending"
@@ -344,7 +346,12 @@ class ReserveOutcome:
 
 
 class ReservationLedger:
-    """Concurrency-safe reserve/transition over pool and root-budget rows."""
+    """Concurrency-safe reserve/transition over pool and root-budget rows.
+
+    Every row lock uses ``populate_existing``: ``SELECT ... FOR UPDATE`` does
+    not refresh an object already in the session, so without it a counter
+    read earlier in the session would be checked stale under the lock.
+    """
 
     def __init__(self, session: Session, *, clock: Callable[[], datetime] = _utcnow):
         self.session = session
@@ -391,6 +398,7 @@ class ReservationLedger:
                 select(ResearchResourcePool)
                 .where(ResearchResourcePool.id == pool.id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             ).scalar_one()
             locked.capacity = capacity
             self.session.flush()
@@ -416,6 +424,7 @@ class ReservationLedger:
             select(ResearchResourcePool)
             .where(ResearchResourcePool.id == pool_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one()
         if pool.closed_at is not None:
             return ReserveOutcome(False, reason="period_closed", requested=amount)
@@ -440,6 +449,7 @@ class ReservationLedger:
                     ResearchRootBudget.budget_key == root_budget_key,
                 )
                 .with_for_update()
+                .execution_options(populate_existing=True)
             ).scalar_one_or_none()
             if budget is None:
                 return ReserveOutcome(False, reason="root_budget_missing")
@@ -541,6 +551,7 @@ class ReservationLedger:
             select(ResearchResourcePool)
             .where(ResearchResourcePool.id == reservation.pool_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one()
         budget = None
         if reservation.root_request_id is not None and reservation.root_budget_key:
@@ -551,6 +562,7 @@ class ReservationLedger:
                     ResearchRootBudget.budget_key == reservation.root_budget_key,
                 )
                 .with_for_update()
+                .execution_options(populate_existing=True)
             ).scalar_one()
         current = self.state(reservation_id)
         if new_state not in _ALLOWED_TRANSITIONS.get(current, set()):
@@ -595,6 +607,7 @@ class ReservationLedger:
             select(ResearchResourcePool)
             .where(ResearchResourcePool.id == pool_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one()
         pool.reserved_amount = max(0, int(pool.reserved_amount) + int(delta))
         self.session.flush()
@@ -612,6 +625,7 @@ class ReservationLedger:
                 ResearchRootBudget.budget_key == budget_key,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one_or_none()
         if budget is None:
             return ReserveOutcome(False, reason="root_budget_missing")
@@ -643,6 +657,7 @@ class ReservationLedger:
                 ResearchResourcePool.period == period,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one_or_none()
         if pool is None:
             return []
