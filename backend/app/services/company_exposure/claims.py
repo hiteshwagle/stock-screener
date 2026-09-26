@@ -389,7 +389,19 @@ def validate_candidate(
     if reporting_scope != ReportingScope.SEGMENT_OR_SUBSIDIARY:
         scope_label = None
     status = CommercialStatus(raw.get("commercial_status") or "unknown")
-    product_terms = tuple(t for t in raw.get("product_terms", []) if isinstance(t, str))
+    # Product terms come from the model: one that is (or contains, or sits
+    # inside) a theme term would let a theme-only sentence pass as a
+    # product-to-theme link, so such terms are ignored.
+    theme_folded = [t.casefold() for t in scope.theme_terms if t]
+    product_terms = tuple(
+        t
+        for t in raw.get("product_terms", [])
+        if isinstance(t, str)
+        and t.strip()
+        and not any(
+            t.casefold() in theme or theme in t.casefold() for theme in theme_folded
+        )
+    )
     holds: list[str] = []
     rejected: list[str] = []
     cited: list[CitedEvidence] = []

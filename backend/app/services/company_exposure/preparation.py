@@ -286,8 +286,9 @@ _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 def _bounded(blocks: list[dict], max_chars: int) -> list[dict]:
     """Split oversized paragraphs at sentence ends (hard-split as a last resort).
 
-    Leaf HTML containers of inline-only markup (e.g. inline XBRL) can hold a
-    whole filing section; each passage sent to a provider stays bounded.
+    Leaf HTML containers of inline-only markup (e.g. inline XBRL), or a PDF
+    page extracted as one long line, can hold a whole section; each passage
+    sent to a provider stays bounded.
     """
 
     bounded: list[dict] = []
@@ -428,7 +429,9 @@ class ExposureEvidencePreparer:
         coverage: dict = {}
         if revision.media_type == "application/pdf":
             result = _run_pdf_extractor(data, limits)
-            raw_blocks = _pdf_blocks(result, limits.max_passage_chars)
+            raw_blocks = _bounded(
+                _pdf_blocks(result, limits.max_passage_chars), limits.max_passage_chars
+            )
             extractor = PDF_EXTRACTOR
             coverage = {
                 "page_count": result["page_count"],

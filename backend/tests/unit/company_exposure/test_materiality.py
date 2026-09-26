@@ -165,3 +165,22 @@ def test_decimals_are_parsed_exactly():
     assert parse_decimal("1,234.50") == Decimal("1234.50")
     with pytest.raises(ValueError):
         parse_decimal("n/a")
+
+
+@pytest.mark.parametrize(
+    ("label", "quote", "kept"),
+    [
+        ("core_business", "HBM test equipment is our core business.", "core_business"),
+        ("core_business", "HBM revenue was immaterial in fiscal 2025.", "unknown"),
+        ("explicitly_material", "HBM sales were not material.", "unknown"),
+        ("explicitly_limited", "HBM sales were not material.", "explicitly_limited"),
+        ("explicitly_limited", "HBM is our largest product line.", "unknown"),
+    ],
+)
+def test_qualitative_label_must_match_its_wording(label, quote, kept):
+    from app.services.company_exposure.materiality import qualitative_measure
+
+    measure = qualitative_measure(label, quote)
+    assert measure.qualitative_label.value == kept
+    held = "qualitative_label_not_supported_by_wording" in measure.hold_reasons
+    assert held is (kept != label)

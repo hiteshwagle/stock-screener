@@ -302,12 +302,42 @@ def calculate_materiality(
     )
 
 
+_LIMITING_WORDING = re.compile(
+    r"\b(immaterial|not\s+(?:material|significant|meaningful)|insignificant|"
+    r"negligible|minimal|de\s+minimis|small\s+(?:portion|percentage|part))\b",
+    re.IGNORECASE,
+)
+_SIGNIFICANT_WORDING = re.compile(
+    r"\b(material|significant|substantial|core|primary|principal|main|majority|"
+    r"substantially\s+all|key|largest|predominant)\b",
+    re.IGNORECASE,
+)
+
+
 def qualitative_measure(label: str, quote: str) -> MaterialityMeasureResult:
+    """A qualitative label kept only when its cited wording says so.
+
+    The label comes from the model: "core business" over "HBM revenue was
+    immaterial" is not supported, so it becomes ``unknown`` with a hold.
+    """
+
     parsed = QualitativeMateriality(label)
-    holds = () if quote.strip() else ("qualitative_label_without_primary_wording",)
+    if not quote.strip():
+        holds = ("qualitative_label_without_primary_wording",)
+    else:
+        limiting = bool(_LIMITING_WORDING.search(quote))
+        significant = bool(_SIGNIFICANT_WORDING.search(quote)) and not limiting
+        supported = {
+            QualitativeMateriality.CORE_BUSINESS: significant,
+            QualitativeMateriality.EXPLICITLY_MATERIAL: significant,
+            QualitativeMateriality.EXPLICITLY_LIMITED: limiting,
+        }.get(parsed, True)
+        holds = () if supported else ("qualitative_label_not_supported_by_wording",)
+        if not supported:
+            parsed = QualitativeMateriality.UNKNOWN
     return MaterialityMeasureResult(
         basis=MaterialityBasis.QUALITATIVE,
         qualitative_label=parsed,
-        raw_reported={"quote": quote},
+        raw_reported={"quote": quote, "proposed_label": label},
         hold_reasons=holds,
     )

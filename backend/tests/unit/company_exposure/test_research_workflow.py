@@ -325,6 +325,19 @@ def test_missing_retained_original_is_a_coverage_gap(harness, db_session):
     assert "evidence_blob_missing" in {c["reason"] for c in revision.coverage}
 
 
+def test_rejected_verifier_output_is_a_coverage_gap(harness, db_session):
+    harness.serve_sec()
+    harness.go.queue_json({"unexpected": "shape"})
+    harness.request()
+    verified = harness.run_all()[-1]
+    assert (verified.stage, verified.status) == ("verify", "completed")
+    assert verified.state != "ready_for_publication"
+    revision = db_session.get(
+        AssessmentRevision, UUID(verified.detail["assessment_revision_id"])
+    )
+    assert "verifier_output_rejected" in {c["reason"] for c in revision.coverage}
+
+
 def test_slow_io_renews_the_lease_instead_of_losing_the_stage(harness):
     harness.serve_sec()
     pace = harness.rate.acquire

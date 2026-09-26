@@ -41,14 +41,19 @@ ANNUAL_HTML = """
 @pytest.fixture
 def store(db_session, tmp_path):
     return OriginalStore(
-        db_session, tmp_path / "store", max_bytes=10**9, min_free_bytes=0,
+        db_session,
+        tmp_path / "store",
+        max_bytes=10**9,
+        min_free_bytes=0,
         disk_free=lambda _p: 10**12,
     )
 
 
 def _revision(db_session, store, data: bytes, media_type: str, key: str):
     document = make_document(db_session, key)
-    blob = store.put(data, media_type, store.reserve(len(data), purpose="t", operation_key=key))
+    blob = store.put(
+        data, media_type, store.reserve(len(data), purpose="t", operation_key=key)
+    )
     revision = ExposureDocumentRevision(
         document_id=document.id,
         content_hash=bytes_hash(data),
@@ -71,7 +76,9 @@ def evidence_preparer(db_session, store):
 
 @pytest.fixture
 def table_document(db_session, store):
-    return _revision(db_session, store, ANNUAL_HTML.encode(), "text/html", "html:annual")
+    return _revision(
+        db_session, store, ANNUAL_HTML.encode(), "text/html", "html:annual"
+    )
 
 
 @pytest.fixture
@@ -95,7 +102,9 @@ def test_html_table_keeps_header_period_unit_and_footnote(
     assert table.table["caption"] == "Revenue by segment (USD million)"
     assert table.table["periods"] == ["FY2024", "FY2025"]
     assert table.table["units"]
-    assert table.table["footnotes"] == ["(1) Memory test includes HBM and DRAM testers."]
+    assert table.table["footnotes"] == [
+        "(1) Memory test includes HBM and DRAM testers."
+    ]
     assert prepared.locator(table)["revision_hash"] == table_document.content_hash
 
 
@@ -137,9 +146,10 @@ def test_selection_is_deterministic_and_bounded(
     assert db_session.query(ExposurePassage).count() == 2
     passage = stored[0]
     assert passage.revision_content_hash == table_document.content_hash
-    assert passage.original_text == prepared.document_text[
-        passage.locator["start"] : passage.locator["end"]
-    ]
+    assert (
+        passage.original_text
+        == prepared.document_text[passage.locator["start"] : passage.locator["end"]]
+    )
 
 
 @pytest.fixture
@@ -150,7 +160,9 @@ def long_document(db_session, store):
 
 @pytest.mark.case("R14")
 @pytest.mark.exposure_layer("unit")
-def test_page_bound_is_reported_not_hidden(evidence_preparer, long_document, questions, limits):
+def test_page_bound_is_reported_not_hidden(
+    evidence_preparer, long_document, questions, limits
+):
     prepared = evidence_preparer.prepare(long_document, questions, limits)
     assert prepared.coverage["processed_pages"] <= 3
     assert prepared.coverage["page_count"] == 5
@@ -173,16 +185,35 @@ def test_inline_only_html_is_split_into_bounded_passages(
     assert all(t.endswith(".") for t in texts)
 
 
-def test_malformed_pdf_is_a_typed_failure(evidence_preparer, db_session, store, questions):
-    broken = _revision(db_session, store, b"%PDF-1.4\nthis is not a pdf", "application/pdf", "pdf:bad")
+def test_one_long_pdf_line_is_split_into_bounded_passages(
+    evidence_preparer, db_session, store
+):
+    pdf = make_text_pdf(["HBM tester " * 900])
+    revision = _revision(db_session, store, pdf, "application/pdf", "pdf:one-line")
+    prepared = evidence_preparer.prepare(revision, limits=PreparationLimits())
+    texts = [b.text for b in prepared.blocks if b.kind == "paragraph"]
+    assert len(texts) > 1
+    assert max(len(t) for t in texts) <= PreparationLimits().max_passage_chars
+
+
+def test_malformed_pdf_is_a_typed_failure(
+    evidence_preparer, db_session, store, questions
+):
+    broken = _revision(
+        db_session, store, b"%PDF-1.4\nthis is not a pdf", "application/pdf", "pdf:bad"
+    )
     with pytest.raises(PreparationFailed) as raised:
         evidence_preparer.prepare(broken, questions)
     assert raised.value.code in {"malformed_pdf", "pdf_extraction_failed"}
 
 
 def test_non_english_text_keeps_original_script(evidence_preparer, db_session, store):
-    html = "<html><body><p>当社はHBM向けテスターを量産出荷していない。</p></body></html>"
-    revision = _revision(db_session, store, html.encode("utf-8"), "text/html", "html:ja")
+    html = (
+        "<html><body><p>当社はHBM向けテスターを量産出荷していない。</p></body></html>"
+    )
+    revision = _revision(
+        db_session, store, html.encode("utf-8"), "text/html", "html:ja"
+    )
     prepared = evidence_preparer.prepare(revision)
     selection = select_passages(prepared, QuestionSet(terms=("HBM",)))
     stored = persist_passages(db_session, prepared, selection)

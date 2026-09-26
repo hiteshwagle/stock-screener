@@ -690,6 +690,17 @@ class ResearchStageRunner:
                 return blocked
             claims, rejected = batch.claims, batch.rejected
             artifacts = () if batch.artifact_id is None else (str(batch.artifact_id),)
+            if rejected:
+                # Verifier output that failed validation (a bad schema or a
+                # candidate that did not check out) leaves the question open.
+                coverage.append(
+                    CoverageItem(
+                        "verification",
+                        CoverageOutcome.PARTIAL,
+                        "verifier_output_rejected",
+                        {"rejected": len(rejected), "accepted": len(claims)},
+                    )
+                )
         else:
             coverage.append(
                 CoverageItem(
