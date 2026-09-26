@@ -37,11 +37,20 @@ from app.domain.company_exposure.contracts import (
     utc_now,
 )
 from app.infra.db.repositories.company_exposure_work_repo import ReservationLedger
-from app.models.company_exposure import EvidenceTombstoneEvent, ExposureDocumentRevision
+from app.models.company_exposure import (
+    EvidenceTombstoneEvent,
+    ExposureDocumentRevision,
+    ResearchReservation,
+    ResearchReservationEvent,
+    ResearchResourcePool,
+)
 
 STORAGE_POOL = "storage:exposure-evidence"
 STORAGE_PERIOD = "all"
 UNREFERENCED_GRACE = timedelta(days=30)
+# A storage ticket spans one download and write; one still open after this
+# belongs to a worker that died mid-I/O.
+ABANDONED_RESERVATION_GRACE = timedelta(hours=1)
 ABANDONED_TEMP_GRACE = timedelta(hours=24)
 _STORAGE_LOCK_KEY = 78_124_031
 
@@ -174,6 +183,61 @@ class OriginalStore:
                 dispatch_phase="pre_dispatch",
                 detail={"reason": reason},
             )
+
+    def release_abandoned_reservations(
+        self, as_of: datetime | None = None
+    ) -> tuple[UUID, ...]:
+        """Settle storage tickets left open by a worker that died mid-I/O.
+
+        ``reserved`` tickets are released; ``dispatched`` ones (the write had
+        started) are reconciled at zero: any bytes that did land are
+        unreferenced and removed by evidence GC.
+        """
+
+        cutoff = (as_of or self.clock()) - ABANDONED_RESERVATION_GRACE
+        settled = select(ResearchReservationEvent.reservation_id).where(
+            ResearchReservationEvent.state.in_(
+                [
+                    ReservationState.RELEASED.value,
+                    ReservationState.RECONCILED.value,
+                    ReservationState.EXPIRED_UNCERTAIN.value,
+                ]
+            )
+        )
+        candidates = self.session.execute(
+            select(ResearchReservation.id)
+            .join(
+                ResearchResourcePool,
+                ResearchResourcePool.id == ResearchReservation.pool_id,
+            )
+            .where(
+                ResearchResourcePool.pool_key == STORAGE_POOL,
+                ResearchReservation.created_at < cutoff,
+                ResearchReservation.id.not_in(settled),
+            )
+        ).scalars()
+        released = []
+        for reservation_id in list(candidates):
+            state = self.ledger.state(reservation_id)
+            if state == ReservationState.RESERVED:
+                self.ledger.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    dispatch_phase="pre_dispatch",
+                    detail={"reason": "abandoned_by_worker"},
+                )
+            elif state == ReservationState.DISPATCHED:
+                self.ledger.transition(
+                    reservation_id,
+                    ReservationState.RECONCILED,
+                    dispatch_phase="dispatched",
+                    actual_amount=0,
+                    detail={"reason": "abandoned_by_worker"},
+                )
+            else:
+                continue
+            released.append(reservation_id)
+        return tuple(released)
 
     # -- blobs ------------------------------------------------------------------
 

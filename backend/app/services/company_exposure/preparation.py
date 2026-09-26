@@ -280,6 +280,41 @@ def _html_blocks(data: bytes) -> list[dict]:
     return blocks
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
+
+
+def _bounded(blocks: list[dict], max_chars: int) -> list[dict]:
+    """Split oversized paragraphs at sentence ends (hard-split as a last resort).
+
+    Leaf HTML containers of inline-only markup (e.g. inline XBRL) can hold a
+    whole filing section; each passage sent to a provider stays bounded.
+    """
+
+    bounded: list[dict] = []
+    for block in blocks:
+        text = block.get("text", "")
+        if block["kind"] != "paragraph" or len(text) <= max_chars:
+            bounded.append(block)
+            continue
+        current = ""
+        for sentence in _SENTENCE_END.split(text):
+            while len(sentence) > max_chars:
+                if current:
+                    bounded.append({**block, "text": current})
+                    current = ""
+                bounded.append({**block, "text": sentence[:max_chars]})
+                sentence = sentence[max_chars:].lstrip()
+            candidate = f"{current} {sentence}" if current else sentence
+            if len(candidate) > max_chars:
+                bounded.append({**block, "text": current})
+                current = sentence
+            else:
+                current = candidate
+        if current:
+            bounded.append({**block, "text": current})
+    return bounded
+
+
 def _run_pdf_extractor(data: bytes, limits: PreparationLimits) -> dict:
     def restrict() -> None:
         resource.setrlimit(
@@ -410,6 +445,7 @@ class ExposureEvidencePreparer:
                 ]
             else:
                 raw_blocks = _html_blocks(data)
+            raw_blocks = _bounded(raw_blocks, limits.max_passage_chars)
             extractor = HTML_EXTRACTOR
             coverage = {
                 "page_count": None,

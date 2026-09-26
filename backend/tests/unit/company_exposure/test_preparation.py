@@ -160,6 +160,19 @@ def test_page_bound_is_reported_not_hidden(evidence_preparer, long_document, que
     assert all(block.page_label for block in prepared.blocks)
 
 
+def test_inline_only_html_is_split_into_bounded_passages(
+    evidence_preparer, db_session, store
+):
+    sentence = "The ET-9000 supports HBM testing for memory makers. "
+    html = f"<html><body><div><span>{sentence * 400}</span></div></body></html>"
+    revision = _revision(db_session, store, html.encode(), "text/html", "html:ixbrl")
+    prepared = evidence_preparer.prepare(revision, limits=PreparationLimits())
+    texts = [b.text for b in prepared.blocks if b.kind == "paragraph"]
+    assert len(texts) > 1
+    assert max(len(t) for t in texts) <= PreparationLimits().max_passage_chars
+    assert all(t.endswith(".") for t in texts)
+
+
 def test_malformed_pdf_is_a_typed_failure(evidence_preparer, db_session, store, questions):
     broken = _revision(db_session, store, b"%PDF-1.4\nthis is not a pdf", "application/pdf", "pdf:bad")
     with pytest.raises(PreparationFailed) as raised:

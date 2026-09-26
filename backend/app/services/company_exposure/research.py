@@ -99,6 +99,15 @@ _UNAVAILABLE_REASONS = frozenset(
 _RETRYABLE_COVERAGE = frozenset(
     {CoverageOutcome.RATE_LIMITED, CoverageOutcome.FETCH_FAILED}
 )
+# Discovery gaps an operator must fix (configuration, missing identifier):
+# the stage pauses so ``resume`` can continue it, instead of settling.
+_BLOCKING_COVERAGE = frozenset(
+    {
+        CoverageOutcome.NOT_CONFIGURED,
+        CoverageOutcome.UNAVAILABLE_CAPABILITY,
+        CoverageOutcome.PERMISSION_UNAVAILABLE,
+    }
+)
 
 
 class StepStatus(StrEnum):
@@ -504,13 +513,17 @@ class ResearchStageRunner:
                 issuer, ANNUAL_REPORTS, AcquisitionLimits(), budget
             )
             coverage.extend(discovery.coverage)
-            transient = next(
-                (c for c in discovery.coverage if c.outcome in _RETRYABLE_COVERAGE),
+            stop = next(
+                (
+                    c
+                    for c in discovery.coverage
+                    if c.outcome in _RETRYABLE_COVERAGE | _BLOCKING_COVERAGE
+                ),
                 None,
             )
-            if transient is not None:
+            if stop is not None:
                 self.commit()
-                return self._coverage_outcome(transient)
+                return self._coverage_outcome(stop)
             for target in discovery.targets:
                 capture = route.adapter.fetch(target, budget)
                 coverage.append(capture.coverage)

@@ -254,32 +254,39 @@ def _sentences(text: str) -> list[str]:
     return [s for s in _SENTENCES.split(text) if s.strip()]
 
 
-def _links_product_to_theme(quote: str, product_terms, theme_terms) -> bool:
-    """Product and theme named in one clause of one sentence.
+def _clauses(quotes: list[str]) -> list[str]:
+    """Clauses of the quoted sentences, split at contrastive joins."""
+
+    return [
+        clause
+        for quote in quotes
+        for sentence in _sentences(quote)
+        for clause in _CONTRAST.split(sentence)
+        if clause.strip()
+    ]
+
+
+def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]:
+    """Clauses naming both the product/activity and the theme.
 
     Contrastive joins ("while", "but", "whereas") split a sentence, so
     "ET-9000 sales declined while HBM demand increased" links nothing.
     """
 
-    for clause in (
-        c for sentence in _sentences(quote) for c in _CONTRAST.split(sentence)
-    ):
+    linking = []
+    for clause in _clauses(quotes):
         folded = clause.casefold()
         if any(t.casefold() in folded for t in product_terms if t) and any(
             t.casefold() in folded for t in theme_terms if t
         ):
-            return True
-    return False
+            linking.append(clause)
+    return linking
 
 
-def _affirmed(quotes: list[str]) -> bool:
-    """True when some clause of the quoted support is not negated."""
+def _affirmed(clauses: list[str]) -> bool:
+    """True when some clause is not negated."""
 
-    return any(
-        clause.strip() and not _NEGATION.search(clause)
-        for quote in quotes
-        for clause in _CONTRAST.split(quote)
-    )
+    return any(not _NEGATION.search(clause) for clause in clauses)
 
 
 def _status_guard(
@@ -458,12 +465,17 @@ def validate_candidate(
         holds.extend(synthesis.reasons)
     elif primary_quotes:
         basis = SupportBasis.PRIMARY_EXPLICIT
-        if kind in _LINKED_KINDS and not _links_product_to_theme(
-            " ".join(primary_quotes), product_terms, scope.theme_terms
-        ):
+        # The clause that carries the relationship must itself be affirmed:
+        # an unrelated positive citation cannot rescue "does not support HBM".
+        relationship = (
+            _linking_clauses(primary_quotes, product_terms, scope.theme_terms)
+            if kind in _LINKED_KINDS
+            else _clauses(primary_quotes)
+        )
+        if kind in _LINKED_KINDS and not relationship:
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("cooccurrence_only")
-        elif kind in _AFFIRMATIVE_KINDS and not _affirmed(primary_quotes):
+        elif kind in _AFFIRMATIVE_KINDS and not _affirmed(relationship):
             # Provider output is untrusted: "does not support HBM" cited as
             # support must not become a supported exposure.
             basis = SupportBasis.INFERRED_UNVERIFIED

@@ -69,6 +69,24 @@ def claim(kind="product_application", **overrides):
     return base
 
 
+def test_unrelated_positive_citation_cannot_rescue_a_negated_link():
+    negated = "The ET-9000 does not support HBM testing."
+    unrelated = "Our ET-9000 testers ship worldwide."
+    result = validate_candidate(
+        claim(
+            "role",
+            support=[
+                {"ref": "P1", "quote": negated},
+                {"ref": "P2", "quote": unrelated},
+            ],
+        ),
+        evidence(item("P1", negated), item("P2", unrelated)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "negated_support" in result.hold_reasons
+
+
 def test_contrasted_clauses_do_not_link_product_to_theme():
     text = "ET-9000 sales declined while HBM demand increased."
     result = validate_candidate(

@@ -164,7 +164,7 @@ expires before the next run, so nothing piles up while the
 | Beat entry | Schedule | Task | Research mode |
 |---|---|---|---|
 | `company-exposure-work` | every 5 min | advance up to 3 queued stages | skipped with `research_disabled` |
-| `company-exposure-holds` | hourly | record `stale`/`undated` holds; close ended allocation periods | runs in every mode (provider-free) |
+| `company-exposure-holds` | hourly | record `stale`/`undated` holds; close ended allocation periods; settle storage tickets a crashed worker left open for over an hour | runs in every mode (provider-free) |
 | `company-exposure-evidence-gc` | daily 03:41 (beat timezone) | remove unreferenced originals and abandoned temp files | runs in every mode (provider-free) |
 
 The hold and GC tasks make no network or model call.

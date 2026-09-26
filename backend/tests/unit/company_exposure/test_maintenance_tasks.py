@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -144,3 +144,29 @@ def test_evidence_gc_removes_old_unreferenced_originals(db_session, tmp_path):
     assert (outcome["removed_blobs"], outcome["reclaimed_bytes"]) == (1, 6)
     assert not path.exists()
     assert db_session.query(EvidenceTombstoneEvent).count() == 1
+
+
+def test_hold_refresh_releases_storage_tickets_abandoned_mid_download(
+    db_session, tmp_path
+):
+    config = replace(SHADOW, document_store=str(tmp_path / "store"))
+    store = OriginalStore(
+        db_session, config.document_store, max_bytes=10_000, min_free_bytes=0
+    )
+    abandoned = store.reserve(4_000, purpose="t", operation_key="dead-worker")
+    db_session.commit()
+    assert store.usage()["reserved_or_used_bytes"] == 4_000
+    # Recent tickets belong to live downloads and are left alone.
+    assert store.release_abandoned_reservations() == ()
+
+    later = datetime.now(timezone.utc) + timedelta(hours=2)
+    assert store.release_abandoned_reservations(as_of=later) == (
+        abandoned.reservation_id,
+    )
+    db_session.commit()
+    assert store.usage()["reserved_or_used_bytes"] == 0
+
+    outcome = refresh_exposure_holds.run(
+        session_factory=lambda: db_session, config=config
+    )
+    assert outcome["released_storage_reservations"] == 0

@@ -87,20 +87,28 @@ def process_exposure_work(max_steps: int = 1, *, runner_factory=None) -> dict:
 def refresh_exposure_holds(*, session_factory=None, config=None) -> dict:
     """Provider-free maintenance that runs in every research mode.
 
-    Records stale/undated holds for currently selected claims and closes
-    ended allocation periods, so uncertain reservations become
-    ``expired_uncertain``. It makes no network or model call.
+    Records stale/undated holds for currently selected claims, closes
+    ended allocation periods (uncertain reservations become
+    ``expired_uncertain``) and settles storage tickets abandoned by a
+    worker that died mid-download. It makes no network or model call.
     """
 
     from app.services.company_exposure.config import load_config
     from app.services.company_exposure.freshness import refresh_due_holds
     from app.services.company_exposure.resources import ResearchResources
+    from app.services.company_exposure.storage import OriginalStore
 
     config = config or load_config()
     session = (session_factory or _session_factory())()
     try:
         holds = refresh_due_holds(session)
         closed = ResearchResources(session, config).close_ended_periods()
+        abandoned = OriginalStore(
+            session,
+            config.document_store,
+            max_bytes=config.storage_max_bytes,
+            min_free_bytes=config.storage_min_free_bytes,
+        ).release_abandoned_reservations()
         session.commit()
     finally:
         session.close()
@@ -109,6 +117,7 @@ def refresh_exposure_holds(*, session_factory=None, config=None) -> dict:
             new_holds=len(holds.new_holds),
             closed_periods=sorted({report.period for report in closed}),
             expired_reservations=sum(len(r.expired_reservation_ids) for r in closed),
+            released_storage_reservations=len(abandoned),
         )
     )
 

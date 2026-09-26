@@ -130,10 +130,11 @@ def test_link_change_after_acquire_reacquires_for_the_current_issuer(
     assert ref.issuer_id != UUID(resolved.detail["issuer_id"])
 
     verified = harness.step()
-    assert verified.stage == "verify"
-    # The new issuer has no retained filings: the old issuer's are not used.
+    # The new issuer has no CIK yet: the stage pauses for it instead of
+    # assessing with the old issuer's filings.
+    assert (verified.stage, verified.status) == ("verify", "paused")
+    assert verified.detail["condition"] == "issuer_cik_unresolved"
     assert harness.go.requests == []
-    assert verified.detail["claims"] == 0
 
 
 def test_ambiguous_cik_pauses_for_review_then_resumes_after_admin_link(
@@ -281,6 +282,18 @@ def test_throttled_filing_fetch_retries_acquire_instead_of_sealing(harness, db_s
         ).scalar_one_or_none()
         is None
     )
+
+
+def test_missing_sec_configuration_pauses_acquire_for_resume(harness, db_session):
+    harness.serve_sec()
+    harness.request()
+    harness.step()  # resolve with the configured user agent
+    requests_before = len(harness.sec.requests)
+    harness.build(replace(SHADOW, sec_user_agent=""))
+    paused = harness.step()
+    assert (paused.stage, paused.status) == ("acquire", "paused")
+    assert paused.detail["condition"] == "sec_user_agent_not_configured"
+    assert len(harness.sec.requests) == requests_before
 
 
 def test_retained_filings_are_bound_to_the_resolved_issuer(harness, db_session):
