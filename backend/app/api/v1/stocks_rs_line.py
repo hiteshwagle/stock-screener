@@ -60,7 +60,7 @@ def _load_rs_line(db: Session, symbol: str, period: str) -> RSLineResponse:
 
 
 @router.get("/{symbol}/rs-line", response_model=RSLineResponse)
-async def get_rs_line(
+def get_rs_line(
     symbol: str = Depends(require_valid_symbol),
     period: str = "6mo",
     db: Session = Depends(get_db),

@@ -60,7 +60,7 @@ def _if_none_match_matches(header_value: str | None, etag: str) -> bool:
 # the contract in OpenAPI, and the payload is validated against it on the
 # cache-miss path below.
 @router.get("/daily-snapshot", response_model=DailySnapshotResponse)
-async def get_daily_snapshot(
+def get_daily_snapshot(
     request: Request,
     market: str = Query("US", description="Market code (e.g. US, HK, JP, TW)"),
     db: Session = Depends(get_db),
@@ -111,7 +111,7 @@ async def get_daily_snapshot(
 
 
 @router.get("/watchlist/{list_name}", response_model=WatchlistResponse)
-async def get_watchlist(
+def get_watchlist(
     list_name: str,
     db: Session = Depends(get_db)
 ):
@@ -148,7 +148,7 @@ async def get_watchlist(
 
 
 @router.post("/watchlist/{list_name}", response_model=WatchlistSymbolResponse)
-async def add_symbol(
+def add_symbol(
     list_name: str,
     symbol_data: WatchlistSymbolCreate,
     db: Session = Depends(get_db)
@@ -186,7 +186,7 @@ async def add_symbol(
 
 
 @router.put("/watchlist/{list_name}/{symbol_id}", response_model=WatchlistSymbolResponse)
-async def update_symbol(
+def update_symbol(
     list_name: str,
     symbol_id: int,
     symbol_data: WatchlistSymbolUpdate,
@@ -217,7 +217,7 @@ async def update_symbol(
 
 
 @router.delete("/watchlist/{list_name}/{symbol_id}")
-async def remove_symbol(
+def remove_symbol(
     list_name: str,
     symbol_id: int,
     db: Session = Depends(get_db)
@@ -241,7 +241,7 @@ async def remove_symbol(
 
 
 @router.put("/watchlist/{list_name}/reorder")
-async def reorder_symbols(
+def reorder_symbols(
     list_name: str,
     reorder_data: ReorderRequest,
     db: Session = Depends(get_db)

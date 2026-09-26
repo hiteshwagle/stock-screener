@@ -65,6 +65,8 @@ const DEFAULT_SCAN_EXPRESSION = legacyFiltersToExpression(DEFAULT_SCAN_FILTERS);
 const DEFAULT_SCAN_QUERY = createScanFilterQuery(DEFAULT_SCAN_EXPRESSION);
 const DEFAULT_SCAN_QUERY_KEY = stableScanFilterQueryKey(DEFAULT_SCAN_QUERY);
 
+const ROW_HOVER_PREFETCH_DELAY_MS = 150;
+
 // "No market auto-loaded yet" marker for the scan auto-load ref.
 const NO_MARKET_AUTOLOADED = Symbol('no-market-autoloaded');
 
@@ -504,7 +506,11 @@ function ScanPage() {
     return message ? { message, detail } : null;
   }, [createScanMutation.error]);
 
-  const handleStartScan = () => {
+  // Handlers passed to ScanControlBar / FilterPanel stay referentially stable
+  // so those memoized children skip re-rendering on unrelated page updates
+  // (status polls, result fetches, chart modal state).
+  const startScanRequest = createScanMutation.mutate;
+  const handleStartScan = useCallback(() => {
     if (refreshConflict) {
       return;
     }
@@ -518,20 +524,32 @@ function ScanPage() {
     if (selectedScreeners.includes('custom')) {
       criteria.custom_filters = customFilters;
     }
-    createScanMutation.mutate({
+    startScanRequest({
       universe_def: universeDef,
       screeners: selectedScreeners,
       composite_method: compositeMethod,
       criteria,
     });
-  };
+  }, [
+    compositeMethod,
+    customFilters,
+    importedSymbols,
+    includeVcp,
+    refreshConflict,
+    selectedScreeners,
+    startScanRequest,
+    universeMarket,
+    universeScope,
+    universeSelections,
+  ]);
 
+  const refreshScanCacheRequest = refreshScanCacheMutation.mutate;
   const handleRefreshStaleData = useCallback((market) => {
     if (!market) {
       return;
     }
-    refreshScanCacheMutation.mutate({ market, mode: 'full' });
-  }, [refreshScanCacheMutation]);
+    refreshScanCacheRequest({ market, mode: 'full' });
+  }, [refreshScanCacheRequest]);
 
   const handleUniverseMarketChange = useCallback((nextMarket) => {
     if (nextMarket === universeMarket) {
@@ -541,7 +559,7 @@ function ScanPage() {
     setUniverseScope(null);
   }, [universeMarket]);
 
-  const handleScreenerToggle = (screener) => {
+  const handleScreenerToggle = useCallback((screener) => {
     setSelectedScreeners((previous) => {
       if (previous.includes(screener)) {
         if (previous.length === 1) {
@@ -551,30 +569,19 @@ function ScanPage() {
       }
       return [...previous, screener];
     });
-  };
+  }, []);
 
-  const handleSortChange = (field, nextOrder) => {
-    requestSort(field, nextOrder);
-  };
-
-  const handlePerPageChange = (nextPerPage) => {
-    requestPerPage(nextPerPage);
-  };
-
-  const handleFilterChange = (key, value) => {
-    editQuickFilter(key, value);
-  };
-
-  const handleResetFilters = () => {
+  const handleResetFilters = useCallback(() => {
     resetFilters(DEFAULT_SCAN_FILTERS);
-    presetState.clearActivePreset();
-  };
+    clearActivePreset();
+  }, [clearActivePreset, resetFilters]);
 
-  const handleCancelScan = () => {
+  const cancelScanRequest = cancelScanMutation.mutate;
+  const handleCancelScan = useCallback(() => {
     if (currentScanId && window.confirm('Are you sure you want to cancel this scan?')) {
-      cancelScanMutation.mutate(currentScanId);
+      cancelScanRequest(currentScanId);
     }
-  };
+  }, [cancelScanRequest, currentScanId]);
 
   const handleExport = async () => {
     try {
@@ -599,21 +606,44 @@ function ScanPage() {
     }
   };
 
-  const handleOpenChart = (symbol) => {
+  const handleOpenChart = useCallback((symbol) => {
     setSelectedSymbol(symbol);
     setChartModalOpen(true);
-  };
+  }, []);
 
+  const handleToggleFilters = useCallback(() => {
+    setShowFilters((previous) => !previous);
+  }, []);
+
+  const handleOpenLogicBuilder = useCallback(() => {
+    setLogicBuilderOpen(true);
+  }, []);
+
+  const handleClearCustomSymbols = useCallback(() => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete('symbols');
+    const search = next.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${search ? `?${search}` : ''}`);
+    setImportedSymbols([]);
+  }, []);
+
+  // Prefetch only once the pointer rests on a row; sweeping across the table
+  // would otherwise fire one history request per row passed over.
+  const hoverPrefetchTimerRef = useRef(null);
   const handleRowHover = useCallback(
     (symbol) => {
-      queryClient.prefetchQuery({
-        queryKey: priceHistoryKeys.symbol(symbol, '6mo'),
-        queryFn: () => fetchPriceHistory(symbol, '6mo'),
-        staleTime: PRICE_HISTORY_STALE_TIME,
-      });
+      clearTimeout(hoverPrefetchTimerRef.current);
+      hoverPrefetchTimerRef.current = setTimeout(() => {
+        queryClient.prefetchQuery({
+          queryKey: priceHistoryKeys.symbol(symbol, '6mo'),
+          queryFn: () => fetchPriceHistory(symbol, '6mo'),
+          staleTime: PRICE_HISTORY_STALE_TIME,
+        });
+      }, ROW_HOVER_PREFETCH_DELAY_MS);
     },
     [queryClient]
   );
+  useEffect(() => () => clearTimeout(hoverPrefetchTimerRef.current), []);
 
   useEffect(() => {
     if (!displayedResultsData?.results || displayedResultsData.results.length === 0) {
@@ -713,23 +743,17 @@ function ScanPage() {
         refreshStaleDataError={refreshScanCacheMutation.error}
         scanWarnings={scanWarnings}
         customSymbols={importedSymbols}
-        onClearCustomSymbols={() => {
-          const next = new URLSearchParams(window.location.search);
-          next.delete('symbols');
-          const search = next.toString();
-          window.history.replaceState(null, '', `${window.location.pathname}${search ? `?${search}` : ''}`);
-          setImportedSymbols([]);
-        }}
+        onClearCustomSymbols={handleClearCustomSymbols}
       />
 
       {(scanStatus === 'completed' || scanStatus === 'cancelled') && (
         <FilterPanel
           filters={filters}
-          onFilterChange={handleFilterChange}
+          onFilterChange={editQuickFilter}
           onReset={handleResetFilters}
           filterOptions={normalizedFilterOptions}
           expanded={showFilters}
-          onToggle={() => setShowFilters((previous) => !previous)}
+          onToggle={handleToggleFilters}
           presets={presetState.availablePresets}
           activePresetId={presetState.activePresetId}
           hasUnsavedChanges={presetState.hasUnsavedChanges()}
@@ -749,7 +773,7 @@ function ScanPage() {
           onSaveDialogSave={presetState.handleSaveDialogSave}
           groupedFilteringEnabled={groupedFilteringEnabled}
           expression={draftExpression}
-          onOpenLogicBuilder={() => setLogicBuilderOpen(true)}
+          onOpenLogicBuilder={handleOpenLogicBuilder}
         />
       )}
 
@@ -766,8 +790,8 @@ function ScanPage() {
           sortBy={displayedQuery.sortBy}
           sortOrder={displayedQuery.sortOrder}
           onPageChange={requestPage}
-          onPerPageChange={handlePerPageChange}
-          onSortChange={handleSortChange}
+          onPerPageChange={requestPerPage}
+          onSortChange={requestSort}
           onOpenChart={handleOpenChart}
           onRowHover={handleRowHover}
           onRetry={refetchResults}

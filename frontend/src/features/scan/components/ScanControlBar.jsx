@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import {
   Alert,
   Box,
@@ -66,7 +67,7 @@ function staleRefreshMarket(createScanError, fallbackMarket) {
   return market ? String(market).toUpperCase() : null;
 }
 
-export default function ScanControlBar({
+function ScanControlBar({
   currentScanId,
   scanHistory,
   onLoadScan,
@@ -442,3 +443,5 @@ export default function ScanControlBar({
     </Paper>
   );
 }
+
+export default memo(ScanControlBar);

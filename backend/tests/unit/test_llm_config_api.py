@@ -40,11 +40,10 @@ async def test_get_llm_config_defaults_to_minimax(monkeypatch, db_session) -> No
     assert not any(model["provider"] in {"deepseek", "together_ai", "openrouter"} for model in response.available_models)
 
 
-@pytest.mark.asyncio
-async def test_update_llm_model_persists_zai_selection(db_session) -> None:
+def test_update_llm_model_persists_zai_selection(db_session) -> None:
     payload = LLMModelUpdate(model_id="openai/glm-4.7-flash", use_case="extraction")
 
-    response = await update_llm_model(request=payload, db=db_session, _auth=True)
+    response = update_llm_model(request=payload, db=db_session, _auth=True)
 
     persisted = db_session.query(AppSetting).filter(AppSetting.key == "llm_extraction_model").first()
     assert response["status"] == "success"
@@ -52,12 +51,11 @@ async def test_update_llm_model_persists_zai_selection(db_session) -> None:
     assert persisted.value == "openai/glm-4.7-flash"
 
 
-@pytest.mark.asyncio
-async def test_update_llm_model_rejects_unsupported_provider_for_extraction(db_session) -> None:
+def test_update_llm_model_rejects_unsupported_provider_for_extraction(db_session) -> None:
     payload = LLMModelUpdate(model_id="groq/qwen/qwen3-32b", use_case="extraction")
 
     with pytest.raises(HTTPException) as exc_info:
-        await update_llm_model(request=payload, db=db_session, _auth=True)
+        update_llm_model(request=payload, db=db_session, _auth=True)
 
     assert exc_info.value.status_code == 400
     assert "not supported for use_case 'extraction'" in str(exc_info.value)

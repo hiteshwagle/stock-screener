@@ -25,7 +25,7 @@ router = APIRouter()
 
 
 @router.get("/scheduled", response_model=TaskListResponse)
-async def get_scheduled_tasks(db: Session = Depends(get_db)):
+def get_scheduled_tasks(db: Session = Depends(get_db)):
     """
     Get all scheduled Celery tasks with their schedules and last run info.
 
@@ -44,7 +44,7 @@ async def get_scheduled_tasks(db: Session = Depends(get_db)):
 
 
 @router.post("/{task_name}/run", response_model=TriggerTaskResponse)
-async def trigger_task(
+def trigger_task(
     task_name: str,
     db: Session = Depends(get_db),
     x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
@@ -90,7 +90,7 @@ async def trigger_task(
 
 
 @router.get("/{task_name}/status/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(
+def get_task_status(
     task_name: str,
     task_id: str,
     db: Session = Depends(get_db)

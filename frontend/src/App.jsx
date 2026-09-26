@@ -1,6 +1,6 @@
 import { useState, useMemo, lazy, Suspense } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import { PersistQueryClientProvider, removeOldestQuery } from '@tanstack/react-query-persist-client';
 import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import {
@@ -133,6 +133,9 @@ const queryCachePersister = createSyncStoragePersister({
   storage: typeof window !== 'undefined' ? window.localStorage : undefined,
   key: 'stockscanner-query-cache',
   throttleTime: 1000,
+  // On a quota error, drop the oldest query and retry instead of silently
+  // skipping the write (which would leave an older snapshot to restore).
+  retry: removeOldestQuery,
 });
 
 // Keep persistence policy outside this component file so Fast Refresh remains
@@ -142,7 +145,9 @@ const persistOptions = {
   maxAge: 24 * 60 * 60 * 1000,
   buster: PERSISTED_QUERY_CACHE_BUSTER,
   dehydrateOptions: {
-    shouldDehydrateQuery: shouldDehydratePersistedQuery,
+    shouldDehydrateQuery: (query) => (
+      shouldDehydratePersistedQuery(query, queryClient.getQueryCache())
+    ),
   },
 };
 

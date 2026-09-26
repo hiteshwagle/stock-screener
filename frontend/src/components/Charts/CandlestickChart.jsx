@@ -256,9 +256,12 @@ function CandlestickChart({
     // `interactive` is intentionally not in the deps: it's only used as the
     // chart's initial handleScroll/handleScale value here, and the dedicated
     // applyOptions effect below picks up subsequent changes without remounting
-    // the chart (which would reset visible range / EMAs).
+    // the chart (which would reset visible range / EMAs). `symbol` is not a
+    // dep either: stepping through symbols reuses the chart instance and the
+    // data effect below swaps the series data, instead of tearing down and
+    // rebuilding the whole canvas per symbol.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [height, isDarkMode, symbol, compact]); // Re-initialize only when required visual inputs change
+  }, [height, isDarkMode, compact]); // Re-initialize only when required visual inputs change
 
   // Track symbol changes - set flag to restore range when symbol changes
   useEffect(() => {
@@ -304,7 +307,20 @@ function CandlestickChart({
 
   // Update chart data when data changes
   useEffect(() => {
-    if (!chartData || !chartRef.current) {
+    if (!chartRef.current) {
+      return;
+    }
+    if (!chartData) {
+      // The chart instance outlives symbol changes, so clear the previous
+      // symbol's series while the next one loads (or fails to).
+      [
+        volumeSeriesRef,
+        candlestickSeriesRef,
+        ema10SeriesRef,
+        ema20SeriesRef,
+        ema50SeriesRef,
+      ].forEach((seriesRef) => seriesRef.current?.setData([]));
+      latestCandleRef.current = null;
       return;
     }
 
@@ -455,7 +471,7 @@ function CandlestickChart({
     return () => {
       debouncedApply.cancel();
       // Only unsubscribe if this exact chart is still mounted. On unmount or a
-      // symbol-change recreate, the old chart (and its time scale) is already
+      // visual-input recreate, the old chart (and its time scale) is already
       // disposed, and calling unsubscribe on it would throw.
       if (chartRef.current === chart) {
         timeScale.unsubscribeVisibleTimeRangeChange(debouncedApply);

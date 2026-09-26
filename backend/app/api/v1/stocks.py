@@ -389,7 +389,7 @@ def _load_theme_summaries(db: Session, symbol: str) -> list[dict]:
 
 
 @router.get("/search", response_model=list[StockSearchResult])
-async def search_stocks(
+def search_stocks(
     q: str = Query(..., min_length=1, max_length=50),
     limit: int = Query(8, ge=1, le=20),
     db: Session = Depends(get_db),
@@ -452,7 +452,7 @@ async def get_stock_info(symbol: str = Depends(require_valid_symbol)):
 
 
 @router.get("/{symbol}/fundamentals")
-async def get_stock_fundamentals(
+def get_stock_fundamentals(
     symbol: str = Depends(require_valid_symbol),
     force_refresh: bool = False,
     db: Session = Depends(get_db),
@@ -477,7 +477,7 @@ async def get_stock_fundamentals(
 
 
 @router.get("/{symbol}/technicals", response_model=StockTechnicals)
-async def get_stock_technicals(
+def get_stock_technicals(
     symbol: str = Depends(require_valid_symbol),
     force_refresh: bool = False,
     db: Session = Depends(get_db),
@@ -504,7 +504,7 @@ async def get_stock_technicals(
 
 
 @router.get("/{symbol}", response_model=StockData)
-async def get_stock_data(
+def get_stock_data(
     symbol: str = Depends(require_valid_symbol),
     include_fundamentals: bool = True,
     include_technicals: bool = True,
@@ -542,7 +542,7 @@ async def get_stock_data(
 
 
 @router.get("/{symbol}/industry")
-async def get_stock_industry(
+def get_stock_industry(
     symbol: str = Depends(require_valid_symbol),
     db: Session = Depends(get_db),
 ):
@@ -602,7 +602,7 @@ async def get_stock_industry(
 
 
 @router.get("/{symbol}/chart-data")
-async def get_chart_data(
+def get_chart_data(
     symbol: str = Depends(require_valid_symbol),
     db: Session = Depends(get_db),
     uow=Depends(get_uow),
@@ -637,7 +637,7 @@ async def get_chart_data(
 
 
 @router.get("/{symbol}/decision-dashboard", response_model=StockDecisionDashboardResponse)
-async def get_stock_decision_dashboard(
+def get_stock_decision_dashboard(
     symbol: str = Depends(require_valid_symbol),
     profile: str | None = Query(None),
     db: Session = Depends(get_db),
@@ -794,7 +794,7 @@ async def get_stock_decision_dashboard(
 
 
 @router.get("/{symbol}/peers", response_model=list[ScanResultItem])
-async def get_stock_peers(
+def get_stock_peers(
     symbol: str = Depends(require_valid_symbol),
     peer_type: str = Query("industry", pattern="^(industry|sector)$"),
     db: Session = Depends(get_db),
@@ -934,7 +934,7 @@ async def get_stock_fundamentals_batch(payload: FundamentalsBatchRequest):
 
 
 @router.get("/{symbol}/validation", response_model=StockValidationResponse)
-async def get_stock_validation(
+def get_stock_validation(
     symbol: str = Depends(require_valid_symbol),
     lookback_days: int = Query(365, ge=30, le=365),
     db: Session = Depends(get_db),

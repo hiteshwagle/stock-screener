@@ -217,7 +217,7 @@ def _require_task_controls() -> None:
 
 
 @router.get("/rankings/current", response_model=GroupRankingsResponse)
-async def get_current_rankings(
+def get_current_rankings(
     limit: int = Query(50, ge=1, le=197, description="Number of groups to return"),
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
     as_of_date: date | None = Query(None, description="Optional YYYY-MM-DD snapshot date"),
@@ -293,7 +293,7 @@ def _group_detail_response(detail: dict, *, market: str) -> GroupDetailResponse:
 
 
 @router.get("/rrg/scopes", response_model=RRGBundleResponse)
-async def get_rrg_scopes(
+def get_rrg_scopes(
     tail_weeks: int = Query(8, ge=2, le=20, description="Number of weekly tail points"),
     limit: int = Query(197, ge=1, le=197, description="Top-N series by rank"),
     market: str = Query("US", description=RRG_MARKET_QUERY_DESCRIPTION),
@@ -347,7 +347,7 @@ async def get_rrg_scopes(
 
 
 @router.get("/rrg", response_model=RRGResponse)
-async def get_rrg(
+def get_rrg(
     tail_weeks: int = Query(8, ge=2, le=20, description="Number of weekly tail points"),
     scope: str = Query(
         "groups", pattern="^(groups|sectors)$", description="groups or sectors"
@@ -403,7 +403,7 @@ async def get_rrg(
 
 
 @router.get("/bootstrap", response_model=UISnapshotEnvelope)
-async def get_groups_bootstrap(
+def get_groups_bootstrap(
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
     db: Session = Depends(get_db),
     snapshot_service=Depends(get_ui_snapshot_service),
@@ -436,7 +436,7 @@ async def get_groups_bootstrap(
 
 
 @router.get("/rankings/movers", response_model=MoversResponse)
-async def get_rank_movers(
+def get_rank_movers(
     period: str = Query("1w", pattern="^(1w|1m|3m|6m)$", description="Time period"),
     limit: int = Query(20, ge=1, le=50, description="Number of movers per direction"),
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
@@ -485,7 +485,7 @@ async def get_rank_movers(
 
 
 @router.get("/rankings/detail", response_model=GroupDetailResponse)
-async def get_group_detail(
+def get_group_detail(
     group: str = Query(..., description="IBD industry group name"),
     days: int = Query(180, ge=1, le=365, description="Days of history to retrieve"),
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
@@ -696,7 +696,7 @@ async def trigger_backfill(
 
 
 @router.get("/summary")
-async def get_rankings_summary(db: Session = Depends(get_db)):
+def get_rankings_summary(db: Session = Depends(get_db)):
     """
     Get summary statistics for available ranking data.
 
@@ -742,7 +742,7 @@ async def get_rankings_summary(db: Session = Depends(get_db)):
 
 
 @router.get("/rankings/gaps")
-async def get_ranking_gaps(
+def get_ranking_gaps(
     max_days: int = Query(365, ge=30, le=365, description="Days to look back for gaps"),
     db: Session = Depends(get_db)
 ):

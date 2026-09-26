@@ -119,7 +119,7 @@ def _optional_page_spec(page: int | None, per_page: int | None) -> PageSpec | No
 
 
 @router.get("/{scan_id}/results", response_model=ScanResultsResponse)
-async def get_scan_results(
+def get_scan_results(
     scan_id: str,
     passes_only: bool = Query(False, description="Show only stocks passing template"),
     include_sparklines: bool = Query(True, description="Include sparkline data"),
@@ -156,7 +156,7 @@ async def get_scan_results(
 
 
 @router.post("/{scan_id}/results/query", response_model=ScanResultsResponse)
-async def query_scan_results(
+def query_scan_results(
     scan_id: str,
     request: ScanQueryRequest,
     uow: Any = Depends(get_uow),
@@ -189,7 +189,7 @@ async def query_scan_results(
 
 
 @router.get("/{scan_id}/symbols", response_model=ScanSymbolsResponse)
-async def get_scan_symbols(
+def get_scan_symbols(
     scan_id: str,
     passes_only: bool = Query(False, description="Show only stocks passing template"),
     page: int | None = Query(None, ge=1, description="Optional page number"),
@@ -217,7 +217,7 @@ async def get_scan_symbols(
 
 
 @router.post("/{scan_id}/symbols/query", response_model=ScanSymbolsResponse)
-async def query_scan_symbols(
+def query_scan_symbols(
     scan_id: str,
     request: ScanQueryRequest,
     uow: Any = Depends(get_uow),
@@ -241,7 +241,7 @@ async def query_scan_symbols(
 
 
 @router.get("/{scan_id}/export")
-async def export_scan_results(
+def export_scan_results(
     scan_id: str,
     export_format: str = Query(default="csv", pattern="^(csv)$", alias="format"),
     passes_only: bool = Query(False, description="Show only stocks passing template"),
@@ -268,7 +268,7 @@ async def export_scan_results(
 
 
 @router.post("/{scan_id}/export/query")
-async def export_grouped_scan_results(
+def export_grouped_scan_results(
     scan_id: str,
     request: ScanQueryRequest,
     uow: Any = Depends(get_uow),
@@ -292,7 +292,7 @@ async def export_grouped_scan_results(
 
 
 @router.get("/{scan_id}/filter-options", response_model=FilterOptionsResponse)
-async def get_filter_options(
+def get_filter_options(
     scan_id: str,
     uow: Any = Depends(get_uow),
     use_case: Any = Depends(get_get_filter_options_use_case),

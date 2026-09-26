@@ -91,7 +91,7 @@ def _bootstrap_already_running_error(status: RuntimeBootstrapStatus) -> HTTPExce
 
 
 @router.get("/app-capabilities", response_model=AppCapabilitiesResponse)
-async def get_app_capabilities(
+def get_app_capabilities(
     request: Request,
     db: Session = Depends(get_db),
 ) -> AppCapabilitiesResponse:
@@ -130,7 +130,7 @@ async def get_app_capabilities(
 
 
 @router.get("/runtime/bootstrap-status", response_model=RuntimeBootstrapStatusResponse)
-async def get_bootstrap_status(
+def get_bootstrap_status(
     db: Session = Depends(get_db),
 ) -> RuntimeBootstrapStatusResponse:
     """Return the persisted local bootstrap state and effective readiness."""
@@ -140,7 +140,7 @@ async def get_bootstrap_status(
 
 
 @router.get("/runtime/activity", response_model=RuntimeActivityResponse)
-async def get_runtime_activity(
+def get_runtime_activity(
     db: Session = Depends(get_db),
 ) -> RuntimeActivityResponse:
     """Return unified bootstrap and per-market background activity status."""
@@ -152,7 +152,7 @@ async def get_runtime_activity(
     response_model=RuntimeBootstrapStartResponse,
     dependencies=[Depends(require_server_session)],
 )
-async def start_runtime_bootstrap(
+def start_runtime_bootstrap(
     request: RuntimeBootstrapRequest,
     db: Session = Depends(get_db),
 ) -> RuntimeBootstrapStartResponse:
@@ -206,7 +206,7 @@ async def start_runtime_bootstrap(
     response_model=RuntimeBootstrapStatusResponse,
     dependencies=[Depends(require_server_session)],
 )
-async def update_runtime_markets(
+def update_runtime_markets(
     request: RuntimeMarketsUpdateRequest,
     db: Session = Depends(get_db),
 ) -> RuntimeBootstrapStatusResponse:

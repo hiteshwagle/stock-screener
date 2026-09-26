@@ -17,7 +17,7 @@ def _get_validation_service() -> ValidationService:
 
 
 @router.get("/overview", response_model=ValidationOverviewResponse)
-async def get_validation_overview(
+def get_validation_overview(
     source_kind: ValidationSourceKind = Query(ValidationSourceKind.SCAN_PICK),
     lookback_days: int = Query(90, ge=30, le=365),
     db: Session = Depends(get_db),

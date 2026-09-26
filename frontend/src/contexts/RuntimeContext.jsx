@@ -366,6 +366,21 @@ export function RuntimeProvider({ children }) {
     || capabilitiesQuery.isError
   );
 
+  // useMutation returns a fresh result object every render, so depend on the
+  // stable mutateAsync functions and the individual state fields instead;
+  // otherwise this memo never holds and every useRuntime() consumer
+  // re-renders whenever the provider does.
+  const loginAsync = loginMutation.mutateAsync;
+  const logoutAsync = logoutMutation.mutateAsync;
+  const bootstrapAsync = bootstrapMutation.mutateAsync;
+  const updateMarketsAsync = updateMarketsMutation.mutateAsync;
+  const isLoggingIn = loginMutation.isPending;
+  const loginError = loginMutation.error?.response?.data?.detail || loginMutation.error?.message || null;
+  const isLoggingOut = logoutMutation.isPending;
+  const isStartingBootstrap = bootstrapMutation.isPending;
+  const bootstrapError = bootstrapMutation.error?.response?.data?.detail || bootstrapMutation.error?.message || null;
+  const isUpdatingMarkets = updateMarketsMutation.isPending;
+
   const value = useMemo(() => {
     const features = capabilities.features ?? DEFAULT_CAPABILITIES.features;
     const auth = capabilities.auth ?? DEFAULT_CAPABILITIES.auth;
@@ -389,28 +404,34 @@ export function RuntimeProvider({ children }) {
       enabledMarkets: capabilities.enabled_markets ?? ['US'],
       bootstrapState: capabilities.bootstrap_state ?? 'not_started',
       supportedMarkets,
-      login: (password) => loginMutation.mutateAsync({ password }),
-      logout: () => logoutMutation.mutateAsync(),
+      login: (password) => loginAsync({ password }),
+      logout: () => logoutAsync(),
       startBootstrap: ({ primaryMarket, enabledMarkets }) => (
-        bootstrapMutation.mutateAsync({ primaryMarket, enabledMarkets })
+        bootstrapAsync({ primaryMarket, enabledMarkets })
       ),
       updateMarkets: ({ primaryMarket, enabledMarkets }) => (
-        updateMarketsMutation.mutateAsync({ primaryMarket, enabledMarkets })
+        updateMarketsAsync({ primaryMarket, enabledMarkets })
       ),
-      isLoggingIn: loginMutation.isPending,
-      loginError: loginMutation.error?.response?.data?.detail || loginMutation.error?.message || null,
-      isLoggingOut: logoutMutation.isPending,
-      isStartingBootstrap: bootstrapMutation.isPending,
-      bootstrapError: bootstrapMutation.error?.response?.data?.detail || bootstrapMutation.error?.message || null,
-      isUpdatingMarkets: updateMarketsMutation.isPending,
+      isLoggingIn,
+      loginError,
+      isLoggingOut,
+      isStartingBootstrap,
+      bootstrapError,
+      isUpdatingMarkets,
     };
   }, [
-    bootstrapMutation,
+    bootstrapAsync,
+    bootstrapError,
     capabilities,
-    loginMutation,
-    logoutMutation,
+    isLoggingIn,
+    isLoggingOut,
+    isStartingBootstrap,
+    isUpdatingMarkets,
+    loginAsync,
+    loginError,
+    logoutAsync,
     runtimeReady,
-    updateMarketsMutation,
+    updateMarketsAsync,
   ]);
 
   return <RuntimeContext.Provider value={value}>{children}</RuntimeContext.Provider>;

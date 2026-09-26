@@ -68,7 +68,7 @@ def _is_duplicate_watchlist_symbol_error(exc: IntegrityError) -> bool:
 
 @router.get("", response_model=WatchlistListResponse, include_in_schema=False)
 @router.get("/", response_model=WatchlistListResponse)
-async def list_watchlists(db: Session = Depends(get_db)):
+def list_watchlists(db: Session = Depends(get_db)):
     """Get all user watchlists ordered by position."""
     watchlists = db.query(UserWatchlist).order_by(UserWatchlist.position).all()
     return WatchlistListResponse(
@@ -78,7 +78,7 @@ async def list_watchlists(db: Session = Depends(get_db)):
 
 
 @router.get("/memberships", response_model=WatchlistMembershipResponse)
-async def get_watchlist_memberships(
+def get_watchlist_memberships(
     symbols: str = Query(..., min_length=1, max_length=2000),
     db: Session = Depends(get_db),
 ):
@@ -111,7 +111,7 @@ async def get_watchlist_memberships(
 
 @router.post("", response_model=WatchlistResponse, include_in_schema=False)
 @router.post("/", response_model=WatchlistResponse)
-async def create_watchlist(data: WatchlistCreate, db: Session = Depends(get_db)):
+def create_watchlist(data: WatchlistCreate, db: Session = Depends(get_db)):
     """Create a new watchlist."""
     existing = db.query(UserWatchlist).filter(UserWatchlist.name == data.name).first()
     if existing:
@@ -132,7 +132,7 @@ async def create_watchlist(data: WatchlistCreate, db: Session = Depends(get_db))
 
 
 @router.put("/{watchlist_id}", response_model=WatchlistResponse)
-async def update_watchlist(watchlist_id: int, updates: WatchlistUpdate, db: Session = Depends(get_db)):
+def update_watchlist(watchlist_id: int, updates: WatchlistUpdate, db: Session = Depends(get_db)):
     """Update watchlist properties."""
     watchlist = db.query(UserWatchlist).filter(UserWatchlist.id == watchlist_id).first()
     if not watchlist:
@@ -153,7 +153,7 @@ async def update_watchlist(watchlist_id: int, updates: WatchlistUpdate, db: Sess
 
 
 @router.delete("/{watchlist_id}")
-async def delete_watchlist(watchlist_id: int, db: Session = Depends(get_db)):
+def delete_watchlist(watchlist_id: int, db: Session = Depends(get_db)):
     """Delete a watchlist and all its items (cascade)."""
     watchlist = db.query(UserWatchlist).filter(UserWatchlist.id == watchlist_id).first()
     if not watchlist:
@@ -165,7 +165,7 @@ async def delete_watchlist(watchlist_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/reorder")
-async def reorder_watchlists(
+def reorder_watchlists(
     reorder_data: ReorderWatchlistsRequest,
     db: Session = Depends(get_db)
 ):
@@ -181,7 +181,7 @@ async def reorder_watchlists(
 # ================= Watchlist Data (with sparklines and price changes) =================
 
 @router.get("/{watchlist_id}/data", response_model=WatchlistDataResponse)
-async def get_watchlist_data(watchlist_id: int, db: Session = Depends(get_db)):
+def get_watchlist_data(watchlist_id: int, db: Session = Depends(get_db)):
     """
     Get complete watchlist data with items, sparklines, and price changes.
     Computes min/max bounds across ALL items for bar chart scaling.
@@ -237,7 +237,7 @@ async def get_watchlist_data(watchlist_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{watchlist_id}/stewardship", response_model=WatchlistStewardshipResponse)
-async def get_watchlist_stewardship(
+def get_watchlist_stewardship(
     watchlist_id: int,
     as_of_date: date | None = Query(None),
     profile: str | None = Query(None),
@@ -418,7 +418,7 @@ def _compute_price_change_bounds(stock_data_map: Dict) -> Dict[str, PriceChangeB
 # ================= Item CRUD =================
 
 @router.post("/{watchlist_id}/items", response_model=WatchlistItemResponse)
-async def add_item(
+def add_item(
     watchlist_id: int,
     item_data: WatchlistItemCreate,
     db: Session = Depends(get_db)
@@ -470,7 +470,7 @@ async def add_item(
 
 
 @router.post("/{watchlist_id}/items/bulk", response_model=List[WatchlistItemResponse])
-async def bulk_add_items(
+def bulk_add_items(
     watchlist_id: int,
     bulk_data: BulkAddItemsRequest,
     db: Session = Depends(get_db)
@@ -539,7 +539,7 @@ async def bulk_add_items(
 
 
 @router.post("/{watchlist_id}/items/import", response_model=WatchlistImportResult)
-async def import_items(
+def import_items(
     watchlist_id: int,
     import_data: WatchlistImportRequest,
     db: Session = Depends(get_db),
@@ -625,7 +625,7 @@ async def import_items(
 
 
 @router.put("/items/{item_id}", response_model=WatchlistItemResponse)
-async def update_item(
+def update_item(
     item_id: int,
     updates: WatchlistItemUpdate,
     db: Session = Depends(get_db)
@@ -648,7 +648,7 @@ async def update_item(
 
 
 @router.delete("/items/{item_id}")
-async def remove_item(item_id: int, db: Session = Depends(get_db)):
+def remove_item(item_id: int, db: Session = Depends(get_db)):
     """Remove an item from a watchlist."""
     item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
     if not item:
@@ -660,7 +660,7 @@ async def remove_item(item_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{watchlist_id}/items/reorder")
-async def reorder_items(
+def reorder_items(
     watchlist_id: int,
     reorder_data: ReorderItemsRequest,
     db: Session = Depends(get_db)

@@ -341,7 +341,7 @@ async def get_llm_config(
 
 
 @router.post("/config/llm")
-async def update_llm_model(
+def update_llm_model(
     request: LLMModelUpdate,
     db: Session = Depends(get_db),
     _auth: AdminPrincipal = Depends(require_admin),
@@ -466,7 +466,7 @@ async def get_ollama_models(
 
 
 @router.get("/config/theme-policies", response_model=ThemePolicyConfigResponse)
-async def get_theme_policy_config(
+def get_theme_policy_config(
     pipeline: str,
     db: Session = Depends(get_db),
     _auth: AdminPrincipal = Depends(require_admin),
@@ -499,7 +499,7 @@ async def get_theme_policy_config(
 
 
 @router.post("/config/theme-policies", response_model=ThemePolicyUpdateResponse)
-async def update_theme_policy(
+def update_theme_policy(
     request: ThemePolicyUpdateRequest,
     db: Session = Depends(get_db),
     _auth: AdminPrincipal = Depends(require_admin),
@@ -630,7 +630,7 @@ async def update_theme_policy(
 
 
 @router.post("/config/theme-policies/promote-staged", response_model=ThemePolicyUpdateResponse)
-async def promote_staged_theme_policy(
+def promote_staged_theme_policy(
     pipeline: str,
     note: str | None = None,
     db: Session = Depends(get_db),
@@ -649,13 +649,13 @@ async def promote_staged_theme_policy(
         note=note or staged.get("note"),
         mode="apply",
     )
-    return await update_theme_policy(
+    return update_theme_policy(
         request=request, db=db, _auth=_auth
     )
 
 
 @router.post("/config/theme-policies/revert", response_model=ThemePolicyUpdateResponse)
-async def revert_theme_policy(
+def revert_theme_policy(
     request: ThemePolicyRevertRequest,
     db: Session = Depends(get_db),
     _auth: AdminPrincipal = Depends(require_admin),
@@ -681,6 +681,6 @@ async def revert_theme_policy(
         note=request.note or f"Reverted from {request.version_id}",
         mode="apply",
     )
-    return await update_theme_policy(
+    return update_theme_policy(
         request=update_request, db=db, _auth=_auth
     )

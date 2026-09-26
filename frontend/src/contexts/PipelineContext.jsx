@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getPipelineStatus } from '../api/themes';
 import { PipelineContext } from './pipelineContextStore';
@@ -74,7 +74,7 @@ export function PipelineProvider({ children }) {
     (pipelineStatus?.status === 'completed' && pipelineRunId !== null) ||
     (pipelineStatus?.status === 'failed' && pipelineRunId !== null);
 
-  const value = {
+  const value = useMemo(() => ({
     pipelineRunId,
     pipelineStatus,
     isPipelineRunning,
@@ -83,7 +83,16 @@ export function PipelineProvider({ children }) {
     startPipeline,
     closePipelineCard,
     toggleMinimize,
-  };
+  }), [
+    pipelineRunId,
+    pipelineStatus,
+    isPipelineRunning,
+    isCardVisible,
+    isMinimized,
+    startPipeline,
+    closePipelineCard,
+    toggleMinimize,
+  ]);
 
   return (
     <PipelineContext.Provider value={value}>

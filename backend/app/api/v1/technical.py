@@ -84,7 +84,7 @@ async def scan_minervini(
 
 
 @router.get("/{symbol}/rs-rating")
-async def get_rs_rating(
+def get_rs_rating(
     symbol: str,
     db: Session = Depends(get_db),
     market_rs_reader: MarketRsReader = Depends(get_market_rs_reader),

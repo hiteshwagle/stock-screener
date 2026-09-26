@@ -23,7 +23,7 @@ router = APIRouter()
 
 @router.get("", response_model=FilterPresetListResponse, include_in_schema=False)
 @router.get("/", response_model=FilterPresetListResponse)
-async def list_presets(db: Session = Depends(get_db)):
+def list_presets(db: Session = Depends(get_db)):
     """Get all filter presets ordered by position."""
     presets = db.query(FilterPreset).order_by(FilterPreset.position).all()
 
@@ -55,7 +55,7 @@ async def list_presets(db: Session = Depends(get_db)):
 
 @router.post("", response_model=FilterPresetResponse, include_in_schema=False)
 @router.post("/", response_model=FilterPresetResponse)
-async def create_preset(data: FilterPresetCreate, db: Session = Depends(get_db)):
+def create_preset(data: FilterPresetCreate, db: Session = Depends(get_db)):
     """Create a new filter preset."""
     existing = db.query(FilterPreset).filter(FilterPreset.name == data.name).first()
     if existing:
@@ -89,7 +89,7 @@ async def create_preset(data: FilterPresetCreate, db: Session = Depends(get_db))
 
 
 @router.put("/{preset_id}", response_model=FilterPresetResponse)
-async def update_preset(preset_id: int, updates: FilterPresetUpdate, db: Session = Depends(get_db)):
+def update_preset(preset_id: int, updates: FilterPresetUpdate, db: Session = Depends(get_db)):
     """Update preset properties."""
     preset = db.query(FilterPreset).filter(FilterPreset.id == preset_id).first()
     if not preset:
@@ -135,7 +135,7 @@ async def update_preset(preset_id: int, updates: FilterPresetUpdate, db: Session
 
 
 @router.delete("/{preset_id}")
-async def delete_preset(preset_id: int, db: Session = Depends(get_db)):
+def delete_preset(preset_id: int, db: Session = Depends(get_db)):
     """Delete a filter preset."""
     preset = db.query(FilterPreset).filter(FilterPreset.id == preset_id).first()
     if not preset:
@@ -147,7 +147,7 @@ async def delete_preset(preset_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/reorder")
-async def reorder_presets(
+def reorder_presets(
     reorder_data: ReorderPresetsRequest,
     db: Session = Depends(get_db)
 ):

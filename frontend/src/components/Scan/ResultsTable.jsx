@@ -15,6 +15,7 @@ import {
   Box,
   CircularProgress,
   IconButton,
+  styled,
 } from '@mui/material';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
@@ -159,6 +160,93 @@ const getStatusChipProps = (row) => {
   return null;
 };
 
+// Static body-cell styles live on the row as class selectors so each render
+// only resolves one style object per row, instead of running MUI's `sx`
+// resolution for ~48 cells per row on every page, sort, or scroll update.
+const CELL_WIDTHS = [35, 40, 42, 45, 50, 55, 60, 65, 70, 75, 80, 110, 140, 180];
+const COLOR_CLASS_PATHS = [
+  'text.primary',
+  'text.secondary',
+  'text.disabled',
+  'primary.main',
+  'success.main',
+  'success.light',
+  'warning.main',
+  'error.main',
+];
+const colorClass = (path) => (
+  COLOR_CLASS_PATHS.includes(path) ? `rt-c-${path.replace('.', '-')}` : ''
+);
+const resolvePaletteColor = (palette, path) => (
+  path.split('.').reduce((value, key) => value?.[key], palette)
+);
+const stopPropagation = (event) => event.stopPropagation();
+
+const ResultRow = styled(TableRow)(({ theme }) => ({
+  height: ROW_HEIGHT,
+  cursor: 'default',
+  '&.rt-clickable': { cursor: 'pointer' },
+  ...Object.fromEntries(CELL_WIDTHS.map((width) => [
+    `& .rt-w${width}`,
+    { width, minWidth: width },
+  ])),
+  ...Object.fromEntries(COLOR_CLASS_PATHS.map((path) => [
+    `& .${colorClass(path)}`,
+    { color: resolvePaletteColor(theme.palette, path) },
+  ])),
+  '& .rt-mono': { fontFamily: 'monospace' },
+  '& .rt-strong': { fontWeight: 600 },
+  '& .rt-ellipsis': { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  '& .rt-p2': { padding: '2px' },
+  '& .rt-p4': { padding: '4px' },
+  '& .rt-py4': { paddingTop: theme.spacing(0.5), paddingBottom: theme.spacing(0.5) },
+  '& .rt-symbol': {
+    width: SYMBOL_COLUMN_WIDTH,
+    minWidth: SYMBOL_COLUMN_WIDTH,
+    maxWidth: SYMBOL_COLUMN_WIDTH,
+    paddingTop: '4px',
+    paddingBottom: '4px',
+    overflow: 'hidden',
+  },
+  '& .rt-sym-stack': {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: theme.spacing(0.25),
+    minWidth: 0,
+  },
+  '& .rt-sym-line': {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(0.5),
+    minWidth: 0,
+    whiteSpace: 'nowrap',
+  },
+  '& .rt-sym-sub': {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(0.5),
+    minWidth: 0,
+  },
+  '& .rt-sym-text': { fontWeight: 600, lineHeight: 1.2, flexShrink: 0 },
+  '& .rt-sym-company': { display: 'block', lineHeight: 1.2, minWidth: 0, flex: 1 },
+  '& .rt-chart-button': { color: theme.palette.primary.main, padding: 0 },
+  '& .rt-icon': { fontSize: 14 },
+  '& .rt-dot': {
+    width: 10,
+    height: 10,
+    borderRadius: '50%',
+    backgroundColor: '#2196f3',
+    display: 'inline-block',
+  },
+  '& .rt-stage': {
+    color: 'white',
+    padding: '1px 4px',
+    borderRadius: '2px',
+    fontSize: '10px',
+    fontWeight: 500,
+  },
+}));
+
 /**
  * Memoized table row component to prevent unnecessary re-renders
  */
@@ -194,40 +282,38 @@ const VirtualTableRow = memo(function VirtualTableRow({
     onOpenChart?.(row.symbol);
   }, [chartEnabled, onOpenChart, row.symbol]);
 
+  const check = (value, falseClass = 'rt-c-text-disabled') => (
+    value
+      ? <CheckIcon className="rt-icon rt-c-success-main" />
+      : <CloseIcon className={`rt-icon ${falseClass}`} />
+  );
+
   return (
-    <TableRow
+    <ResultRow
       hover
       onClick={handleRowClick}
       onMouseEnter={handleRowHover}
-      sx={{ cursor: onRowClick && chartEnabled ? 'pointer' : 'default', height: ROW_HEIGHT }}
+      className={onRowClick && chartEnabled ? 'rt-clickable' : undefined}
     >
       {showActions && (
-        <TableCell align="center" onClick={(e) => e.stopPropagation()} sx={{ p: '2px', width: 60, minWidth: 60 }}>
+        <TableCell align="center" onClick={stopPropagation} className="rt-p2 rt-w60">
           {chartEnabled ? (
             <IconButton
               size="small"
               onClick={handleChartClick}
-              sx={{ color: 'primary.main', p: 0 }}
+              className="rt-chart-button"
             >
-              <ShowChartIcon sx={{ fontSize: 14 }} />
+              <ShowChartIcon className="rt-icon" />
             </IconButton>
           ) : null}
           {showWatchlistMenu ? <AddToWatchlistMenu symbols={row.symbol} size="small" /> : null}
         </TableCell>
       )}
 
-      <TableCell
-        sx={{
-          width: SYMBOL_COLUMN_WIDTH,
-          minWidth: SYMBOL_COLUMN_WIDTH,
-          maxWidth: SYMBOL_COLUMN_WIDTH,
-          py: '4px',
-          overflow: 'hidden',
-        }}
-      >
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, minWidth: 0 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0, whiteSpace: 'nowrap' }}>
-            <Typography component="span" variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2, flexShrink: 0 }}>
+      <TableCell className="rt-symbol">
+        <div className="rt-sym-stack">
+          <div className="rt-sym-line">
+            <Typography component="span" variant="body2" className="rt-sym-text">
               {row.symbol}
             </Typography>
             <MarketBadge market={row.market} exchange={row.exchange} />
@@ -235,16 +321,16 @@ const VirtualTableRow = memo(function VirtualTableRow({
               fieldAvailability={row.field_availability}
               growthMetricBasis={row.growth_metric_basis}
             />
-          </Box>
+          </div>
           {row.company_name || statusChip || row.matched_groups?.length ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+            <div className="rt-sym-sub">
               {row.company_name ? (
                 <Typography
                   variant="caption"
                   color="text.secondary"
                   noWrap
                   title={row.company_name}
-                  sx={{ display: 'block', lineHeight: 1.2, minWidth: 0, flex: 1 }}
+                  className="rt-sym-company"
                 >
                   {row.company_name}
                 </Typography>
@@ -276,12 +362,12 @@ const VirtualTableRow = memo(function VirtualTableRow({
                   }}
                 />
               ) : null}
-            </Box>
+            </div>
           ) : null}
-        </Box>
+        </div>
       </TableCell>
 
-      <TableCell align="center" sx={{ p: '4px', width: 110, minWidth: 110 }}>
+      <TableCell align="center" className="rt-p4 rt-w110">
         <RSSparkline
           data={row.rs_sparkline_data}
           trend={row.rs_trend}
@@ -290,7 +376,7 @@ const VirtualTableRow = memo(function VirtualTableRow({
         />
       </TableCell>
 
-      <TableCell align="center" sx={{ p: '4px', width: 110, minWidth: 110 }}>
+      <TableCell align="center" className="rt-p4 rt-w110">
         <PriceSparkline
           data={row.price_sparkline_data}
           trend={row.price_trend}
@@ -301,102 +387,96 @@ const VirtualTableRow = memo(function VirtualTableRow({
         />
       </TableCell>
 
-      <TableCell align="center" sx={{ color: 'text.secondary', width: 80, minWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <TableCell align="center" className="rt-c-text-secondary rt-w80 rt-ellipsis">
         {row.gics_sector || '-'}
       </TableCell>
 
-      <TableCell align="left" sx={{ color: 'text.secondary', width: 140, minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <TableCell align="left" className="rt-c-text-secondary rt-w140 rt-ellipsis">
         {row.ibd_industry_group || '-'}
       </TableCell>
 
-      <TableCell align="left" sx={{ color: 'text.secondary', width: 180, minWidth: 180, py: 0.5 }}>
+      <TableCell align="left" className="rt-c-text-secondary rt-w180 rt-py4">
         <MarketThemesList themes={row.market_themes} variant="compact" />
       </TableCell>
 
-      <TableCell align="center" title={getGroupRankTooltip(row)} sx={{
-        fontFamily: 'monospace',
-        color: getGroupRankColor(row.ibd_group_rank),
-        fontWeight: row.ibd_group_rank && row.ibd_group_rank <= 20 ? 600 : 400,
-        width: 45, minWidth: 45
-      }}>
+      <TableCell
+        align="center"
+        title={getGroupRankTooltip(row)}
+        className={`rt-mono rt-w45 ${colorClass(getGroupRankColor(row.ibd_group_rank))}${
+          row.ibd_group_rank && row.ibd_group_rank <= 20 ? ' rt-strong' : ''
+        }`}
+      >
         {row.ibd_group_rank ?? '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontWeight: 600, color: 'primary.main', fontFamily: 'monospace', width: 50, minWidth: 50 }}>
+      <TableCell align="center" className="rt-mono rt-w50 rt-strong rt-c-primary-main">
         {row.composite_score?.toFixed(1) || '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.minervini_score != null ? row.minervini_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.canslim_score != null ? row.canslim_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.ipo_score != null ? row.ipo_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.custom_score != null ? row.custom_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 50, minWidth: 50 }}>
+      <TableCell align="center" className="rt-mono rt-w50">
         {row.volume_breakthrough_score != null ? row.volume_breakthrough_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.se_setup_score != null ? row.se_setup_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ color: 'text.secondary', width: 55, minWidth: 55, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <TableCell align="center" className="rt-c-text-secondary rt-w55 rt-ellipsis">
         {row.se_pattern_primary || '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 50, minWidth: 50 }}>
+      <TableCell align="center" className="rt-mono rt-w50">
         {row.se_distance_to_pivot_pct != null ? `${row.se_distance_to_pivot_pct.toFixed(1)}%` : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.se_bb_width_pctile_252 != null ? row.se_bb_width_pctile_252.toFixed(0) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.se_volume_vs_50d != null ? `${row.se_volume_vs_50d.toFixed(1)}x` : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 35, minWidth: 35 }}>
-        {row.se_rs_line_new_high == null ? '-' : row.se_rs_line_new_high ? (
-          <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} />
-        ) : (
-          <CloseIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
-        )}
+      <TableCell align="center" className="rt-w35">
+        {row.se_rs_line_new_high == null ? '-' : check(row.se_rs_line_new_high)}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 42, minWidth: 42 }}>
+      <TableCell align="center" className="rt-w42">
         {row.se_rs_line_blue_dot ? (
-          <Box
-            sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#2196f3', display: 'inline-block' }}
-            title="Setup Engine RS line at new high before price"
-          />
+          <span className="rt-dot" title="Setup Engine RS line at new high before price" />
         ) : (
-          <Box component="span" sx={{ color: 'text.disabled' }}>-</Box>
+          <span className="rt-c-text-disabled">-</span>
         )}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 42, minWidth: 42 }}>
+      <TableCell align="center" className="rt-w42">
         {row.rs_line_blue_dot_recent ? (
-          <Box
-            sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#2196f3', display: 'inline-block' }}
+          <span
+            className="rt-dot"
             title={row.rs_line_new_high_date ? `RS blue dot: latest RS high ${row.rs_line_new_high_date}` : 'RS blue dot within 5 trading days'}
           />
         ) : (
-          <Box component="span" sx={{ color: 'text.disabled' }}>-</Box>
+          <span className="rt-c-text-disabled">-</span>
         )}
       </TableCell>
 
-      <TableCell align="right" sx={{ fontFamily: 'monospace', width: 55, minWidth: 55 }}>
+      <TableCell align="right" className="rt-mono rt-w55">
         {row.se_pivot_price != null ? `$${row.se_pivot_price.toFixed(2)}` : '-'}
       </TableCell>
 
@@ -406,136 +486,110 @@ const VirtualTableRow = memo(function VirtualTableRow({
         onOpenEvidence={onOpenOpportunity}
       />
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 40, minWidth: 40 }}>
+      <TableCell align="center" className="rt-mono rt-w40">
         {row.rs_rating?.toFixed(0) || '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 40, minWidth: 40 }}>
+      <TableCell align="center" className="rt-mono rt-w40">
         {row.rs_rating_1m?.toFixed(0) || '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 40, minWidth: 40 }}>
+      <TableCell align="center" className="rt-mono rt-w40">
         {row.rs_rating_3m?.toFixed(0) || '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.rs_rating_12m?.toFixed(0) || '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.beta != null ? row.beta.toFixed(2) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 45, minWidth: 45 }}>
+      <TableCell align="center" className="rt-mono rt-w45">
         {row.beta_adj_rs != null ? row.beta_adj_rs.toFixed(0) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', color: getEpsRatingColor(row.eps_rating), width: 55, minWidth: 55 }}>
+      <TableCell align="center" className={`rt-mono rt-w55 ${colorClass(getEpsRatingColor(row.eps_rating))}`}>
         {row.eps_rating != null ? row.eps_rating : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 40, minWidth: 40 }}>
+      <TableCell align="center" className="rt-w40">
         {row.stage != null ? (
-          <Box
-            component="span"
-            sx={{
-              backgroundColor: getStageColor(row.stage),
-              color: 'white',
-              padding: '1px 4px',
-              borderRadius: '2px',
-              fontSize: '10px',
-              fontWeight: 500,
-            }}
-          >
+          <span className="rt-stage" style={{ backgroundColor: getStageColor(row.stage) }}>
             S{row.stage}
-          </Box>
+          </span>
         ) : (
           '-'
         )}
       </TableCell>
 
-      <TableCell align="right" sx={{ fontFamily: 'monospace', width: 65, minWidth: 65 }}>
+      <TableCell align="right" className="rt-mono rt-w65">
         {formatLocalCurrency(row.current_price, row.currency)}
       </TableCell>
 
-      <TableCell align="right" sx={{ fontFamily: 'monospace', width: 60, minWidth: 60 }}>
+      <TableCell align="right" className="rt-mono rt-w60">
         {formatLargeNumber(row.volume, getCurrencyPrefix(row.currency))}
       </TableCell>
 
-      <TableCell align="right" sx={{ fontFamily: 'monospace', width: 75, minWidth: 75 }}>
+      <TableCell align="right" className="rt-mono rt-w75">
         {mcapDisplay === MCAP_DISPLAY.USD
           ? formatLargeNumber(row.market_cap_usd, '$')
           : formatLargeNumber(row.market_cap, getCurrencyPrefix(row.currency))}
       </TableCell>
 
-      <TableCell align="right" sx={{ fontFamily: 'monospace', width: 70, minWidth: 70 }}>
+      <TableCell align="right" className="rt-mono rt-w70">
         {formatLargeNumber(row.adv_usd, '$')}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', color: getIpoAgeColor(row.ipo_date), width: 50, minWidth: 50 }}>
+      <TableCell align="center" className={`rt-mono rt-w50 ${colorClass(getIpoAgeColor(row.ipo_date))}`}>
         {formatIpoAge(row.ipo_date)}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', color: getGrowthColor(row.eps_growth_qq), width: 50, minWidth: 50 }}>
+      <TableCell align="center" className={`rt-mono rt-w50 ${colorClass(getGrowthColor(row.eps_growth_qq))}`}>
         {row.eps_growth_qq != null ? `${row.eps_growth_qq.toFixed(0)}%` : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', color: getGrowthColor(row.sales_growth_qq), width: 50, minWidth: 50 }}>
+      <TableCell align="center" className={`rt-mono rt-w50 ${colorClass(getGrowthColor(row.sales_growth_qq))}`}>
         {row.sales_growth_qq != null ? `${row.sales_growth_qq.toFixed(0)}%` : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 50, minWidth: 50 }}>
+      <TableCell align="center" className="rt-mono rt-w50">
         {row.adr_percent != null ? `${row.adr_percent.toFixed(1)}%` : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 35, minWidth: 35 }}>
-        {row.ma_alignment ? (
-          <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} />
-        ) : (
-          <CloseIcon sx={{ fontSize: 14, color: 'error.main' }} />
-        )}
+      <TableCell align="center" className="rt-w35">
+        {check(row.ma_alignment, 'rt-c-error-main')}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 40, minWidth: 40 }}>
-        {row.vcp_detected ? (
-          <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} />
-        ) : (
-          <CloseIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
-        )}
+      <TableCell align="center" className="rt-w40">
+        {check(row.vcp_detected)}
       </TableCell>
 
-      <TableCell align="center" sx={{ fontFamily: 'monospace', width: 50, minWidth: 50 }}>
+      <TableCell align="center" className="rt-mono rt-w50">
         {row.vcp_score != null ? row.vcp_score.toFixed(1) : '-'}
       </TableCell>
 
-      <TableCell align="right" sx={{ fontFamily: 'monospace', width: 55, minWidth: 55 }}>
+      <TableCell align="right" className="rt-mono rt-w55">
         {row.vcp_pivot != null ? row.vcp_pivot.toFixed(2) : '-'}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 35, minWidth: 35 }}>
-        {row.vcp_ready_for_breakout ? (
-          <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} />
-        ) : (
-          <CloseIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
-        )}
+      <TableCell align="center" className="rt-w35">
+        {check(row.vcp_ready_for_breakout)}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 40, minWidth: 40 }}>
-        {row.passes_template ? (
-          <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} />
-        ) : (
-          <CloseIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
-        )}
+      <TableCell align="center" className="rt-w40">
+        {check(row.passes_template)}
       </TableCell>
 
-      <TableCell align="center" sx={{ width: 80, minWidth: 80 }}>
+      <TableCell align="center" className="rt-w80">
         <Chip
           label={row.rating}
           color={getRatingColor(row.rating)}
           size="small"
         />
       </TableCell>
-    </TableRow>
+    </ResultRow>
   );
 });
 

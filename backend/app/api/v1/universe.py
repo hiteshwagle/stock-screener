@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 @router.post("/refresh")
-async def refresh_universe(
+def refresh_universe(
     exchange: str = None,
     db: Session = Depends(get_db)
 ):
@@ -58,7 +58,7 @@ async def refresh_universe(
 
 
 @router.post("/import-csv")
-async def import_csv(
+def import_csv(
     csv_content: str = Body(None, embed=True),
     db: Session = Depends(get_db)
 ):
@@ -111,7 +111,7 @@ async def import_csv(
 
 
 @router.post("/import-hk-csv")
-async def import_hk_csv(
+def import_hk_csv(
     csv_content: str = Body(None, embed=True),
     source_name: str = Body("hk_manual_csv", embed=True),
     snapshot_id: str | None = Body(None, embed=True),
@@ -160,7 +160,7 @@ async def import_hk_csv(
 
 
 @router.post("/import-jp-csv")
-async def import_jp_csv(
+def import_jp_csv(
     csv_content: str = Body(None, embed=True),
     source_name: str = Body("jp_manual_csv", embed=True),
     snapshot_id: str | None = Body(None, embed=True),
@@ -209,7 +209,7 @@ async def import_jp_csv(
 
 
 @router.post("/import-tw-csv")
-async def import_tw_csv(
+def import_tw_csv(
     csv_content: str = Body(None, embed=True),
     source_name: str = Body("tw_manual_csv", embed=True),
     snapshot_id: str | None = Body(None, embed=True),
@@ -258,7 +258,7 @@ async def import_tw_csv(
 
 
 @router.get("/stats")
-async def get_universe_stats(db: Session = Depends(get_db)):
+def get_universe_stats(db: Session = Depends(get_db)):
     """
     Get stock universe statistics.
 
@@ -289,7 +289,7 @@ async def get_universe_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/stats/by-market")
-async def get_universe_market_audit(db: Session = Depends(get_db)):
+def get_universe_market_audit(db: Session = Depends(get_db)):
     """Get market-level universe audit summary for ops dashboards and launch gates."""
     try:
         stock_universe_service = get_stock_universe_service()
@@ -303,7 +303,7 @@ async def get_universe_market_audit(db: Session = Depends(get_db)):
 
 
 @router.post("/symbols")
-async def add_symbol(
+def add_symbol(
     symbol: str,
     name: str = "",
     is_common_stock: bool | None = None,
@@ -350,7 +350,7 @@ async def add_symbol(
 
 
 @router.delete("/symbols/{symbol}")
-async def deactivate_symbol(
+def deactivate_symbol(
     symbol: str,
     db: Session = Depends(get_db)
 ):
@@ -387,7 +387,7 @@ async def deactivate_symbol(
 
 
 @router.post("/refresh-sp500")
-async def refresh_sp500(db: Session = Depends(get_db)):
+def refresh_sp500(db: Session = Depends(get_db)):
     """
     Refresh S&P 500 membership for all stocks.
 

@@ -23,7 +23,7 @@ router = APIRouter()
 
 
 @router.get("/report", response_model=ValidationReportResponse)
-async def get_validation_report(
+def get_validation_report(
     limit: int = Query(100, ge=1, le=500, description="Maximum results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     error_type: Optional[str] = Query(
@@ -70,7 +70,7 @@ async def get_validation_report(
 
 
 @router.get("/summary", response_model=ValidationSummary)
-async def get_validation_summary(
+def get_validation_summary(
     days_back: int = Query(7, ge=1, le=90, description="Number of days to include in summary"),
     db: Session = Depends(get_db)
 ):
@@ -90,7 +90,7 @@ async def get_validation_summary(
 
 
 @router.get("/symbol/{symbol}", response_model=SymbolHistoryResponse)
-async def get_symbol_history(
+def get_symbol_history(
     symbol: str,
     limit: int = Query(20, ge=1, le=100, description="Maximum results to return"),
     db: Session = Depends(get_db)
@@ -119,7 +119,7 @@ async def get_symbol_history(
 
 
 @router.post("/resolve/{log_id}", response_model=ResolveResponse)
-async def resolve_failure(
+def resolve_failure(
     log_id: int,
     request: ResolveRequest,
     db: Session = Depends(get_db)
@@ -150,7 +150,7 @@ async def resolve_failure(
 
 
 @router.post("/resolve-symbol/{symbol}", response_model=ResolveResponse)
-async def resolve_all_for_symbol(
+def resolve_all_for_symbol(
     symbol: str,
     request: ResolveRequest,
     db: Session = Depends(get_db)

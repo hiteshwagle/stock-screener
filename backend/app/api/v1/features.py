@@ -34,7 +34,7 @@ router = APIRouter()
 
 
 @router.get("/runs", response_model=ListRunsResponse)
-async def list_runs(
+def list_runs(
     status: Optional[str] = Query(None, description="Filter by run status"),
     date_from: Optional[date] = Query(None, description="Start date (inclusive)"),
     date_to: Optional[date] = Query(None, description="End date (inclusive)"),
@@ -64,7 +64,7 @@ async def list_runs(
 
 
 @router.get("/compare", response_model=CompareRunsResponse)
-async def compare_runs(
+def compare_runs(
     run_a: int = Query(..., description="First run ID (baseline)"),
     run_b: int = Query(..., description="Second run ID (comparison)"),
     limit: int = Query(50, ge=1, le=500, description="Max movers to return"),

@@ -104,7 +104,7 @@ def get_breadth_contributors(
 
 
 @router.get("/current", response_model=BreadthResponse)
-async def get_current_breadth(
+def get_current_breadth(
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
     db: Session = Depends(get_db),
 ):
@@ -142,7 +142,7 @@ async def get_breadth_bootstrap(
 
 
 @router.get("/historical", response_model=List[BreadthResponse])
-async def get_historical_breadth(
+def get_historical_breadth(
     start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
     limit: int = Query(365, ge=1, le=730, description="Maximum number of records"),
@@ -195,7 +195,7 @@ async def get_historical_breadth(
 
 
 @router.get("/trend/{indicator}", response_model=TrendResponse)
-async def get_indicator_trend(
+def get_indicator_trend(
     indicator: str,
     days: int = Query(30, ge=1, le=730, description="Number of days to retrieve"),
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
@@ -271,7 +271,7 @@ async def get_indicator_trend(
 
 
 @router.post("/calculate", response_model=CalculationResponse)
-async def trigger_calculation(
+def trigger_calculation(
     request: CalculationRequest,
     background_tasks: BackgroundTasks,
     market: str | None = Query(None, description=OPTIONAL_MARKET_QUERY_DESCRIPTION),
@@ -317,7 +317,7 @@ async def trigger_calculation(
 
 
 @router.post("/backfill", response_model=BackfillResponse)
-async def trigger_backfill(
+def trigger_backfill(
     request: BackfillRequest,
     market: str | None = Query(None, description=OPTIONAL_MARKET_QUERY_DESCRIPTION),
     db: Session = Depends(get_db)
@@ -387,7 +387,7 @@ async def trigger_backfill(
 
 
 @router.get("/summary", response_model=BreadthSummary)
-async def get_breadth_summary(
+def get_breadth_summary(
     market: str = Query("US", description=MARKET_QUERY_DESCRIPTION),
     db: Session = Depends(get_db),
 ):

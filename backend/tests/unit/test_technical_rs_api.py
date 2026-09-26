@@ -45,8 +45,7 @@ def _add_stock(db, symbol="TEST", market="US"):
     db.commit()
 
 
-@pytest.mark.asyncio
-async def test_balanced_technical_rs_returns_canonical_snapshot_without_live_fetch(
+def test_balanced_technical_rs_returns_canonical_snapshot_without_live_fetch(
     universe_session,
     monkeypatch,
 ):
@@ -67,7 +66,7 @@ async def test_balanced_technical_rs_returns_canonical_snapshot_without_live_fet
         lambda: (_ for _ in ()).throw(AssertionError("live prices must not be fetched")),
     )
 
-    response = await technical.get_rs_rating(
+    response = technical.get_rs_rating(
         "test",
         db=universe_session,
         market_rs_reader=reader,
@@ -95,8 +94,7 @@ async def test_balanced_technical_rs_returns_canonical_snapshot_without_live_fet
     ]
 
 
-@pytest.mark.asyncio
-async def test_balanced_technical_rs_ineligible_stock_returns_not_enough_history(
+def test_balanced_technical_rs_ineligible_stock_returns_not_enough_history(
     universe_session,
     monkeypatch,
 ):
@@ -108,7 +106,7 @@ async def test_balanced_technical_rs_ineligible_stock_returns_not_enough_history
         lambda: (_ for _ in ()).throw(AssertionError("live prices must not be fetched")),
     )
 
-    response = await technical.get_rs_rating(
+    response = technical.get_rs_rating(
         "TEST",
         db=universe_session,
         market_rs_reader=reader,
@@ -120,8 +118,7 @@ async def test_balanced_technical_rs_ineligible_stock_returns_not_enough_history
     assert response["rs_as_of_date"] == "2026-07-17"
 
 
-@pytest.mark.asyncio
-async def test_technical_rs_returns_service_unavailable_when_publication_is_missing(
+def test_technical_rs_returns_service_unavailable_when_publication_is_missing(
     universe_session,
 ):
     _add_stock(universe_session)
@@ -134,7 +131,7 @@ async def test_technical_rs_returns_service_unavailable_when_publication_is_miss
             )
 
     with pytest.raises(HTTPException) as exc_info:
-        await technical.get_rs_rating(
+        technical.get_rs_rating(
             "TEST",
             db=universe_session,
             market_rs_reader=_UnavailableReader(),
@@ -146,8 +143,7 @@ async def test_technical_rs_returns_service_unavailable_when_publication_is_miss
     )
 
 
-@pytest.mark.asyncio
-async def test_legacy_technical_rs_uses_resolved_market_benchmark(
+def test_legacy_technical_rs_uses_resolved_market_benchmark(
     universe_session,
     monkeypatch,
 ):
@@ -171,7 +167,7 @@ async def test_legacy_technical_rs_uses_resolved_market_benchmark(
 
     monkeypatch.setattr(technical, "get_yfinance_service", _PriceService)
 
-    response = await technical.get_rs_rating(
+    response = technical.get_rs_rating(
         "0700.hk",
         db=universe_session,
         market_rs_reader=_LegacyReader(),

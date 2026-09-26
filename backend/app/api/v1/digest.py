@@ -21,7 +21,7 @@ def _get_digest_service() -> DigestService:
 
 
 @router.get("/daily", response_model=DailyDigestResponse)
-async def get_daily_digest(
+def get_daily_digest(
     as_of_date: date | None = Query(None),
     profile: str = Query(DEFAULT_PROFILE),
     db: Session = Depends(get_db),
@@ -33,7 +33,7 @@ async def get_daily_digest(
 
 
 @router.get("/daily/markdown", response_class=PlainTextResponse)
-async def get_daily_digest_markdown(
+def get_daily_digest_markdown(
     as_of_date: date | None = Query(None),
     profile: str = Query(DEFAULT_PROFILE),
     db: Session = Depends(get_db),

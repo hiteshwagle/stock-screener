@@ -58,6 +58,12 @@ _CORRECTION_SURVIVORS_MIGRATION = (
     / "versions"
     / "20260821_0028_seed_correction_survivors_preset.py"
 )
+_OPPORTUNITY_SUMMARY_MIGRATION = (
+    Path(__file__).parents[2]
+    / "alembic"
+    / "versions"
+    / "20260926_0058_index_opportunity_summary_counts.py"
+)
 
 
 def _load_migration(path: Path = _MIGRATION):
@@ -588,3 +594,286 @@ def test_daily_snapshot_service_filters_the_volume_field(monkeypatch):
             f"{svc.VOLUME_FILTER_FIELD} was not bounded by the market minimum: "
             f"{minimums}"
         )
+
+# ── Opportunity-summary counts (20260926_0058) ────────────────────────────
+#
+# This index serves a *projection*, not a filter, which is what makes it easy to
+# get wrong: the query that has to match it counts per state (both keys in the
+# WHERE clause) instead of grouping them. If the DDL and that predicate drift
+# apart by so much as a CAST, the planner declines the index, every count scans
+# the run on its own, and the Daily Snapshot lands in the 154 s full-scan case --
+# with no error anywhere.
+
+
+def _opportunity_summary_exprs() -> tuple[object, object]:
+    """The exact expressions the counted repository feeds the planner.
+
+    Taken from the repository's own shared definition, not rebuilt here. A guard
+    that re-derives the expression proves only that the test and the index agree;
+    it stays green while the repository switches to a different spelling, which
+    is precisely the failure that costs 154 s. Importing the definition makes the
+    repository the source of truth and the comparison meaningful.
+    """
+    from app.infra.db.repositories.opportunity_summary_repo import (
+        counted_opportunity_predicates,
+    )
+
+    return counted_opportunity_predicates()
+
+
+def _pg_text(expr) -> str:
+    """Compile to Postgres text, minus the table qualifier (DDL is unqualified).
+
+    ``literal_binds`` is required: the survivor predicate is an ``IN`` list, which
+    SQLAlchemy renders as an expanding (``POSTCOMPILE``) parameter in a plain
+    compile. The DDL needs the literal spelling, and so does the server — under
+    psycopg2 the driver interpolates the values client-side, so the planner sees
+    ``IN ('true', '1')`` and matches the index. Comparing the unexpanded form
+    would flag a drift that does not exist.
+    """
+    return str(
+        expr.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    ).replace("stock_feature_daily.", "")
+
+
+def _pg_text_runtime(expr) -> str:
+    """Compile as the *runtime* statement renders it, expanding params unexpanded.
+
+    The counted statement is compiled without ``literal_binds``, so the ``IN``
+    list appears as ``__[POSTCOMPILE_lower_1]``. Comparing a literal-bound
+    predicate against that text would always fail; this is the matching form for
+    statement-level checks. The server still sees literals, because psycopg2
+    interpolates client-side.
+    """
+    return str(expr.compile(dialect=postgresql.dialect())).replace(
+        "stock_feature_daily.", ""
+    )
+
+
+def test_opportunity_summary_migration_exprs_match_the_counted_predicates():
+    """Index expression must equal the predicate the counts compile to."""
+    migration = _load_migration(_OPPORTUNITY_SUMMARY_MIGRATION)
+    state, survivor = _opportunity_summary_exprs()
+
+    assert migration._state_expr() == _pg_text(state), (
+        "the indexed action_state expression drifted from the counted "
+        "predicate; the Postgres planner will stop using "
+        "ix_sfd_run_action_state_survivor and every count will scan the run"
+    )
+    assert migration._survivor_expr() == _pg_text(survivor), (
+        "the indexed survivor expression drifted from the counted predicate; "
+        "the survivor counts will fall back to a full JSON scan"
+    )
+
+
+def test_opportunity_summary_predicates_inline_their_json_keys():
+    """The keys must be SQL literals, not bind parameters.
+
+    ``details["action_state"].as_string()`` renders the key as
+    ``->> %(details_json_1)s``. psycopg2 happens to interpolate that on the
+    client, but a generic plan -- and any driver that binds server-side -- sees
+    a parameter, cannot match it to the index's inline literal, and gives up on
+    the index. ``json_text`` inlines the key; this pins that the counted
+    predicates go through it.
+    """
+    for expr in _opportunity_summary_exprs():
+        compiled = str(expr.compile(dialect=postgresql.dialect()))
+        assert "%(" not in compiled, (
+            f"the JSON key is a bind parameter, not an inline literal: {compiled}"
+        )
+        assert "->> 'action_state'" in compiled or "->> 'correction_survivor'" in compiled, (
+            compiled
+        )
+
+
+def test_opportunity_summary_migration_matches_the_repository_shape():
+    """The counted path must be the one the index was designed for.
+
+    Three ways to lose the index without touching the DDL:
+
+    * the feature-run path goes back to grouping, where the keys sit in the
+      projection and no expression index can serve them;
+    * the keys come from ``details["key"].as_string()``, which renders a bind
+      parameter a generic plan cannot match to the index's literal;
+    * the index puts ``survivor`` before ``action_state``, so the filtered column
+      is not reachable as an index condition.
+
+    All three were measured: 19,176-19,465 ms grouped, 154,462 ms counted without
+    the index, 19,768 ms with the wrong column order. The first two are checked
+    against the statement the repository actually issues, so they fail here
+    rather than only in a latency run nobody executes in CI.
+    """
+    from app.domain.scanning.opportunity_state import ActionState as _ActionState
+    from app.infra.db.repositories.opportunity_summary_repo import (
+        SqlOpportunityStateSummaryRepository,
+    )
+
+    captured: list[str] = []
+
+    class _FakeRow:
+        @property
+        def _mapping(self):
+            values = {"rows_total": 0, "survivor_count": 0}
+            for state in _ActionState:
+                values[f"state_{state.value}"] = 0
+                values[f"survivor_{state.value}"] = 0
+            return values
+
+    class _FakeSession:
+        def execute(self, statement):
+            captured.append(
+                str(statement.compile(dialect=postgresql.dialect())).replace(
+                    "stock_feature_daily.", ""
+                )
+            )
+
+            class _Result:
+                @staticmethod
+                def one():
+                    return _FakeRow()
+
+            return _Result()
+
+    repo = SqlOpportunityStateSummaryRepository.__new__(
+        SqlOpportunityStateSummaryRepository
+    )
+    repo._session = _FakeSession()
+
+    summary = repo.for_feature_run(7)
+
+    assert summary.rows_total == 0 and summary.survivor_count == 0
+    assert len(captured) == 1, captured
+    sql = captured[0]
+
+    assert "GROUP BY" not in sql.upper(), (
+        "the feature-run path grouped instead of counting; the keys sit in the "
+        "projection and the expression index cannot serve them"
+    )
+    for expr in _opportunity_summary_exprs():
+        assert _pg_text_runtime(expr) in sql, (
+            f"the counted predicate {_pg_text_runtime(expr)!r} is missing from the "
+            f"statement, so the index cannot match it: {sql}"
+        )
+
+    migration = _load_migration(_OPPORTUNITY_SUMMARY_MIGRATION)
+    output = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    migration.op = Operations(context)
+    migration._rebuild_invalid_indexes = lambda: None
+    migration._create_indexes()
+
+    statements = [
+        line for line in output.getvalue().splitlines() if line.startswith("CREATE INDEX")
+    ]
+    assert statements == [
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "ix_sfd_run_action_state_survivor ON stock_feature_daily (run_id, "
+        "(CAST(details_json ->> 'action_state' AS VARCHAR)), "
+        "(lower(details_json ->> 'correction_survivor') IN ('true', '1')));"
+    ], statements
+
+    # Column order is load-bearing: action_state must directly follow run_id.
+    assert "(run_id, (CAST(details_json ->> 'action_state'" in statements[0], (
+        "action_state must be the first expression after run_id, or the filtered "
+        "column is unreachable as an index condition"
+    )
+
+
+def test_opportunity_summary_migration_analyzes_the_table():
+    """``CREATE INDEX CONCURRENTLY`` leaves expression statistics empty.
+
+    Without the ``ANALYZE`` the planner rates the new index as unusable and
+    keeps the full scan -- ``20260925_0057`` shipped exactly such an index: it
+    existed, validated, and went unused at 19,251 ms until ``ANALYZE`` brought
+    the same query to 31 ms.
+    """
+    migration = _load_migration(_OPPORTUNITY_SUMMARY_MIGRATION)
+    output = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    migration.op = Operations(context)
+    migration._analyze_table()
+
+    emitted = output.getvalue()
+    assert "ANALYZE stock_feature_daily" in emitted, emitted
+
+
+def test_opportunity_summary_migration_runs_analyze_after_the_create():
+    """Order matters: analyzing before the build leaves the index without stats."""
+    migration = _load_migration(_OPPORTUNITY_SUMMARY_MIGRATION)
+    events: list[str] = []
+
+    class _Context:
+        @staticmethod
+        def autocommit_block():
+            import contextlib
+
+            return contextlib.nullcontext()
+
+    migration.op = SimpleNamespace(
+        get_context=lambda: _Context(),
+        get_bind=lambda: SimpleNamespace(),
+        execute=lambda statement: events.append(
+            "analyze" if str(statement).startswith("ANALYZE") else "create"
+        ),
+    )
+    migration._rebuild_invalid_indexes = lambda: None
+
+    migration._create_indexes()
+    migration._analyze_table()
+
+    assert events == ["create", "analyze"], events
+
+
+def test_opportunity_summary_migration_emits_exact_concurrent_drops():
+    migration = _load_migration(_OPPORTUNITY_SUMMARY_MIGRATION)
+    output = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    migration.op = Operations(context)
+    migration._drop_indexes()
+
+    statements = [
+        line for line in output.getvalue().splitlines() if line.startswith("DROP INDEX")
+    ]
+    assert statements == [
+        "DROP INDEX CONCURRENTLY IF EXISTS ix_sfd_run_action_state_survivor;"
+    ]
+
+
+def test_opportunity_summary_migration_extends_the_single_head():
+    """The new revision must hang off the tree's single head.
+
+    Two heads make ``alembic upgrade head`` fail, which surfaces as an unhealthy
+    backend container rather than a migration error.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    backend_root = Path(__file__).parents[2]
+    config = Config(str(backend_root / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_root / "alembic"))
+
+    script = ScriptDirectory.from_config(config)
+    migration = _load_migration(_OPPORTUNITY_SUMMARY_MIGRATION)
+    heads = script.get_heads()
+
+    assert len(heads) == 1, (
+        f"the migration tree has {len(heads)} heads ({sorted(heads)}); "
+        f"alembic upgrade head cannot resolve this"
+    )
+    reachable = {
+        rev.revision for rev in script.walk_revisions(base="base", head="heads")
+    }
+    assert migration.revision in reachable, (
+        f"{migration.revision} is not on the path to the single head {heads[0]}"
+    )

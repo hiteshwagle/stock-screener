@@ -7,11 +7,9 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.background import BackgroundTask
-from starlette.responses import Response
 from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
@@ -60,23 +58,34 @@ def _log_critical_error(
 from .utils.db_url import redacted_database_url as _redacted_database_url  # noqa: E402
 
 
-def _bind_runtime_to_response_background(
-    response: Response,
-    runtime_services: Any,
-) -> None:
-    """Preserve runtime context for Starlette background callbacks."""
-    background = response.background
-    if background is None:
-        return
+class RuntimeServicesContextMiddleware:
+    """Bind the app's runtime services to the request's context.
 
-    async def _run_background_with_runtime() -> None:
+    Plain ASGI rather than ``@app.middleware("http")``: BaseHTTPMiddleware
+    runs the endpoint in a separate task and pipes the response body through
+    a memory stream on every request. Here the whole request, including
+    response streaming and Starlette background tasks, runs inside this
+    call, so the binding covers them without re-wrapping.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        runtime_services = getattr(scope["app"].state, "runtime_services", None)
+        if runtime_services is None:
+            await self.app(scope, receive, send)
+            return
+
         token = set_runtime_services(runtime_services)
         try:
-            await background()
+            await self.app(scope, receive, send)
         finally:
             reset_runtime_services(token)
-
-    response.background = BackgroundTask(_run_background_with_runtime)
 
 
 def initialize_runtime() -> None:
@@ -185,19 +194,7 @@ app = FastAPI(
 # would duplicate that work on this container's CPU budget and gzip SSE.
 
 
-@app.middleware("http")
-async def bind_runtime_services_context(request: Request, call_next):
-    runtime_services = getattr(request.app.state, "runtime_services", None)
-    if runtime_services is None:
-        return await call_next(request)
-
-    token = set_runtime_services(runtime_services)
-    try:
-        response = await call_next(request)
-        _bind_runtime_to_response_background(response, runtime_services)
-        return response
-    finally:
-        reset_runtime_services(token)
+app.add_middleware(RuntimeServicesContextMiddleware)
 
 # Configure CORS
 app.add_middleware(

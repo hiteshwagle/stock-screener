@@ -56,6 +56,8 @@ GATE_2 = \
 GATE_3 = \
   tests/unit/test_setup_engine_persistence.py \
   tests/unit/test_setup_engine_feature_flag.py \
+  tests/unit/test_feature_store_index_drift.py \
+  tests/unit/test_opportunity_summary_repo.py \
   tests/integration/test_setup_engine_query_integration.py \
   tests/integration/test_opportunity_state_surface_parity.py \
   tests/integration/test_options_static_live_parity.py \

@@ -107,7 +107,7 @@ async def get_scan_bootstrap(
 
 
 @router.get("", response_model=ScanListResponse)
-async def list_scans(
+def list_scans(
     limit: int = Query(20, ge=1, le=100, description="Number of scans to return"),
     market: str | None = Query(None, description="Restrict to scans of one universe market (e.g. US, HK)"),
     uow: Any = Depends(get_uow),
@@ -151,7 +151,7 @@ async def list_scans(
 
 
 @router.post("", response_model=ScanCreateResponse)
-async def create_scan(
+def create_scan(
     request: ScanCreateRequest,
     response: Response,
     uow: Any = Depends(get_uow),
@@ -254,7 +254,7 @@ def _build_universe_resolution(request: ScanCreateRequest):
 
 
 @router.get("/{scan_id}/status", response_model=ScanStatusResponse)
-async def get_scan_status(
+def get_scan_status(
     scan_id: str,
     uow: Any = Depends(get_uow),
 ):
@@ -336,7 +336,7 @@ async def get_scan_status(
 
 
 @router.post("/{scan_id}/cancel")
-async def cancel_scan(
+def cancel_scan(
     scan_id: str,
     uow: Any = Depends(get_uow),
 ):
@@ -375,7 +375,7 @@ async def cancel_scan(
 
 
 @router.delete("/{scan_id}")
-async def delete_scan(
+def delete_scan(
     scan_id: str,
     uow: Any = Depends(get_uow),
 ):
@@ -407,7 +407,7 @@ async def delete_scan(
 
 
 @router.get("/{scan_id}/result/{symbol}", response_model=ScanResultItem)
-async def get_single_result(
+def get_single_result(
     scan_id: str,
     symbol: str,
     detail_level: Literal["core", "full"] = Query(
@@ -447,7 +447,7 @@ async def get_single_result(
 
 
 @router.get("/{scan_id}/setup/{symbol}", response_model=SetupDetailsResponse)
-async def get_setup_details(
+def get_setup_details(
     scan_id: str,
     symbol: str,
     uow: Any = Depends(get_uow),
@@ -477,7 +477,7 @@ async def get_setup_details(
 
 
 @router.get("/{scan_id}/peers/{symbol}", response_model=List[ScanResultItem])
-async def get_industry_peers(
+def get_industry_peers(
     scan_id: str,
     symbol: str,
     peer_type: str = Query("industry", pattern="^(industry|sector)$"),
@@ -515,7 +515,7 @@ async def get_industry_peers(
 
 
 @router.get("/{scan_id}/explain/{symbol}", response_model=ExplainResponse)
-async def explain_stock(
+def explain_stock(
     scan_id: str,
     symbol: str,
     uow: Any = Depends(get_uow),

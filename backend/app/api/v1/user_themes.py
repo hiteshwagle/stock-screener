@@ -35,7 +35,7 @@ router = APIRouter()
 
 @router.get("", response_model=ThemeListResponse, include_in_schema=False)
 @router.get("/", response_model=ThemeListResponse)
-async def list_themes(db: Session = Depends(get_db)):
+def list_themes(db: Session = Depends(get_db)):
     """Get all user themes ordered by position."""
     themes = db.query(UserTheme).order_by(UserTheme.position).all()
     return ThemeListResponse(
@@ -46,7 +46,7 @@ async def list_themes(db: Session = Depends(get_db)):
 
 @router.post("", response_model=UserThemeResponse, include_in_schema=False)
 @router.post("/", response_model=UserThemeResponse)
-async def create_theme(theme_data: UserThemeCreate, db: Session = Depends(get_db)):
+def create_theme(theme_data: UserThemeCreate, db: Session = Depends(get_db)):
     """Create a new theme."""
     existing = db.query(UserTheme).filter(UserTheme.name == theme_data.name).first()
     if existing:
@@ -67,7 +67,7 @@ async def create_theme(theme_data: UserThemeCreate, db: Session = Depends(get_db
 
 
 @router.put("/{theme_id}", response_model=UserThemeResponse)
-async def update_theme(theme_id: int, updates: UserThemeUpdate, db: Session = Depends(get_db)):
+def update_theme(theme_id: int, updates: UserThemeUpdate, db: Session = Depends(get_db)):
     """Update theme properties."""
     theme = db.query(UserTheme).filter(UserTheme.id == theme_id).first()
     if not theme:
@@ -88,7 +88,7 @@ async def update_theme(theme_id: int, updates: UserThemeUpdate, db: Session = De
 
 
 @router.delete("/{theme_id}")
-async def delete_theme(theme_id: int, db: Session = Depends(get_db)):
+def delete_theme(theme_id: int, db: Session = Depends(get_db)):
     """Delete a theme and all its subgroups/stocks (cascade)."""
     theme = db.query(UserTheme).filter(UserTheme.id == theme_id).first()
     if not theme:
@@ -100,7 +100,7 @@ async def delete_theme(theme_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/reorder")
-async def reorder_themes(
+def reorder_themes(
     reorder_data: ReorderThemesRequest,
     db: Session = Depends(get_db)
 ):
@@ -116,7 +116,7 @@ async def reorder_themes(
 # ================= Theme Data (with sparklines and price changes) =================
 
 @router.get("/{theme_id}/data", response_model=ThemeDataResponse)
-async def get_theme_data(theme_id: int, db: Session = Depends(get_db)):
+def get_theme_data(theme_id: int, db: Session = Depends(get_db)):
     """
     Get complete theme data with subgroups, stocks, sparklines, and price changes.
     Computes min/max bounds across ALL stocks in theme for bar chart scaling.
@@ -311,7 +311,7 @@ def _compute_price_change_bounds(stock_data_map: Dict) -> Dict[str, PriceChangeB
 # ================= Subgroup CRUD =================
 
 @router.post("/{theme_id}/subgroups", response_model=SubgroupResponse)
-async def create_subgroup(
+def create_subgroup(
     theme_id: int,
     subgroup_data: SubgroupCreate,
     db: Session = Depends(get_db)
@@ -344,7 +344,7 @@ async def create_subgroup(
 
 
 @router.put("/subgroups/{subgroup_id}", response_model=SubgroupResponse)
-async def update_subgroup(
+def update_subgroup(
     subgroup_id: int,
     updates: SubgroupUpdate,
     db: Session = Depends(get_db)
@@ -367,7 +367,7 @@ async def update_subgroup(
 
 
 @router.delete("/subgroups/{subgroup_id}")
-async def delete_subgroup(subgroup_id: int, db: Session = Depends(get_db)):
+def delete_subgroup(subgroup_id: int, db: Session = Depends(get_db)):
     """Delete a subgroup and all its stocks (cascade)."""
     subgroup = db.query(UserThemeSubgroup).filter(UserThemeSubgroup.id == subgroup_id).first()
     if not subgroup:
@@ -379,7 +379,7 @@ async def delete_subgroup(subgroup_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{theme_id}/subgroups/reorder")
-async def reorder_subgroups(
+def reorder_subgroups(
     theme_id: int,
     reorder_data: ReorderSubgroupsRequest,
     db: Session = Depends(get_db)
@@ -399,7 +399,7 @@ async def reorder_subgroups(
 # ================= Stock CRUD =================
 
 @router.post("/subgroups/{subgroup_id}/stocks", response_model=ThemeStockResponse)
-async def add_stock(
+def add_stock(
     subgroup_id: int,
     stock_data: ThemeStockCreate,
     db: Session = Depends(get_db)
@@ -434,7 +434,7 @@ async def add_stock(
 
 
 @router.put("/stocks/{stock_id}", response_model=ThemeStockResponse)
-async def update_stock(
+def update_stock(
     stock_id: int,
     updates: ThemeStockUpdate,
     db: Session = Depends(get_db)
@@ -464,7 +464,7 @@ async def update_stock(
 
 
 @router.delete("/stocks/{stock_id}")
-async def remove_stock(stock_id: int, db: Session = Depends(get_db)):
+def remove_stock(stock_id: int, db: Session = Depends(get_db)):
     """Remove a stock from its subgroup."""
     stock = db.query(UserThemeStock).filter(UserThemeStock.id == stock_id).first()
     if not stock:
@@ -476,7 +476,7 @@ async def remove_stock(stock_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/subgroups/{subgroup_id}/stocks/reorder")
-async def reorder_stocks(
+def reorder_stocks(
     subgroup_id: int,
     reorder_data: ReorderStocksRequest,
     db: Session = Depends(get_db)
