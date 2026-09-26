@@ -283,16 +283,55 @@ def _html_blocks(data: bytes) -> list[dict]:
 _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 
 
-def _bounded(blocks: list[dict], max_chars: int) -> list[dict]:
-    """Split oversized paragraphs at sentence ends (hard-split as a last resort).
+def _bounded_table(block: dict, max_chars: int) -> tuple[list[dict], int]:
+    """Split an oversized table into row chunks that keep its context.
 
-    Leaf HTML containers of inline-only markup (e.g. inline XBRL), or a PDF
-    page extracted as one long line, can hold a whole section; each passage
-    sent to a provider stays bounded.
+    Each chunk repeats the caption, header and footnotes a reader needs to
+    interpret the numbers. Rows that cannot fit even alone are omitted and
+    counted, never truncated.
+    """
+
+    payload = block["table"]
+    if len(_render_table(payload)) <= max_chars:
+        return [block], 0
+    chunks: list[dict] = []
+    rows: list[list[str]] = []
+    omitted = 0
+
+    def emit() -> None:
+        if rows:
+            chunks.append({**block, "table": {**payload, "rows": list(rows)}})
+
+    for row in payload["rows"]:
+        if len(_render_table({**payload, "rows": [row]})) > max_chars:
+            omitted += 1
+            continue
+        if len(_render_table({**payload, "rows": [*rows, row]})) > max_chars:
+            emit()
+            rows = []
+        rows.append(row)
+    emit()
+    return chunks, omitted
+
+
+def _bounded(blocks: list[dict], max_chars: int) -> tuple[list[dict], int]:
+    """Bound every block to ``max_chars``; returns the blocks and the number of
+    table rows too large to keep.
+
+    Paragraphs split at sentence ends (hard-split as a last resort): leaf
+    HTML containers of inline-only markup (e.g. inline XBRL), or a PDF page
+    extracted as one long line, can hold a whole section. Tables split into
+    row chunks that keep their caption, header and footnotes.
     """
 
     bounded: list[dict] = []
+    omitted_rows = 0
     for block in blocks:
+        if block["kind"] == "table":
+            chunks, omitted = _bounded_table(block, max_chars)
+            bounded.extend(chunks)
+            omitted_rows += omitted
+            continue
         text = block.get("text", "")
         if block["kind"] != "paragraph" or len(text) <= max_chars:
             bounded.append(block)
@@ -313,7 +352,7 @@ def _bounded(blocks: list[dict], max_chars: int) -> list[dict]:
                 current = candidate
         if current:
             bounded.append({**block, "text": current})
-    return bounded
+    return bounded, omitted_rows
 
 
 def _run_pdf_extractor(data: bytes, limits: PreparationLimits) -> dict:
@@ -429,7 +468,7 @@ class ExposureEvidencePreparer:
         coverage: dict = {}
         if revision.media_type == "application/pdf":
             result = _run_pdf_extractor(data, limits)
-            raw_blocks = _bounded(
+            raw_blocks, omitted_rows = _bounded(
                 _pdf_blocks(result, limits.max_passage_chars), limits.max_passage_chars
             )
             extractor = PDF_EXTRACTOR
@@ -448,7 +487,7 @@ class ExposureEvidencePreparer:
                 ]
             else:
                 raw_blocks = _html_blocks(data)
-            raw_blocks = _bounded(raw_blocks, limits.max_passage_chars)
+            raw_blocks, omitted_rows = _bounded(raw_blocks, limits.max_passage_chars)
             extractor = HTML_EXTRACTOR
             coverage = {
                 "page_count": None,
@@ -457,6 +496,8 @@ class ExposureEvidencePreparer:
             }
         else:
             raise PreparationFailed("unsupported_media_type")
+        if omitted_rows:
+            coverage["omitted_table_rows"] = omitted_rows
 
         blocks: list[PreparedBlock] = []
         pieces: list[str] = []

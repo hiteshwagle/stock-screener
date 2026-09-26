@@ -98,6 +98,54 @@ def test_model_supplied_theme_word_is_not_a_product_term():
     assert "cooccurrence_only" in result.hold_reasons
 
 
+def test_negated_premise_cannot_carry_a_synthesis_link():
+    from app.services.company_exposure.synthesis import (
+        Link,
+        Premise,
+        validate_synthesis,
+    )
+
+    def decide(premise_text):
+        return validate_synthesis(
+            [
+                Premise("P1", "Example Corp offers the ET-9000.", True),
+                Premise("P2", premise_text, True),
+            ],
+            [
+                Link("Example Corp", "ET-9000", "issuer_offers_product", "P1"),
+                Link("ET-9000", "HBM", "product_supports_application", "P2"),
+            ],
+            subject="Example Corp",
+            application="HBM",
+        )
+
+    assert decide("The ET-9000 supports HBM testing.").permitted
+    denied = decide("The ET-9000 does not support HBM testing.")
+    assert not denied.permitted
+    assert "link_negated_in_premise" in denied.reasons
+
+
+@pytest.mark.parametrize(
+    ("text", "basis"),
+    [
+        (
+            "We exited the HBM test equipment business in June 2025.",
+            SupportBasis.PRIMARY_EXPLICIT,
+        ),
+        ("The ET-9000 supports HBM testing.", SupportBasis.INFERRED_UNVERIFIED),
+    ],
+)
+def test_exposure_end_needs_explicit_exit_wording(text, basis):
+    result = validate_candidate(
+        claim("exposure_end", support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == basis
+    held = "exit_not_stated" in result.hold_reasons
+    assert held is (basis == SupportBasis.INFERRED_UNVERIFIED)
+
+
 def test_contrasted_clauses_do_not_link_product_to_theme():
     text = "ET-9000 sales declined while HBM demand increased."
     result = validate_candidate(

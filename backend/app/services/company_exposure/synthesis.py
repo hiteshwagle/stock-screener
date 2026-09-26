@@ -24,6 +24,7 @@ from app.domain.company_exposure.policy import (
     MAX_SYNTHESIS_PRIMARY_PREMISES,
     within_synthesis_bound,
 )
+from app.services.company_exposure.wording import affirmed, clauses
 
 APPLICATION_LINKS = frozenset(
     {"issuer_offers_product", "product_supports_application", "segment_of_issuer"}
@@ -85,11 +86,16 @@ def validate_synthesis(
         if premise is None:
             reasons.append("link_premise_missing")
             continue
-        if not (
-            _mentions(premise.quote, link.source)
-            and _mentions(premise.quote, link.target)
-        ):
+        linking = [
+            clause
+            for clause in clauses([premise.quote])
+            if _mentions(clause, link.source) and _mentions(clause, link.target)
+        ]
+        if not linking:
             reasons.append("link_not_stated_in_premise")
+        elif not any(affirmed(clause) for clause in linking):
+            # "ET-9000 does not support HBM" names both ends but denies the link.
+            reasons.append("link_negated_in_premise")
         if link.relationship in CROSS_COMPANY_LINKS:
             reasons.append("cross_company_link_cannot_carry_application")
         elif link.relationship not in APPLICATION_LINKS:

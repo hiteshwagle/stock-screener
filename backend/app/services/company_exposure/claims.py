@@ -59,6 +59,11 @@ from app.services.company_exposure.synthesis import (
     SynthesisDecision,
     validate_synthesis,
 )
+from app.services.company_exposure.wording import (
+    EXIT,
+    NEGATION,
+    clauses,
+)
 
 VERIFICATION_POLICY = "verification-v1"
 PROMPT_VERSION = "claim-extraction-v1"
@@ -87,21 +92,10 @@ RETRIEVAL_AID_KINDS = frozenset(
     }
 )
 _ANALYST = re.compile(r"\b(analyst|question|questioner|q\s*&\s*a|q:)\b", re.IGNORECASE)
-_SENTENCES = re.compile(r"(?<=[.!?。！？])\s*")
-_NEGATION = re.compile(
-    r"\b(not|no longer|never|has not|have not|yet to|without)\b|していない|しておらず|未|尚未|沒有|没有|並未|并未",
-    re.IGNORECASE,
-)
 _MODALITY = re.compile(
     r"\b(plan(?:s|ned)?|expect(?:s|ed)?|intend(?:s|ed)?|will|may|could|aim(?:s)? to|"
     r"qualification|qualifying|sampl(?:e|es|ing)|pilot|evaluat(?:e|ion|ing))\b"
     r"|予定|計画|見込み|認定|サンプル|計劃|计划|預計|预计|認證|认证|送樣|送样",
-    re.IGNORECASE,
-)
-# Contrastive joins separate clauses, so "supports HBM testing but has not
-# begun shipments" still affirms the role while negating only the status.
-_CONTRAST = re.compile(
-    r"[;；]|\b(?:but|however|although|though|whereas|while)\b|しかし|但是|然而",
     re.IGNORECASE,
 )
 _ACTIVE_STATUSES = {
@@ -250,22 +244,6 @@ def qualify_evidence(item: EvidenceItem) -> EvidenceRole:
     return EvidenceRole.ORIGINAL_SECONDARY
 
 
-def _sentences(text: str) -> list[str]:
-    return [s for s in _SENTENCES.split(text) if s.strip()]
-
-
-def _clauses(quotes: list[str]) -> list[str]:
-    """Clauses of the quoted sentences, split at contrastive joins."""
-
-    return [
-        clause
-        for quote in quotes
-        for sentence in _sentences(quote)
-        for clause in _CONTRAST.split(sentence)
-        if clause.strip()
-    ]
-
-
 def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]:
     """Clauses naming both the product/activity and the theme.
 
@@ -274,7 +252,7 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
     """
 
     linking = []
-    for clause in _clauses(quotes):
+    for clause in clauses(quotes):
         folded = clause.casefold()
         if any(t.casefold() in folded for t in product_terms if t) and any(
             t.casefold() in folded for t in theme_terms if t
@@ -286,7 +264,7 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
 def _affirmed(clauses: list[str]) -> bool:
     """True when some clause is not negated."""
 
-    return any(not _NEGATION.search(clause) for clause in clauses)
+    return any(not NEGATION.search(clause) for clause in clauses)
 
 
 def _status_guard(
@@ -296,7 +274,7 @@ def _status_guard(
         return status, []
     holds = []
     joined = " ".join(quotes)
-    if _NEGATION.search(joined):
+    if NEGATION.search(joined):
         holds.append("negated_commercial_status")
     elif _MODALITY.search(joined):
         holds.append("modal_commercial_status")
@@ -482,7 +460,7 @@ def validate_candidate(
         relationship = (
             _linking_clauses(primary_quotes, product_terms, scope.theme_terms)
             if kind in _LINKED_KINDS
-            else _clauses(primary_quotes)
+            else clauses(primary_quotes)
         )
         if kind in _LINKED_KINDS and not relationship:
             basis = SupportBasis.INFERRED_UNVERIFIED
@@ -492,6 +470,13 @@ def validate_candidate(
             # support must not become a supported exposure.
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("negated_support")
+        elif kind == ClaimKind.EXPOSURE_END and not any(
+            EXIT.search(q) for q in primary_quotes
+        ):
+            # A verified exit holds every related claim, so it needs explicit
+            # exit, disposal or discontinuation wording, not any citation.
+            basis = SupportBasis.INFERRED_UNVERIFIED
+            holds.append("exit_not_stated")
     elif secondary:
         basis = SupportBasis.SECONDARY_REPORTED
 

@@ -338,6 +338,23 @@ def test_rejected_verifier_output_is_a_coverage_gap(harness, db_session):
     assert "verifier_output_rejected" in {c["reason"] for c in revision.coverage}
 
 
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [(403, ("acquire", "paused")), (400, ("acquire", "completed"))],
+)
+def test_filing_fetch_gaps_pause_only_when_an_operator_can_fix_them(
+    harness, status, outcome
+):
+    harness.serve_sec()
+    harness.sec.serve_status(REPORT_URL, status)
+    harness.request()
+    harness.step()
+    acquired = harness.step()
+    # 403 is an access problem to fix and resume; a refused document (400)
+    # is a permanent, omitted gap rather than a retry that fails the job.
+    assert (acquired.stage, acquired.status) == outcome
+
+
 def test_slow_io_renews_the_lease_instead_of_losing_the_stage(harness):
     harness.serve_sec()
     pace = harness.rate.acquire

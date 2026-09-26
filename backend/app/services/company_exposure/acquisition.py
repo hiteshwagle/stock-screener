@@ -63,7 +63,31 @@ _GAP_OUTCOMES = {
     "blocked_destination": CoverageOutcome.BLOCKED_DESTINATION,
     "origin_not_permitted": CoverageOutcome.BLOCKED_DESTINATION,
     "url_credentials_forbidden": CoverageOutcome.BLOCKED_DESTINATION,
+    "unsupported_url": CoverageOutcome.BLOCKED_DESTINATION,
+    # The document itself was refused: retrying the stage cannot change it.
+    "retention_not_permitted": CoverageOutcome.OMITTED,
+    "media_unrecognized": CoverageOutcome.OMITTED,
+    "response_size_limit": CoverageOutcome.OMITTED,
+    "response_encoding_unsupported": CoverageOutcome.OMITTED,
+    "redirect_limit": CoverageOutcome.OMITTED,
+    "redirect_without_destination": CoverageOutcome.OMITTED,
 }
+
+
+def _gap_outcome(code: str) -> CoverageOutcome:
+    """Classify a fetch gap: permanent refusals are omitted, not retried.
+
+    Server errors and transport failures (5xx, timeouts, resets) stay
+    ``fetch_failed`` and are retried.
+    """
+
+    if code in _GAP_OUTCOMES:
+        return _GAP_OUTCOMES[code]
+    if code.startswith("media_") and code.endswith("_refused"):
+        return CoverageOutcome.OMITTED
+    if code.startswith("http_status_4"):
+        return CoverageOutcome.OMITTED
+    return CoverageOutcome.FETCH_FAILED
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +192,7 @@ class DocumentAcquisitionRegistry:
         capture=None,
         detail: dict | None = None,
     ) -> CaptureResult:
-        outcome = _GAP_OUTCOMES.get(code, CoverageOutcome.FETCH_FAILED)
+        outcome = _gap_outcome(code)
         return CaptureResult(
             document_id=None if document is None else document.id,
             revision_id=None,

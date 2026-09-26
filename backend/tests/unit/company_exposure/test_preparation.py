@@ -196,6 +196,28 @@ def test_one_long_pdf_line_is_split_into_bounded_passages(
     assert max(len(t) for t in texts) <= PreparationLimits().max_passage_chars
 
 
+def test_oversized_table_splits_into_bounded_chunks_that_keep_context(
+    evidence_preparer, db_session, store
+):
+    rows = "".join(
+        f"<tr><td>HBM tester line {n}</td><td>{n * 7}</td></tr>" for n in range(400)
+    )
+    giant = "<td>" + "x" * 5000 + "</td>"
+    html = (
+        "<html><body><table><caption>Revenue by product (USD millions)</caption>"
+        f"<tr><th>Product</th><th>FY2025</th></tr>{rows}<tr>{giant}</tr>"
+        "</table></body></html>"
+    )
+    revision = _revision(db_session, store, html.encode(), "text/html", "html:big")
+    prepared = evidence_preparer.prepare(revision, limits=PreparationLimits())
+    tables = [b for b in prepared.blocks if b.kind == "table"]
+    limit = PreparationLimits().max_passage_chars
+    assert len(tables) > 1
+    assert all(len(b.text) <= limit for b in tables)
+    assert all(b.text.startswith("Revenue by product (USD millions)") for b in tables)
+    assert prepared.coverage["omitted_table_rows"] == 1
+
+
 def test_malformed_pdf_is_a_typed_failure(
     evidence_preparer, db_session, store, questions
 ):

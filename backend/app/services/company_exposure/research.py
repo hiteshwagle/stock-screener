@@ -529,10 +529,12 @@ class ResearchStageRunner:
                 coverage.append(capture.coverage)
                 if (
                     capture.coverage.reason == "paused_storage"
-                    or capture.coverage.outcome in _RETRYABLE_COVERAGE
+                    or capture.coverage.outcome
+                    in _RETRYABLE_COVERAGE | _BLOCKING_COVERAGE
                 ):
                     # Throttled or failed fetches retry the stage (honouring
-                    # Retry-After) rather than sealing a partial assessment.
+                    # Retry-After); access or configuration gaps pause it for
+                    # resume, rather than sealing a partial assessment.
                     self.commit()
                     return self._coverage_outcome(capture.coverage)
                 if capture.revision_id is not None:
@@ -604,7 +606,7 @@ class ResearchStageRunner:
                 continue
             unexamined = {
                 key: prepared.coverage[key]
-                for key in ("omitted_ranges", "failed_pages")
+                for key in ("omitted_ranges", "failed_pages", "omitted_table_rows")
                 if prepared.coverage.get(key)
             }
             if unexamined:
