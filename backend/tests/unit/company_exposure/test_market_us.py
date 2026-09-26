@@ -8,6 +8,7 @@ import pytest
 
 from app.domain.company_exposure.contracts import (
     SERVICE_PRINCIPAL,
+    CoverageItem,
     CoverageOutcome,
     RegistryMatch,
 )
@@ -225,6 +226,20 @@ def test_malformed_registry_json_is_a_retryable_fetch_failure(
         CoverageOutcome.FETCH_FAILED,
         "invalid_json_payload",
     )
+
+
+def test_failed_submissions_fetch_is_retried_not_sent_to_review(
+    us_resolver, us_security, budget, sec_mock
+):
+    from app.services.company_exposure.markets.us import sec_submission_url
+
+    sec_mock.serve_company_tickers(
+        {"0": {"cik_str": 1234567, "ticker": us_security.symbol, "title": "Example"}}
+    )
+    sec_mock.serve_status(sec_submission_url("0001234567"), 429)
+    gap = us_resolver.resolve_cik(us_security.id, budget)
+    assert isinstance(gap, CoverageItem)
+    assert gap.outcome == CoverageOutcome.RATE_LIMITED
 
 
 @pytest.mark.case("I02")

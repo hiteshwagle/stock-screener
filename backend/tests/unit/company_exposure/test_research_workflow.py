@@ -241,6 +241,26 @@ def test_sec_retry_after_delays_the_retry(harness, db_session):
     assert as_utc(item.available_at) >= harness.clock.now() + timedelta(hours=2)
 
 
+def test_unexamined_pdf_pages_make_coverage_partial(harness, db_session):
+    harness.serve_sec()
+    harness.go.queue_builder(claims_for)
+    prepare = harness.runner.preparer.prepare
+
+    def truncated(*args, **kwargs):
+        prepared = prepare(*args, **kwargs)
+        prepared.coverage["omitted_ranges"] = [[300, 412]]
+        return prepared
+
+    harness.runner.preparer.prepare = truncated
+    harness.request()
+    verified = harness.run_all()[-1]
+    revision = db_session.get(
+        AssessmentRevision, UUID(verified.detail["assessment_revision_id"])
+    )
+    gaps = [c for c in revision.coverage if c["reason"] == "pages_not_examined"]
+    assert gaps and gaps[0]["detail"]["omitted_ranges"] == [[300, 412]]
+
+
 def test_slow_io_renews_the_lease_instead_of_losing_the_stage(harness):
     harness.serve_sec()
     pace = harness.rate.acquire

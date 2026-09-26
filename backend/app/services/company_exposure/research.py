@@ -571,6 +571,13 @@ class ResearchStageRunner:
             except PreparationFailed as exc:
                 partial(exc.code, revision_id)
                 continue
+            unexamined = {
+                key: prepared.coverage[key]
+                for key in ("omitted_ranges", "failed_pages")
+                if prepared.coverage.get(key)
+            }
+            if unexamined:
+                partial("pages_not_examined", revision_id, **unexamined)
             selection = select_passages(prepared, questions, limit=remaining)
             if selection.omitted_matches:
                 partial("passage_limit", revision_id, omitted=selection.omitted_matches)

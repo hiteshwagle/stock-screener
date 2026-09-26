@@ -69,6 +69,17 @@ def claim(kind="product_application", **overrides):
     return base
 
 
+def test_contrasted_clauses_do_not_link_product_to_theme():
+    text = "ET-9000 sales declined while HBM demand increased."
+    result = validate_candidate(
+        claim(support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "cooccurrence_only" in result.hold_reasons
+
+
 @pytest.mark.case("E01")
 @pytest.mark.exposure_layer("unit")
 def test_e01_cooccurrence_is_not_a_relationship():

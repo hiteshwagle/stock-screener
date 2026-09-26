@@ -255,8 +255,16 @@ def _sentences(text: str) -> list[str]:
 
 
 def _links_product_to_theme(quote: str, product_terms, theme_terms) -> bool:
-    for sentence in _sentences(quote):
-        folded = sentence.casefold()
+    """Product and theme named in one clause of one sentence.
+
+    Contrastive joins ("while", "but", "whereas") split a sentence, so
+    "ET-9000 sales declined while HBM demand increased" links nothing.
+    """
+
+    for clause in (
+        c for sentence in _sentences(quote) for c in _CONTRAST.split(sentence)
+    ):
+        folded = clause.casefold()
         if any(t.casefold() in folded for t in product_terms if t) and any(
             t.casefold() in folded for t in theme_terms if t
         ):

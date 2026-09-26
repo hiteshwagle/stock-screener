@@ -368,6 +368,12 @@ class USIssuerResolver:
                 ),
                 budget,
             )
+            if (
+                submissions is None
+                and capture.coverage.outcome != CoverageOutcome.NO_MATCHING_DOCUMENT
+            ):
+                # Throttled, failed or unreadable: retry, don't ask for review.
+                return capture.coverage
             tickers = {str(t).upper() for t in (submissions or {}).get("tickers", [])}
             if ticker in tickers:
                 confirmed.append((cik, capture))
