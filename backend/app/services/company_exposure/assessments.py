@@ -267,16 +267,24 @@ class ExposureAssessmentService:
 
     # --------------------------------------------------------------- writes
     def persist_assessment(
-        self, result: AssessmentResult, *, principal: str = SYSTEM_PRINCIPAL
+        self,
+        result: AssessmentResult,
+        *,
+        principal: str = SYSTEM_PRINCIPAL,
+        guard: Callable[[], None] | None = None,
     ) -> AssessmentRevisionRef:
         """Append one dossier revision; never overwrite a concurrent winner.
 
         No provider or network call happens here; the caller has already
-        verified claims outside the writer fence.
+        verified claims outside the writer fence. ``guard`` runs first inside
+        the fence, in the same transaction as the writes; it may lock rows and
+        raise to abandon a result whose premises changed.
         """
 
         scope = result.input.scope
         with research_write(self.session):
+            if guard is not None:
+                guard()
             dossier = self._lock_dossier(scope)
             replay = self._replay(dossier.id, result.manifest_hash)
             if replay is not None:
@@ -365,6 +373,9 @@ class ExposureAssessmentService:
             and _gaps(result.manifest["coverage"]) == _gaps(latest.coverage or [])
             and result.manifest["unresolved_questions"]
             == (latest.unresolved_questions or [])
+            # A newly detected same-date conflict carries the old claim
+            # forward (no change) but must still be recorded for review.
+            and _jsonable(list(result.conflicts)) == (latest.conflicts or [])
         )
 
     def _write_selected_claims(

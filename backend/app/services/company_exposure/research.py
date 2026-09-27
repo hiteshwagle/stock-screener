@@ -118,6 +118,10 @@ class StepStatus(StrEnum):
     LEASE_LOST = "lease_lost"
 
 
+class _ScopeChanged(Exception):
+    """The issuer, link or theme changed before the assessment was sealed."""
+
+
 @dataclass(frozen=True, slots=True)
 class StageOutcome:
     status: StepStatus
@@ -743,7 +747,27 @@ class ResearchStageRunner:
                 assessed_at=self.clock(),
             )
         )
-        ref = service.persist_assessment(result, principal=SERVICE_PRINCIPAL)
+
+        def unchanged_scope() -> None:
+            # Inside the writer fence (a theme seal takes it exclusively) and
+            # holding the listing row that link decisions lock for update,
+            # so neither can land between this check and the sealed writes.
+            if request.security_id is not None:
+                self.session.execute(
+                    select(StockUniverse.id)
+                    .where(StockUniverse.id == request.security_id)
+                    .with_for_update(read=True)
+                )
+            if self._scope_changed(request, scope):
+                raise _ScopeChanged
+
+        try:
+            ref = service.persist_assessment(
+                result, principal=SERVICE_PRINCIPAL, guard=unchanged_scope
+            )
+        except _ScopeChanged:
+            self.session.rollback()
+            return StageOutcome.retry("scope_changed_during_verification")
         self.commit()
         complete = all(c.complete for c in coverage)
         return StageOutcome.complete(

@@ -258,3 +258,43 @@ def test_held_ratio_is_persisted_as_unknown(dossier):
     )
     assert (row.basis, row.value_low) == ("unknown", None)
     assert "unit_mismatch" in row.hold_reasons
+
+
+def test_newly_detected_conflict_is_recorded_in_a_new_revision(dossier):
+    from sqlalchemy import select
+
+    from app.models.company_exposure import AssessmentRevision
+
+    _, first = dossier.persist(dossier.attempt(_materiality_candidate(dossier, 10)))
+    result, ref = dossier.persist(dossier.attempt(_materiality_candidate(dossier, 20)))
+    # The selected figure is carried forward, but the disagreement is new
+    # evidence for review and must not collapse into "unchanged".
+    assert result.conflicts
+    assert not ref.unchanged
+    assert ref.revision_number == first.revision_number + 1
+    latest = dossier.service.session.execute(
+        select(AssessmentRevision).where(AssessmentRevision.id == ref.id)
+    ).scalar_one()
+    assert latest.conflicts == [
+        {
+            "proposition": result.claim("materiality").proposition_key,
+            "reason": "same_date_disagreement",
+        }
+    ]
+
+
+def test_undated_candidate_does_not_displace_an_undated_primary_claim(dossier):
+    shipping = verified_claim(
+        "commercial_status", passage=dossier.passages["role"], supported_as_of=None
+    )
+    dossier.persist(dossier.attempt(shipping))
+    contradicting = verified_claim(
+        "commercial_status",
+        passage=dossier.passages["exit"],
+        supported_as_of=None,
+        status="discontinued",
+    )
+    result = dossier.service.assess(dossier.attempt(contradicting))
+    selected = result.claim("commercial_status")
+    assert selected.reason == "undated_candidate"
+    assert selected.commercial_status == "shipping_or_operating"

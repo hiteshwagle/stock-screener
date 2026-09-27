@@ -315,7 +315,11 @@ def _decide(
         existing.support_basis, existing.conclusion
     ):
         return SelectionAction.CARRIED_FORWARD, "unverified_candidate"
-    if date is None and prior_date is not None:
+    # An undated candidate brings no newer evidence: it never displaces a
+    # dated claim, nor an undated primary one (the last job would win).
+    if date is None and (
+        prior_date is not None or _primary(existing.support_basis, existing.conclusion)
+    ):
         return SelectionAction.CARRIED_FORWARD, "undated_candidate"
     if prior_date is not None and date < prior_date:
         return SelectionAction.CARRIED_FORWARD, "older_than_selected"

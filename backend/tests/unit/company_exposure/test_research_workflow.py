@@ -167,6 +167,46 @@ def test_relink_during_provider_call_is_never_sealed(harness, db_session):
     assert db_session.execute(revisions).scalar() == 0
 
 
+def test_relink_after_the_early_check_is_caught_inside_the_sealing_fence(
+    harness, db_session, monkeypatch
+):
+    harness.serve_sec()
+    identity = IssuerIdentityAdapter(db_session)
+    real = harness.runner._scope_changed
+    checks = []
+
+    def relink_after_early_check(request, scope):
+        # The relink lands after the pre-assessment check passed, so only
+        # the recheck inside persist_assessment's fence can refuse it.
+        checks.append(scope)
+        if len(checks) == 1:
+            relink = identity.propose_link(
+                LinkProposal(
+                    security_id=harness.security.id,
+                    issuer_id=None,
+                    identifiers=(),
+                    evidence={"reference": "corrected listing"},
+                    requested_by="test:admin",
+                    reason="listing belongs to another issuer",
+                )
+            )
+            identity.apply_link(relink.link_revision_id, ADMIN, relink.proposal_hash)
+            db_session.commit()
+            return False
+        return real(request, scope)
+
+    harness.go.queue_builder(claims_for)
+    harness.request()
+    harness.step(), harness.step()
+    monkeypatch.setattr(harness.runner, "_scope_changed", relink_after_early_check)
+    verified = harness.step()
+    assert len(checks) == 2
+    assert (verified.stage, verified.status) == ("verify", "retryable")
+    assert verified.detail["condition"] == "scope_changed_during_verification"
+    revisions = select(func.count()).select_from(AssessmentRevision)
+    assert db_session.execute(revisions).scalar() == 0
+
+
 def test_ambiguous_cik_pauses_for_review_then_resumes_after_admin_link(
     harness, db_session
 ):
