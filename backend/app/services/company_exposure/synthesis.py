@@ -17,6 +17,7 @@ B and B makes HBM" does not establish that A's product serves HBM.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from app.domain.company_exposure.policy import (
@@ -25,11 +26,15 @@ from app.domain.company_exposure.policy import (
     within_synthesis_bound,
 )
 from app.services.company_exposure.wording import (
+    CJK_SEGMENT,
+    CLAUSE_BOUNDARY,
     OFFERS,
     PART_OF,
+    PHRASE_BOUNDARY,
     SERVES,
     affirmed,
     clauses,
+    mention_spans,
     mentions,
 )
 
@@ -43,6 +48,11 @@ _RELATIONSHIP_WORDING = {
     "product_supports_application": SERVES,
     "segment_of_issuer": PART_OF,
 }
+# Relationships whose wording is a predicate of the link source: "Example
+# Corp offers ET-9000", "ET-9000 supports HBM".
+_PREDICATED = frozenset({"issuer_offers_product", "product_supports_application"})
+_PASSIVE_AGENT = re.compile(r"\s+by\b", re.IGNORECASE)
+_POSSESSOR = re.compile(r"([\w&.-]+)['’]s\s*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +83,51 @@ class SynthesisDecision:
 
 def _mentions(quote: str, entity: str) -> bool:
     return mentions(quote, entity)
+
+
+def _own_mention(phrase: str, target: str, source: str) -> bool:
+    """``phrase`` names ``target`` other than as a third party's ("Acme's
+    ET-9000"); the source's own possessive ("Example Corp's") is fine."""
+
+    for start, _ in mention_spans(phrase, target):
+        possessor = _POSSESSOR.search(phrase[:start])
+        if possessor is None or mentions(source, possessor.group(1)):
+            return True
+    return False
+
+
+def _predicated(clause: str, link: Link, wording: re.Pattern) -> bool:
+    """Whether the clause states the relationship of the link's own ends.
+
+    The verb's subject must be the source and its object the target (or the
+    passive "ET-9000 is sold by Example Corp"): "Example Corp relies on Acme,
+    which offers ET-9000" names both ends and an offer verb, but Acme is the
+    one offering. Verb-final CJK wording needs the verb and both ends in one
+    comma-delimited segment.
+    """
+
+    for verb in wording.finditer(clause):
+        if not verb.group().isascii():
+            continue
+        subject = PHRASE_BOUNDARY.split(clause[: verb.start()])[-1]
+        rest = clause[verb.end() :]
+        if _mentions(subject, link.source) and _own_mention(
+            CLAUSE_BOUNDARY.split(rest)[0], link.target, link.source
+        ):
+            return True
+        agent = _PASSIVE_AGENT.match(rest)
+        if (
+            agent
+            and _mentions(subject, link.target)
+            and _mentions(PHRASE_BOUNDARY.split(rest[agent.end() :])[0], link.source)
+        ):
+            return True
+    return any(
+        any(not match.group().isascii() for match in wording.finditer(segment))
+        and _mentions(segment, link.source)
+        and _mentions(segment, link.target)
+        for segment in CJK_SEGMENT.split(clause)
+    )
 
 
 def validate_synthesis(
@@ -111,7 +166,13 @@ def validate_synthesis(
             # "ET-9000 does not support HBM" names both ends but denies the link.
             reasons.append("link_negated_in_premise")
         elif wording is not None and not any(
-            wording.search(clause) and affirmed(clause) for clause in linking
+            affirmed(clause)
+            and (
+                _predicated(clause, link, wording)
+                if link.relationship in _PREDICATED
+                else wording.search(clause)
+            )
+            for clause in linking
         ):
             # "ET-9000 and HBM demand increased" names both ends but states no
             # support, offer or ownership relationship between them.

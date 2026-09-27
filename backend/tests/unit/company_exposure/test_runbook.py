@@ -127,6 +127,54 @@ def test_review_required_job_is_resolved_and_resumed(
     assert (step.stage, step.detail["source"]) == ("resolve_issuer", "accepted_link")
 
 
+def test_cross_listing_resolves_to_the_issuer_owning_the_cik(
+    capsys, cli_kwargs, db_session, tmp_path, clock, monkeypatch
+):
+    from app.config import settings
+    from app.domain.company_exposure.contracts import (
+        SERVICE_PRINCIPAL,
+        RegistryMatch,
+    )
+    from app.services.company_exposure.issuer_identity import IssuerIdentityAdapter
+    from tests.fixtures.company_exposure.factory import make_security
+
+    harness = Harness(db_session, tmp_path, clock)
+    harness.serve_sec()
+    # Another listing of the same company already owns CIK 1234567.
+    twin = make_security(db_session, "EXMPB", exchange="NYSE")
+    identity = IssuerIdentityAdapter(db_session)
+    owner = identity.accept_registry_match(
+        RegistryMatch(
+            security_id=twin.id,
+            market="US",
+            scheme="cik",
+            value="1234567",
+            candidate_count=1,
+            ticker_confirmed=True,
+            matched_ticker="EXMPB",
+            matched_exchange="NYSE",
+            registry_capture_revision_id=None,
+            official_record_capture_revision_id=None,
+        ),
+        SERVICE_PRINCIPAL,
+    ).issuer_id
+    ref = harness.request()
+    step = harness.step()
+    assert step.state == "review_required"
+
+    args = ["resolve-issuer", "--security-id", str(harness.security.id)]
+    args += ["--cik", "1234567"]
+    code, dry = _run(capsys, args, **cli_kwargs)
+    assert (code, dry["issuer_id"]) == (0, str(owner))
+
+    monkeypatch.setattr(settings, "admin_principal_id", "ops:alice")
+    code, applied = _run(capsys, [*args, "--apply"], **cli_kwargs)
+    assert (code, applied["state"], applied["issuer_id"]) == (0, "accepted", str(owner))
+    assert identity.resolve_security(harness.security.id).issuer_id == owner
+    code, resumed = _run(capsys, ["resume", str(ref.id), "--apply"], **cli_kwargs)
+    assert resumed["state"] == "queued"
+
+
 def test_process_reports_disabled_research_as_blocked(capsys, cli_kwargs):
     code, payload = _run(
         capsys,

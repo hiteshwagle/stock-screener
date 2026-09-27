@@ -78,6 +78,7 @@ from app.services.company_exposure.wording import (
     ISSUER_SUBJECT,
     ISSUER_SUBJECT_CJK,
     NEGATION,
+    PHRASE_BOUNDARY,
     PRODUCES,
     PRODUCES_CJK,
     SERVES,
@@ -370,15 +371,6 @@ def _linking_clauses(
     return linking
 
 
-# Where a verb's subject or object phrase ends: a relative or subordinate
-# clause, an infinitive or a preposition introduces someone else's action.
-_BOUNDARY = re.compile(
-    r"\b(?:that|which|who|whom|whose|where|when|while|to|for|used|using|"
-    r"with|by|so|because|customers?)\b|[,;:()]",
-    re.IGNORECASE,
-)
-
-
 def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
     """Clauses in which the issuer itself produces or sells the theme.
 
@@ -406,8 +398,8 @@ def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
         for verb in PRODUCES.finditer(clause):
             # The verb's own subject and object: "We make tools that customers
             # use to manufacture HBM" has no issuer producing HBM.
-            subject = _BOUNDARY.split(clause[: verb.start()])[-1]
-            obj = _BOUNDARY.split(clause[verb.end() :])[0]
+            subject = PHRASE_BOUNDARY.split(clause[: verb.start()])[-1]
+            obj = PHRASE_BOUNDARY.split(clause[verb.end() :])[0]
             if (
                 ISSUER_SUBJECT.search(subject)
                 or any(mentions(subject, n) for n in issuer_names)

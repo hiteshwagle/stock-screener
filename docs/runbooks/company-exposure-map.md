@@ -131,6 +131,10 @@ administrator applies it. To resolve a `review_required` job:
 ./venv/bin/python scripts/company_exposure.py process
 ```
 
+When another listing's issuer already owns the confirmed CIK (a
+cross-listing, `cik_linked_to_other_issuer`), `resolve-issuer` links this
+listing to that issuer; the dry run shows it as `issuer_id`.
+
 `resume` re-runs the paused stage; it does not reset the job's cumulative
 budgets. With nothing paused it changes nothing and reports `not_paused`
 (exit code 2).

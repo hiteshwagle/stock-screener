@@ -96,14 +96,22 @@ def resolve_issuer(
     current = identity.resolve_security(security_id)
     if current.resolved:
         return {"state": "already_linked", "issuer_id": str(current.issuer_id)}
+    # A CIK another listing's issuer already owns (a cross-listing) links
+    # this listing to that issuer; a new issuer could never take the CIK.
+    owner = identity.identifier_owner("US", "cik", cik)
     if not apply:
-        return {"state": "dry_run", "security_id": security_id, "cik": cik.zfill(10)}
+        return {
+            "state": "dry_run",
+            "security_id": security_id,
+            "cik": cik.zfill(10),
+            "issuer_id": None if owner is None else str(owner),
+        }
     if not admin_subject:
         return {"state": "blocked", "reason": "admin_principal_unbound"}
     proposal = identity.propose_link(
         LinkProposal(
             security_id=security_id,
-            issuer_id=None,
+            issuer_id=owner,
             identifiers=(("US", "cik", cik),),
             evidence={"reference": "operator-reviewed CIK via CLI"},
             requested_by=admin_subject,

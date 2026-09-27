@@ -586,3 +586,61 @@ def test_identifier_digits_are_not_amounts_but_scale_suffixes_are():
     assert not quote_contains_value("The A100X ships.", Decimal(100))
     assert quote_contains_value("Revenue was 20m in FY2024.", Decimal(20))
     assert quote_contains_value("Revenue was USD 5bn.", Decimal(5))
+
+
+@pytest.mark.parametrize(
+    ("quote", "value", "held"),
+    [
+        (
+            "We spent USD 20 million on R&D; HBM revenue was USD 30 million in FY2024.",
+            "30",
+            False,
+        ),
+        (
+            "We spent USD 20 million on R&D; HBM revenue was USD 30 million in FY2024.",
+            "20",
+            True,
+        ),
+        (
+            "R&D was USD 20 million and HBM revenue was USD 30 million in FY2024.",
+            "20",
+            True,
+        ),
+        (
+            "HBM revenue was USD 30 million in FY2024, up from USD 20 million.",
+            "20",
+            False,
+        ),
+    ],
+)
+def test_value_must_be_the_figure_its_metric_describes(quote, value, held):
+    result = validate_measure(
+        metric="revenue",
+        value=Decimal(value),
+        unit="million",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote=quote,
+        passage_id="p",
+        currency="USD",
+    )
+    assert ("value_not_bound_to_metric" in result.hold_reasons) is held
+    assert result.held is held
+
+
+def test_ratio_operand_must_be_the_figure_its_metric_describes():
+    denominator = Operand(
+        Decimal(100), "million", "FY2024", "issuer_consolidated", "total",
+        "USD", None, "p2", "Total revenue was USD 100 million in FY2024.",
+    )  # fmt: skip
+    numerator = Operand(
+        Decimal(20), "million", "FY2024", "issuer_consolidated", "HBM",
+        "USD", None, "p1",
+        "We spent USD 20 million on HBM R&D; HBM revenue was USD 30 million in FY2024.",
+    )  # fmt: skip
+    result = calculate_materiality(
+        metric="revenue_share", numerator=numerator, denominator=denominator
+    )
+    assert "numerator_value_not_bound_to_metric" in result.hold_reasons
+    assert result.value is None

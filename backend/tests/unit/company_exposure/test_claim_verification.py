@@ -128,6 +128,59 @@ def test_negated_premise_cannot_carry_a_synthesis_link():
 
 
 @pytest.mark.parametrize(
+    ("offer", "support", "permitted"),
+    [
+        ("Example Corp offers the ET-9000.", "The ET-9000 supports HBM testing.", True),
+        ("The ET-9000 is sold by Example Corp.", "ET-9000 supports HBM.", True),
+        ("Example Corp's portfolio includes the ET-9000.", "ET-9000 tests HBM.", True),
+        ("Example CorpはET-9000を販売する。", "ET-9000はHBM向け。", True),
+        # Acme offers ET-9000; Example Corp only relies on Acme.
+        (
+            "Example Corp relies on Acme, which offers ET-9000.",
+            "ET-9000 tests HBM.",
+            False,
+        ),
+        (
+            "Example Corp supplies parts for Acme's ET-9000.",
+            "ET-9000 tests HBM.",
+            False,
+        ),
+        (
+            "Example CorpはAcmeに依存し、AcmeはET-9000を販売する。",
+            "ET-9000 tests HBM.",
+            False,
+        ),
+        # The tester supports HBM, not the ET-9000.
+        (
+            "Example Corp offers the ET-9000.",
+            "The ET-9000 connects to a tester, which supports HBM testing.",
+            False,
+        ),
+    ],
+)
+def test_synthesis_link_wording_must_be_predicated_on_its_source(
+    offer, support, permitted
+):
+    from app.services.company_exposure.synthesis import (
+        Link,
+        Premise,
+        validate_synthesis,
+    )
+
+    decision = validate_synthesis(
+        [Premise("P1", offer, True), Premise("P2", support, True)],
+        [
+            Link("Example Corp", "ET-9000", "issuer_offers_product", "P1"),
+            Link("ET-9000", "HBM", "product_supports_application", "P2"),
+        ],
+        subject="Example Corp",
+        application="HBM",
+    )
+    assert decision.permitted is permitted
+    assert ("link_relationship_not_stated" in decision.reasons) is not permitted
+
+
+@pytest.mark.parametrize(
     ("text", "basis"),
     [
         (

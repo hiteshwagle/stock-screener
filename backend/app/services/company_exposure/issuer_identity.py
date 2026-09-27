@@ -172,6 +172,11 @@ class IssuerIdentityAdapter:
                 return None
         return None
 
+    def identifier_owner(self, market: str, scheme: str, value: str) -> UUID | None:
+        """Issuer that currently owns an accepted identifier, if any."""
+
+        return self._identifier_owner(normalized_identifier(market, scheme, value))
+
     def identifiers_for(self, issuer_id: UUID) -> dict[tuple[str, str], str]:
         rows = self.session.execute(
             select(IssuerIdentifierRevision)

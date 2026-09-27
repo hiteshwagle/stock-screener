@@ -298,23 +298,20 @@ def _names_currency(text: str, word: str) -> bool:
     return word in text
 
 
-def _grounding_holds(
-    *,
-    metric: str,
-    unit: str,
-    currency: str | None,
-    period: str,
-    scope_label: str | None,
-    quote: str,
-    period_evidence: tuple[str, ...],
+# Where one stated figure ends and another begins: "We spent USD 20 million
+# on R&D; HBM revenue was USD 30 million" states 20 of R&D, not of revenue.
+_MEASURE_SEGMENT = re.compile(
+    r"[;；。]|(?<=[.!?])\s|\b(?:and|while|whereas|but|however|versus|"
+    r"compared\s+(?:with|to))\b",
+    re.IGNORECASE,
+)
+
+
+def _quantity_holds(
+    metric: str, unit: str, currency: str | None, text: str
 ) -> list[str]:
-    """Metadata the model supplied that the cited wording does not state.
+    """Metric, unit and currency words ``text`` does not state."""
 
-    Only the number was checked before; "USD 20 million in FY2024" must not
-    come back as a 20% FY2026 share of "HBM revenue".
-    """
-
-    text = _norm(quote)
     holds = []
     # Every semantic part of the metric must be stated, not only its head:
     # "revenue_growth" over a revenue figure invents growth. Parts naming the
@@ -347,6 +344,41 @@ def _grounding_holds(
         words = _CURRENCY_WORDS.get(currency.upper(), (currency.casefold(),))
         if not any(_names_currency(text, word) for word in words):
             holds.append("currency_not_in_quote")
+    return holds
+
+
+def _grounding_holds(
+    *,
+    metric: str,
+    unit: str,
+    currency: str | None,
+    period: str,
+    scope_label: str | None,
+    quote: str,
+    period_evidence: tuple[str, ...],
+    value: Decimal | None = None,
+) -> list[str]:
+    """Metadata the model supplied that the cited wording does not state.
+
+    Only the number was checked before; "USD 20 million in FY2024" must not
+    come back as a 20% FY2026 share of "HBM revenue". The value must also be
+    the figure the metric, unit and currency describe, not another amount in
+    the same quote.
+    """
+
+    text = _norm(quote)
+    holds = _quantity_holds(metric, unit, currency, text)
+    if (
+        value is not None
+        and not holds
+        and quote_contains_value(text, value)
+        and not any(
+            quote_contains_value(segment, value)
+            and not _quantity_holds(metric, unit, currency, segment)
+            for segment in _MEASURE_SEGMENT.split(text)
+        )
+    ):
+        holds.append("value_not_bound_to_metric")
     # The year may come from the document itself (its reporting period).
     if not period or not _period_grounded(period, text, period_evidence):
         holds.append("period_not_in_quote")
@@ -396,6 +428,7 @@ def validate_measure(
             scope_label=scope_label,
             quote=quote,
             period_evidence=period_evidence,
+            value=value,
         )
     )
     # A share quoted as a percentage ("30 percent of revenue") is checked as
@@ -521,6 +554,7 @@ def calculate_materiality(
                 scope_label=operand.label,
                 quote=operand.quote or "",
                 period_evidence=operand.period_evidence,
+                value=operand.value,
             )
         )
     if numerator.forecast or denominator.forecast:

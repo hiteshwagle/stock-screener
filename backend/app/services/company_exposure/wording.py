@@ -167,6 +167,21 @@ CJK_OTHER_ACTOR = re.compile(
     r"客户|客戶|顧客|お客様|用户|用戶|使用|用于|用於|用来|用來|向け|のための|用の"
 )
 
+# Where a verb's subject or object phrase ends: a relative or subordinate
+# clause, an infinitive or a preposition introduces someone else's action.
+PHRASE_BOUNDARY = re.compile(
+    r"\b(?:that|which|who|whom|whose|where|when|while|to|for|used|using|"
+    r"with|by|so|because|customers?)\b|[,;:()]",
+    re.IGNORECASE,
+)
+# Where a clause hands over to another predicate ("Acme, which offers
+# ET-9000"); prepositions and parentheses stay inside the object phrase
+# ("supports testing for high-bandwidth memory (HBM)").
+CLAUSE_BOUNDARY = re.compile(
+    r"\b(?:that|which|who|whom|whose|where|when|while|so|because)\b|[,;:]",
+    re.IGNORECASE,
+)
+
 # A segment or subsidiary belonging to the issuer.
 PART_OF = re.compile(
     r"\b(segments?|subsidiar(?:y|ies)|divisions?|business\s+units?|units?\s+of|part\s+of|"
