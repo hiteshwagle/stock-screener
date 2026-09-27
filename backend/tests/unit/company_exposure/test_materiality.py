@@ -464,3 +464,27 @@ def test_every_unit_word_must_be_stated_by_the_quote(unit, held):
         passage_id="p",
     )
     assert ("unit_not_in_quote" in result.hold_reasons) is held
+
+
+@pytest.mark.parametrize(
+    ("quote", "held"),
+    [
+        # "eur" only begins "European": no currency is stated.
+        ("European HBM revenue was 20 million in FY2024.", True),
+        ("HBM revenue was EUR 20 million in FY2024.", False),
+        ("HBM revenue was 20 million euros in FY2024.", False),
+    ],
+)
+def test_currency_words_must_be_whole_words(quote, held):
+    result = validate_measure(
+        metric="revenue",
+        value=Decimal(20),
+        unit="million",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote=quote,
+        passage_id="p",
+        currency="EUR",
+    )
+    assert ("currency_not_in_quote" in result.hold_reasons) is held

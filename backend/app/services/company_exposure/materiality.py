@@ -237,6 +237,15 @@ def _stated_basis(quote: str, supplied: str | None) -> tuple[str, list[str]]:
     return stated, []
 
 
+def _names_currency(text: str, word: str) -> bool:
+    """A currency word as a word ("eur" is not in "European"); symbols such
+    as "$" or "円" have no word boundary to respect."""
+
+    if re.search(r"[a-z]", word):
+        return mentions(text, word)
+    return word in text
+
+
 def _grounding_holds(
     *,
     metric: str,
@@ -270,14 +279,14 @@ def _grounding_holds(
             continue
         currency_words = _CURRENCY_WORDS.get(word.upper())
         if currency_words is not None:
-            grounded = any(w in text for w in currency_words)
+            grounded = any(_names_currency(text, w) for w in currency_words)
         else:
             grounded = mentions(text, word)
         if not grounded:
             holds.append("unit_not_in_quote")
     if currency:
         words = _CURRENCY_WORDS.get(currency.upper(), (currency.casefold(),))
-        if not any(word in text for word in words):
+        if not any(_names_currency(text, word) for word in words):
             holds.append("currency_not_in_quote")
     # The year may come from the document itself (its reporting period).
     if not period or not _period_grounded(period, text, period_evidence):

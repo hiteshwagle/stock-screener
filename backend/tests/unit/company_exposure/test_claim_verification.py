@@ -244,6 +244,10 @@ def test_segment_label_must_be_a_whole_word_of_the_evidence():
         ("hbm-manufacturing", "本公司生产HBM产品。", True),
         ("hbm-manufacturing", "本公司销售设备，客户使用这些设备生产HBM。", False),
         ("hbm-manufacturing", "本公司销售用于生产HBM的设备。", False),
+        # The theme must be the object's head, not a modifier of it.
+        ("hbm-manufacturing", "We sell HBM test equipment.", False),
+        ("hbm-manufacturing", "We produce HBM chips and GDDR memory.", True),
+        ("hbm-manufacturing", "本公司销售HBM测试设备。", False),
         # The direct path is only for a key that names the theme.
         ("et-9000", "We manufacture HBM products.", False),
     ],
@@ -329,6 +333,25 @@ def test_exit_wording_must_assert_the_exit(text, kept):
     )
     assert result.verified is kept
     assert ("exit_not_stated" in result.hold_reasons) is not kept
+
+
+def test_non_text_scope_label_is_rejected_output():
+    text = "Analysts say the ET-9000 supports HBM testing."
+    batch = ClaimVerifier.validate_payload(
+        {
+            "claims": [
+                claim(
+                    reporting_scope="segment_or_subsidiary",
+                    scope_label=123,
+                    support=[{"ref": "P1", "quote": text}],
+                )
+            ]
+        },
+        [item("P1", text, third_party=True)],
+        SCOPE,
+    )
+    assert batch.claims == ()
+    assert batch.rejected and "scope_label_not_text" in batch.rejected[0]
 
 
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():

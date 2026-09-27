@@ -128,6 +128,15 @@ def test_overlong_envelope_id_is_not_stored(headers, expected):
     assert response.provider_request_id == expected
 
 
+def test_implausible_token_counts_are_unknown_not_reconciled():
+    huge = {**GOOD, "usage": {"total_tokens": 2**64, "prompt_tokens": 12}}
+    client = _client(_ok(huge))
+    response = client.complete_json_response(
+        [{"role": "user", "content": "x"}], max_tokens=10
+    )
+    assert response.reported_usage == {"prompt_tokens": 12}
+
+
 def test_missing_usage_is_unknown_not_zero():
     body = dict(GOOD)
     body.pop("usage")

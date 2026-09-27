@@ -252,6 +252,11 @@ def _header_request_id(headers) -> str | None:
     return None
 
 
+# Larger counts are not plausible usage and would not fit the reservation
+# ledger's integer columns: such usage is unknown, not reconciled.
+_MAX_REPORTED_TOKENS = 10**12
+
+
 def _reported_usage(envelope) -> dict | None:
     usage = envelope.get("usage") if isinstance(envelope, dict) else None
     if not isinstance(usage, dict):
@@ -259,6 +264,10 @@ def _reported_usage(envelope) -> dict | None:
     reported = {}
     for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
         value = usage.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _MAX_REPORTED_TOKENS
+        ):
             reported[key] = value
     return reported or None

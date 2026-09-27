@@ -346,7 +346,9 @@ def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
             PRODUCES_CJK.search(segment)
             and ISSUER_SUBJECT_CJK.search(segment)
             and not CJK_OTHER_ACTOR.search(segment)
-            and any(mentions(segment, t) for t in theme_terms)
+            and any(
+                mentions(segment, t) and _theme_is_head(segment, t) for t in theme_terms
+            )
             for segment in CJK_SEGMENT.split(clause)
         ):
             found.append(clause)
@@ -359,10 +361,51 @@ def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
             if (
                 ISSUER_SUBJECT.search(subject)
                 or any(mentions(subject, n) for n in issuer_names)
-            ) and any(mentions(obj, t) for t in theme_terms):
+            ) and any(_theme_is_head(obj, t) for t in theme_terms):
                 found.append(clause)
                 break
     return found
+
+
+# Words that may follow the theme while it is still what is produced ("HBM
+# products", "HBM chips"); anything else makes the theme a modifier ("HBM
+# test equipment" is equipment).
+_GENERIC_HEADS = frozenset(
+    {
+        "product", "products", "offering", "offerings", "solution", "solutions",
+        "line", "lines", "portfolio", "family", "families", "stack", "stacks",
+        "chip", "chips", "device", "devices", "module", "modules", "die", "dies",
+        "wafer", "wafers", "memory", "memories", "component", "components",
+    }
+)  # fmt: skip
+_COORDINATION = re.compile(r"\b(?:and|or|as well as|along with)\b", re.IGNORECASE)
+# CJK nouns that make a preceding theme a modifier ("HBM测试设备").
+_CJK_MODIFIED = re.compile(
+    r"^.{0,2}?(设备|設備|装置|機器|测试|測試|テスト|検査|检测|檢測|工具|材料|用)"
+)
+
+
+def _theme_is_head(obj: str, term: str) -> bool:
+    """The theme is what the verb's object names, not a modifier of it."""
+
+    pattern = (
+        re.compile(
+            r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?:e?s)?(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        if term.isascii()
+        else re.compile(re.escape(term))
+    )
+    for match in pattern.finditer(obj):
+        rest = obj[match.end() :]
+        if _CJK_MODIFIED.search(rest):
+            continue
+        tail = _COORDINATION.split(rest)[0]
+        if all(
+            w.casefold() in _GENERIC_HEADS for w in _TOKEN.findall(tail) if w.isascii()
+        ):
+            return True
+    return False
 
 
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
@@ -852,7 +895,9 @@ def validate_candidate(
         raw.get("reporting_scope") or "issuer_consolidated"
     )
     scope_label = raw.get("scope_label") or None
-    if scope_label is not None and len(str(scope_label)) > 200:
+    if scope_label is not None and not isinstance(scope_label, str):
+        raise ValueError("scope_label_not_text")
+    if scope_label is not None and len(scope_label) > 200:
         raise ValueError("scope_label_too_long")
     if reporting_scope == ReportingScope.SEGMENT_OR_SUBSIDIARY and not scope_label:
         raise ValueError("segment_scope_requires_label")
