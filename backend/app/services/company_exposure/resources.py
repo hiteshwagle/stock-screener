@@ -179,7 +179,17 @@ class ResearchResources:
 
     # -- reserve / dispatch / finish --------------------------------------
 
-    def reserve(self, dispatch: DispatchRequest) -> ReservationTicket:
+    def reserve(
+        self,
+        dispatch: DispatchRequest,
+        *,
+        settled: Callable[[], bool] | None = None,
+    ) -> ReservationTicket:
+        """Reserve one dispatch; ``settled`` reports a result already stored.
+
+        ``settled`` is checked under the request-pool lock, so an identical
+        call another worker finished while this one waited is not sent again.
+        """
         if (dispatch.route, dispatch.model) != (
             SUBSCRIPTION_PROVIDER,
             SUBSCRIPTION_MODEL,
@@ -217,6 +227,8 @@ class ResearchResources:
             .where(ResearchResourcePool.id == request_pool.id)
             .with_for_update()
         )
+        if settled is not None and settled():
+            return ReservationTicket(False, "reused", "artifact_exists")
         if self._dispatch_unresolved(dispatch.logical_operation_key):
             # The same call is running, or its worker died mid-call: it may
             # still succeed, so never send it twice. Its reservation settles

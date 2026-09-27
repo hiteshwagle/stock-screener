@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class ResearchRequestBody(BaseModel):
@@ -25,6 +32,14 @@ class ResearchRequestBody(BaseModel):
     )
     supplied_links: list[AnyHttpUrl] = Field(default_factory=list, max_length=5)
     supplied_cik: str | None = Field(default=None, pattern=r"^\d{1,10}$")
+
+    @field_validator("supplied_links")
+    @classmethod
+    def _no_credentials(cls, links: list[AnyHttpUrl]) -> list[AnyHttpUrl]:
+        # Credentials would be stored on the request and shown in previews.
+        if any(link.username or link.password for link in links):
+            raise ValueError("supplied links must not contain credentials")
+        return links
 
     @model_validator(mode="after")
     def _one_listing(self) -> ResearchRequestBody:

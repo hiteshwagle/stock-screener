@@ -217,3 +217,26 @@ def test_timed_out_call_is_not_resent_until_its_period_closes(
     go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
     assert subscription_runner.run(provider_input).artifact_id is not None
     assert len(go_transport.requests) == 2
+
+
+def test_artifact_stored_while_waiting_for_the_lock_is_reused(
+    subscription_runner, provider_input, go_transport, db_session
+):
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    first = subscription_runner.run(provider_input)
+    attempts = db_session.query(ResearchProviderAttempt).count()
+
+    # The unlocked pre-check misses the artifact another worker is storing;
+    # the check under the dispatch lock must find it.
+    real = subscription_runner.cached
+    lookups = []
+
+    def racing_cache(item):
+        lookups.append(item)
+        return None if len(lookups) == 1 else real(item)
+
+    subscription_runner.cached = racing_cache
+    again = subscription_runner.run(provider_input)
+    assert (again.artifact_id, again.reused) == (first.artifact_id, True)
+    assert len(go_transport.requests) == 1
+    assert db_session.query(ResearchProviderAttempt).count() == attempts

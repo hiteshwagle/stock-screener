@@ -358,9 +358,12 @@ def _bounded(blocks: list[dict], max_chars: int) -> tuple[list[dict], int]:
 
 def _run_pdf_extractor(data: bytes, limits: PreparationLimits) -> dict:
     def restrict() -> None:
-        resource.setrlimit(
-            resource.RLIMIT_AS, (limits.pdf_memory_bytes, limits.pdf_memory_bytes)
-        )
+        # macOS rejects RLIMIT_AS (setrlimit fails in preexec_fn and every PDF
+        # job would fail); there the CPU limit and wall-clock timeout remain.
+        if sys.platform != "darwin":
+            resource.setrlimit(
+                resource.RLIMIT_AS, (limits.pdf_memory_bytes, limits.pdf_memory_bytes)
+            )
         cpu = int(limits.pdf_timeout_seconds) + 1
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
 

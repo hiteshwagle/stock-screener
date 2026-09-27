@@ -655,6 +655,18 @@ class ResearchStageRunner:
             link_revision_ids=(str(issuer.link_revision_id),),
         )
 
+    def _scope_changed(self, request, scope: AssessmentScope) -> bool:
+        theme = self.theme_loader(self.session, request.economic_theme_id)
+        issuer = self._issuer(request)
+        if theme is None or issuer is None:
+            return True
+        current = self._scope(request, issuer, theme)
+        return (
+            current.issuer_id,
+            tuple(current.link_revision_ids),
+            current.theme_fingerprint,
+        ) != (scope.issuer_id, tuple(scope.link_revision_ids), scope.theme_fingerprint)
+
     def _verify(self, request) -> StageOutcome:
         theme = self.theme_loader(self.session, request.economic_theme_id)
         if theme is None:
@@ -712,6 +724,12 @@ class ResearchStageRunner:
                 )
             )
 
+        # The provider call ran outside any transaction: an administrator may
+        # have relinked the listing or revised the theme meanwhile. Never seal
+        # evidence for an identity that is no longer current; the artifact
+        # stays for audit and the retried stage re-collects for the new one.
+        if self._scope_changed(request, scope):
+            return StageOutcome.retry("scope_changed_during_verification")
         service = ExposureAssessmentService(self.session, clock=self.clock)
         result = service.assess(
             AssessmentAttemptInput(

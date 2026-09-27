@@ -137,6 +137,36 @@ def test_link_change_after_acquire_reacquires_for_the_current_issuer(
     assert harness.go.requests == []
 
 
+def test_relink_during_provider_call_is_never_sealed(harness, db_session):
+    harness.serve_sec()
+    identity = IssuerIdentityAdapter(db_session)
+
+    def relink_then_answer(request_json):
+        # An administrator relinks the listing while the model call runs.
+        relink = identity.propose_link(
+            LinkProposal(
+                security_id=harness.security.id,
+                issuer_id=None,
+                identifiers=(),
+                evidence={"reference": "corrected listing"},
+                requested_by="test:admin",
+                reason="listing belongs to another issuer",
+            )
+        )
+        identity.apply_link(relink.link_revision_id, ADMIN, relink.proposal_hash)
+        db_session.commit()
+        return claims_for(request_json)
+
+    harness.go.queue_builder(relink_then_answer)
+    harness.request()
+    harness.step(), harness.step()
+    verified = harness.step()
+    assert (verified.stage, verified.status) == ("verify", "retryable")
+    assert verified.detail["condition"] == "scope_changed_during_verification"
+    revisions = select(func.count()).select_from(AssessmentRevision)
+    assert db_session.execute(revisions).scalar() == 0
+
+
 def test_ambiguous_cik_pauses_for_review_then_resumes_after_admin_link(
     harness, db_session
 ):

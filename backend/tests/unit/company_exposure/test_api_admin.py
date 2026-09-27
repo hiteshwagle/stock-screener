@@ -147,6 +147,15 @@ async def test_reused_idempotency_key_with_a_corrected_cik_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_supplied_links_with_credentials_are_rejected(api, db_session, subject):
+    body = _body(subject, supplied_links=["https://user:secret@www.sec.gov/doc.htm"])
+    response = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=body)
+    assert response.status_code == 422
+    # Refused before anything is stored on a request or shown in a preview.
+    assert _requests(db_session) == 0
+
+
+@pytest.mark.asyncio
 async def test_admin_request_is_queued_once_and_recorded_with_trusted_identity(
     api, db_session, subject
 ):

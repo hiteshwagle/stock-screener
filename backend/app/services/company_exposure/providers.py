@@ -171,17 +171,21 @@ class SubscriptionArtifactRunner:
             )
         ).scalar_one_or_none()
 
+    @staticmethod
+    def _reused(existing: ResearchArtifact) -> ArtifactRunResult:
+        return ArtifactRunResult(
+            artifact_id=existing.id,
+            ticket_id=None,
+            retryable=False,
+            pause_reason=None,
+            payload=existing.payload,
+            reused=True,
+        )
+
     def run(self, provider_input: ProviderInput) -> ArtifactRunResult:
         existing = self.cached(provider_input)
         if existing is not None:
-            return ArtifactRunResult(
-                artifact_id=existing.id,
-                ticket_id=None,
-                retryable=False,
-                pause_reason=None,
-                payload=existing.payload,
-                reused=True,
-            )
+            return self._reused(existing)
         ticket = self.resources.reserve(
             DispatchRequest(
                 logical_operation_key=provider_input.logical_operation_key,
@@ -193,8 +197,15 @@ class SubscriptionArtifactRunner:
                 estimated_input_tokens=provider_input.estimated_input_tokens,
                 root_request_id=provider_input.root_request_id,
                 request_id=provider_input.request_id,
-            )
+            ),
+            # Rechecked under the dispatch lock: another worker may have
+            # stored this artifact while this one waited for the lock.
+            settled=lambda: self.cached(provider_input) is not None,
         )
+        if ticket.reason == "artifact_exists":
+            existing = self.cached(provider_input)
+            self.commit()
+            return self._reused(existing)
         if not ticket.allowed:
             self.commit()
             return ArtifactRunResult(

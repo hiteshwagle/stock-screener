@@ -256,3 +256,23 @@ def test_short_theme_terms_select_whole_words_only(
     selection = select_passages(prepared, QuestionSet(terms=("AI",)), limit=24)
     assert [b.text for b in selection.blocks] == ["Our AI accelerator ships."]
     assert selection.omitted_matches == 0
+
+
+def test_pdf_extraction_skips_the_address_space_limit_on_macos(
+    evidence_preparer, long_document, monkeypatch
+):
+    import resource
+    import sys
+
+    real = resource.setrlimit
+
+    def darwin_setrlimit(kind, limits):
+        # What macOS does for RLIMIT_AS in a new process.
+        if kind == resource.RLIMIT_AS:
+            raise ValueError("not allowed")
+        real(kind, limits)
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(resource, "setrlimit", darwin_setrlimit)
+    prepared = evidence_preparer.prepare(long_document)
+    assert prepared.blocks
