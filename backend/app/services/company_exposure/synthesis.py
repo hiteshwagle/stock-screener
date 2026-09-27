@@ -36,6 +36,7 @@ from app.services.company_exposure.wording import (
     clauses,
     mention_spans,
     mentions,
+    nearest_subject,
 )
 
 APPLICATION_LINKS = frozenset(
@@ -99,10 +100,10 @@ def _own_mention(phrase: str, target: str, source: str) -> bool:
 def _predicated(clause: str, link: Link, wording: re.Pattern) -> bool:
     """Whether the clause states the relationship of the link's own ends.
 
-    The verb's subject must be the source and its object the target (or the
-    passive "ET-9000 is sold by Example Corp"): "Example Corp relies on Acme,
-    which offers ET-9000" names both ends and an offer verb, but Acme is the
-    one offering. Verb-final CJK wording needs the verb and both ends in one
+    The source must be the verb's nearest subject and the target its object
+    (or the passive "ET-9000 is sold by Example Corp"): "Example Corp relies
+    on Acme, which offers ET-9000" and "Example Corp says Acme offers
+    ET-9000" name both ends and an offer verb, but Acme is the one offering. Verb-final CJK wording needs the verb and both ends in one
     comma-delimited segment.
     """
 
@@ -111,17 +112,15 @@ def _predicated(clause: str, link: Link, wording: re.Pattern) -> bool:
             continue
         subject = PHRASE_BOUNDARY.split(clause[: verb.start()])[-1]
         rest = clause[verb.end() :]
-        if _mentions(subject, link.source) and _own_mention(
-            CLAUSE_BOUNDARY.split(rest)[0], link.target, link.source
+        if nearest_subject(subject, mention_spans(subject, link.source)) and (
+            _own_mention(CLAUSE_BOUNDARY.split(rest)[0], link.target, link.source)
         ):
             return True
         agent = _PASSIVE_AGENT.match(rest)
-        if (
-            agent
-            and _mentions(subject, link.target)
-            and _mentions(PHRASE_BOUNDARY.split(rest[agent.end() :])[0], link.source)
-        ):
-            return True
+        if agent and _mentions(subject, link.target):
+            by = PHRASE_BOUNDARY.split(rest[agent.end() :])[0]
+            if nearest_subject(by, mention_spans(by, link.source)):
+                return True
     return any(
         any(not match.group().isascii() for match in wording.finditer(segment))
         and _mentions(segment, link.source)

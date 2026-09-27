@@ -83,11 +83,13 @@ from app.services.company_exposure.wording import (
     PRODUCES_CJK,
     SERVES,
     SHIPPING,
+    THIRD_PARTY,
     affirmed,
     affirmed_exit,
     clauses,
     mention_spans,
     mentions,
+    nearest_subject,
 )
 
 VERIFICATION_POLICY = "verification-v1"
@@ -302,12 +304,6 @@ def qualify_evidence(item: EvidenceItem) -> EvidenceRole:
     return EvidenceRole.ORIGINAL_SECONDARY
 
 
-# Another party's product: "our supplier Acme's ET-9000", "a competitor's".
-_THIRD_PARTY = re.compile(
-    r"\b(?:suppliers?|vendors?|partners?|competitors?|rivals?|licensors?|"
-    r"customers?|peers?)\b",
-    re.IGNORECASE,
-)
 _POSSESSOR = re.compile(r"([A-Za-z][\w&.-]*)['’]s\s*$")
 # Possessors inside the issuer's own group ("our subsidiary's ET-9000"); the
 # reporting-scope check decides whether such evidence is issuer-level.
@@ -343,7 +339,7 @@ def _issuers_own(clause: str, term: str, issuer_names) -> bool:
             and words[-1].casefold().strip(",;:") not in _FUNCTION_WORDS
         ):
             continue
-        if _THIRD_PARTY.search(" ".join(words[-3:])):
+        if THIRD_PARTY.search(" ".join(words[-3:])):
             continue
         return True
     return False
@@ -400,10 +396,18 @@ def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
             # use to manufacture HBM" has no issuer producing HBM.
             subject = PHRASE_BOUNDARY.split(clause[: verb.start()])[-1]
             obj = PHRASE_BOUNDARY.split(clause[verb.end() :])[0]
-            if (
-                ISSUER_SUBJECT.search(subject)
-                or any(mentions(subject, n) for n in issuer_names)
-            ) and any(_theme_is_head(obj, t) for t in theme_terms):
+            # The issuer must be the verb's nearest subject: "We believe Acme
+            # manufactures HBM" is Acme's production.
+            named = [m.span() for m in ISSUER_SUBJECT.finditer(subject)]
+            named += [
+                span
+                for name in issuer_names
+                if name
+                for span in mention_spans(subject, name)
+            ]
+            if nearest_subject(subject, named) and any(
+                _theme_is_head(obj, t) for t in theme_terms
+            ):
                 found.append(clause)
                 break
     return found

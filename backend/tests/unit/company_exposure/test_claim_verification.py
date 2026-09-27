@@ -150,6 +150,13 @@ def test_negated_premise_cannot_carry_a_synthesis_link():
             "ET-9000 tests HBM.",
             False,
         ),
+        # A reporting verb hands the offer to a nearer subject.
+        ("Example Corp says Acme offers ET-9000.", "ET-9000 tests HBM.", False),
+        (
+            "ET-9000 is sold by Example Corp's partner Acme.",
+            "ET-9000 tests HBM.",
+            False,
+        ),
         # The tester supports HBM, not the ET-9000.
         (
             "Example Corp offers the ET-9000.",
@@ -293,6 +300,13 @@ def test_segment_label_must_be_a_whole_word_of_the_evidence():
             False,
         ),
         ("hbm-manufacturing", "We make equipment used for HBM production.", False),
+        # The issuer must be the verb's nearest subject, not a reporter of it.
+        ("hbm-manufacturing", "We believe Acme manufactures HBM products.", False),
+        (
+            "hbm-manufacturing",
+            "Example Test Systems Corp says Acme sells HBM stacks.",
+            False,
+        ),
         # CJK: the issuer's own segment must produce the theme.
         ("hbm-manufacturing", "本公司生产HBM产品。", True),
         ("hbm-manufacturing", "本公司销售设备，客户使用这些设备生产HBM。", False),

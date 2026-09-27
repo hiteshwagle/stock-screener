@@ -607,10 +607,22 @@ def test_identifier_digits_are_not_amounts_but_scale_suffixes_are():
             True,
         ),
         (
-            "HBM revenue was USD 30 million in FY2024, up from USD 20 million.",
+            "R&D spending was USD 20 million, HBM revenue was USD 30 million in FY2024.",
             "20",
+            True,
+        ),
+        (
+            "R&D spending was USD 20 million, HBM revenue was USD 30 million in FY2024.",
+            "30",
             False,
         ),
+        # The prior-year figure is not FY2024 revenue.
+        (
+            "HBM revenue was USD 30 million in FY2024, up from USD 20 million.",
+            "20",
+            True,
+        ),
+        ("In FY2024, HBM revenue was USD 1,230 million.", "1230", False),
     ],
 )
 def test_value_must_be_the_figure_its_metric_describes(quote, value, held):

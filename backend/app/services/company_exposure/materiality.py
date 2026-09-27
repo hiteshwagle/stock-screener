@@ -299,9 +299,12 @@ def _names_currency(text: str, word: str) -> bool:
 
 
 # Where one stated figure ends and another begins: "We spent USD 20 million
-# on R&D; HBM revenue was USD 30 million" states 20 of R&D, not of revenue.
+# on R&D; HBM revenue was USD 30 million" states 20 of R&D, not of revenue,
+# and so does "R&D was USD 20 million, HBM revenue was USD 30 million". A
+# comma inside a number ("1,234") is not followed by a space. Splitting may
+# hold a figure whose metric sits in another clause; it never accepts one.
 _MEASURE_SEGMENT = re.compile(
-    r"[;；。]|(?<=[.!?])\s|\b(?:and|while|whereas|but|however|versus|"
+    r"[;；。，、]|,\s|(?<=[.!?])\s|\b(?:and|while|whereas|but|however|versus|"
     r"compared\s+(?:with|to))\b",
     re.IGNORECASE,
 )

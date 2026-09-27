@@ -182,6 +182,46 @@ CLAUSE_BOUNDARY = re.compile(
     re.IGNORECASE,
 )
 
+# Another party: "our supplier Acme's ET-9000", "a competitor's".
+THIRD_PARTY = re.compile(
+    r"\b(?:suppliers?|vendors?|partners?|competitors?|rivals?|licensors?|"
+    r"customers?|peers?)\b",
+    re.IGNORECASE,
+)
+# Words between a named subject and a verb that hand the verb to someone
+# else: "Example Corp says Acme offers", "We believe they make HBM".
+_HANDOFF = re.compile(
+    r"\b(?:says?|said|stat(?:es|ed)|reports?|reported|notes?|noted|announc(?:es|ed)|"
+    r"believes?|believed|expects?|expected|claims?|claimed|disclos(?:es|ed)|"
+    r"confirms?|confirmed|argues?|argued|according|thinks?|thought|knows?|knew|"
+    r"it|its|they|their|he|his|she|her|which|who)\b",
+    re.IGNORECASE,
+)
+# Capitalized words that continue a company name rather than start another.
+_NAME_SUFFIXES = frozenset(
+    {"inc", "corp", "corporation", "co", "ltd", "llc", "plc", "group", "holdings"}
+)
+
+
+def nearest_subject(subject: str, spans: list[tuple[int, int]]) -> bool:
+    """Whether the last of ``spans`` is the verb's own subject.
+
+    ``subject`` runs up to the verb; nothing after the named subject may
+    introduce another actor — a reporting verb, a third party, a pronoun or
+    another name ("Example Corp says Acme offers ET-9000" is Acme's offer).
+    """
+
+    if not spans:
+        return False
+    gap = subject[max(end for _, end in spans) :]
+    if _HANDOFF.search(gap) or THIRD_PARTY.search(gap):
+        return False
+    return not any(
+        word[:1].isupper() and word.casefold().strip(".,'’") not in _NAME_SUFFIXES
+        for word in gap.split()
+    )
+
+
 # A segment or subsidiary belonging to the issuer.
 PART_OF = re.compile(
     r"\b(segments?|subsidiar(?:y|ies)|divisions?|business\s+units?|units?\s+of|part\s+of|"
