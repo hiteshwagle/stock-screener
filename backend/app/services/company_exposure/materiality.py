@@ -2,7 +2,9 @@
 
 Materiality is typed evidence: basis (disclosed / calculated / qualitative /
 unknown), metric, Decimal value, unit, currency, period, reporting scope,
-denominator and operand citations. It is never ``exposure_strength`` or a
+denominator and operand citations. A disclosed figure's metric, unit,
+currency, period and scope must be stated by its quote (or, for the
+period, by the cited document). It is never ``exposure_strength`` or a
 confidence score, and nothing here estimates a number the source did not
 disclose.
 
@@ -113,6 +115,78 @@ def quote_contains_value(quote: str | None, value: Decimal) -> bool:
     return False
 
 
+# Wording a quote must carry for a model-supplied metric head, unit, scale
+# or currency to be taken as stated rather than invented.
+_METRIC_WORDS = {
+    "revenue": ("revenue", "sales", "turnover", "売上", "營收", "营收", "收入"),
+    "sales": ("revenue", "sales", "turnover", "売上", "營收", "营收", "收入"),
+    "profit": ("profit", "income", "earnings", "利益", "利潤", "利润"),
+    "income": ("profit", "income", "earnings", "利益", "利潤", "利润"),
+    "backlog": ("backlog", "order", "受注", "訂單", "订单"),
+}
+_PERCENT_UNITS = frozenset({"percent", "pct", "%", "percentage"})
+_PERCENT_WORDS = ("%", "％", "percent", "per cent")
+_SCALE_WORDS = {
+    "thousand": (r"thousand", r"\bk\b", "千"),
+    "million": (r"million", r"\bmn\b", r"\bmm\b", r"\d\s*m\b", "百万", "百萬"),
+    "billion": (r"billion", r"\bbn\b", r"\d\s*b\b", "億", "亿", "十億"),
+}
+_CURRENCY_WORDS = {
+    "USD": ("usd", "$", "dollar"),
+    "EUR": ("eur", "€", "euro"),
+    "JPY": ("jpy", "¥", "円", "yen"),
+    "TWD": ("twd", "nt$", "新台幣", "新台币"),
+    "HKD": ("hkd", "hk$"),
+    "CNY": ("cny", "rmb", "人民幣", "人民币"),
+    "KRW": ("krw", "₩", "won"),
+    "GBP": ("gbp", "£", "pound"),
+}
+_WORD = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _grounding_holds(
+    *,
+    metric: str,
+    unit: str,
+    currency: str | None,
+    period: str,
+    scope_label: str | None,
+    quote: str,
+    period_evidence: tuple[str, ...],
+) -> list[str]:
+    """Metadata the model supplied that the cited wording does not state.
+
+    Only the number was checked before; "USD 20 million in FY2024" must not
+    come back as a 20% FY2026 share of "HBM revenue".
+    """
+
+    text = _norm(quote)
+    holds = []
+    head = (metric or "").split("_")[0].casefold()
+    if head and not any(word in text for word in _METRIC_WORDS.get(head, (head,))):
+        holds.append("metric_not_in_quote")
+    unit_folded = (unit or "").casefold()
+    if unit_folded in _PERCENT_UNITS and not any(w in text for w in _PERCENT_WORDS):
+        holds.append("unit_not_in_quote")
+    for scale, patterns in _SCALE_WORDS.items():
+        if scale in unit_folded and not any(re.search(p, text) for p in patterns):
+            holds.append("unit_not_in_quote")
+    if currency:
+        words = _CURRENCY_WORDS.get(currency.upper(), (currency.casefold(),))
+        if not any(word in text for word in words):
+            holds.append("currency_not_in_quote")
+    # The period may come from the document itself (its reporting period).
+    period_text = " ".join((text, *(_norm(p) for p in period_evidence)))
+    digits = re.findall(r"\d+", period or "")
+    if not period or any(d not in period_text for d in digits):
+        holds.append("period_not_in_quote")
+    if scope_label and any(
+        word not in text for word in _WORD.findall(scope_label.casefold())
+    ):
+        holds.append("scope_not_in_quote")
+    return list(dict.fromkeys(holds))
+
+
 def unknown_materiality(reason: str | None = None) -> MaterialityMeasureResult:
     return MaterialityMeasureResult(
         basis=MaterialityBasis.UNKNOWN,
@@ -132,12 +206,28 @@ def validate_measure(
     passage_id: str | None,
     theme_terms: tuple[str, ...] = (),
     currency: str | None = None,
+    period_evidence: tuple[str, ...] = (),
 ) -> MaterialityMeasureResult:
-    """A directly disclosed figure (e.g. "Memory test was 20% of revenue")."""
+    """A directly disclosed figure (e.g. "Memory test was 20% of revenue").
+
+    ``period_evidence`` is the cited document's own reporting period or date,
+    which may ground a period the quoted sentence leaves implicit.
+    """
 
     holds = []
     if not quote_contains_value(quote, value):
         holds.append("value_not_in_quote")
+    holds.extend(
+        _grounding_holds(
+            metric=metric,
+            unit=unit,
+            currency=currency,
+            period=period,
+            scope_label=scope_label,
+            quote=quote,
+            period_evidence=period_evidence,
+        )
+    )
     if metric.endswith("_share") and not (Decimal(0) <= value <= Decimal(1)):
         holds.append("share_out_of_range")
     theme_specific = bool(scope_label) and any(

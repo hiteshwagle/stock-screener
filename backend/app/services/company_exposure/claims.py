@@ -10,7 +10,8 @@ after that is deterministic and can only *downgrade*:
   cannot be primary support;
 * co-occurrence is not a relationship — a theme-application claim needs one
   sentence naming both the product/activity and the theme application, or a
-  valid bounded synthesis;
+  valid bounded synthesis from the claimed product to the assessed theme
+  (never for an exposure end, which needs explicit exit wording);
 * a shipping/available status needs an affirmed clause stating it, and
   negated or modal language ("has not begun shipping", "plans to",
   "qualification") cannot support one; a relationship claim needs at least
@@ -376,6 +377,35 @@ def _customer_clauses(
     ]
 
 
+def _synthesis_scope_holds(
+    spec: dict, links, scope: AssessmentScope, product_terms, key_tokens
+) -> list[str]:
+    def names_product(text: str) -> bool:
+        return bool(_tokens(text) & key_tokens) or any(
+            t.casefold() in text.casefold() for t in product_terms
+        )
+
+    def names_issuer(text: str) -> bool:
+        folded = text.casefold().strip()
+        return bool(folded) and any(
+            folded in name.casefold() or name.casefold() in folded
+            for name in scope.issuer_names
+            if name
+        )
+
+    subject = str(spec.get("subject", ""))
+    application = str(spec.get("application", "")).casefold()
+    holds = []
+    if not any(t and t.casefold() in application for t in scope.theme_terms):
+        holds.append("synthesis_application_not_theme")
+    through_product = any(
+        names_product(link.source) or names_product(link.target) for link in links
+    )
+    if not (names_product(subject) or (names_issuer(subject) and through_product)):
+        holds.append("synthesis_subject_not_product")
+    return holds
+
+
 def _status_guard(
     status: CommercialStatus, quotes: list[str], product_terms
 ) -> tuple[CommercialStatus, list[str], list[str]]:
@@ -441,6 +471,15 @@ def _materiality(
                     passage_id=str(item.passage_id),
                     theme_terms=scope.theme_terms,
                     currency=spec.get("currency"),
+                    period_evidence=tuple(
+                        str(v)
+                        for v in (
+                            item.reporting_period,
+                            item.effective_at and item.effective_at.date(),
+                            item.published_at and item.published_at.date(),
+                        )
+                        if v
+                    ),
                 ),
                 [str(item.passage_id)],
             )
@@ -589,6 +628,17 @@ def validate_candidate(
             else SupportBasis.INFERRED_UNVERIFIED
         )
         holds.extend(synthesis.reasons)
+        # The chain's ends come from the model: they must be the claimed
+        # product and the assessed theme, not "ET-9000 supports PCIe".
+        off_scope = _synthesis_scope_holds(
+            spec, links, scope, product_terms, key_tokens
+        )
+        if kind == ClaimKind.EXPOSURE_END:
+            # An exit holds every related claim: it needs explicit wording.
+            off_scope.append("exit_requires_explicit_primary")
+        if off_scope:
+            basis = SupportBasis.INFERRED_UNVERIFIED
+            holds.extend(off_scope)
     elif primary_quotes:
         basis = SupportBasis.PRIMARY_EXPLICIT
         # The clause that carries the relationship must itself be affirmed:

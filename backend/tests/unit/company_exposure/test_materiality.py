@@ -184,3 +184,63 @@ def test_qualitative_label_must_match_its_wording(label, quote, kept):
     assert measure.qualitative_label.value == kept
     held = "qualitative_label_not_supported_by_wording" in measure.hold_reasons
     assert held is (kept != label)
+
+
+def test_disclosed_metadata_must_be_stated_by_the_quote():
+    quote = "Revenue was USD 20 million in FY2024."
+    stated = validate_measure(
+        metric="revenue",
+        value=Decimal(20),
+        unit="USD_million",
+        currency="USD",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote=quote,
+        passage_id="p",
+    )
+    assert not stated.held
+    invented = validate_measure(
+        metric="revenue_percent",
+        value=Decimal(20),
+        unit="percent",
+        period="FY2026",
+        scope="segment_or_subsidiary",
+        scope_label="HBM revenue",
+        quote=quote,
+        passage_id="p",
+        theme_terms=THEME,
+    )
+    assert set(invented.hold_reasons) >= {
+        "unit_not_in_quote",
+        "period_not_in_quote",
+        "scope_not_in_quote",
+    }
+    assert invented.theme_specific is False
+    wrong_currency = validate_measure(
+        metric="revenue",
+        value=Decimal(20),
+        unit="million",
+        currency="EUR",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote=quote,
+        passage_id="p",
+    )
+    assert "currency_not_in_quote" in wrong_currency.hold_reasons
+
+
+def test_document_period_grounds_an_implicit_period():
+    kwargs = {
+        "metric": "revenue_percent",
+        "value": Decimal(20),
+        "unit": "percent",
+        "period": "FY2025",
+        "scope": "segment_or_subsidiary",
+        "scope_label": "Memory test",
+        "quote": "Memory test was 20% of revenue",
+        "passage_id": "p",
+    }
+    assert validate_measure(**kwargs).hold_reasons == ("period_not_in_quote",)
+    assert not validate_measure(**kwargs, period_evidence=("FY2025",)).held

@@ -654,3 +654,48 @@ def test_freshness_follows_the_citation_that_carries_the_relationship():
     )
     assert result.support_basis == SupportBasis.PRIMARY_EXPLICIT
     assert result.supported_as_of == old
+
+
+def _synthesis(subject, application, quote, kind="product_application"):
+    return validate_candidate(
+        claim(
+            kind,
+            statement=quote,
+            synthesis={
+                "subject": subject,
+                "application": application,
+                "premises": [{"ref": "P1", "quote": quote}],
+                "links": [
+                    {
+                        "source": subject,
+                        "target": application,
+                        "relationship": "product_supports_application",
+                        "ref": "P1",
+                    }
+                ],
+            },
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+
+
+def test_synthesis_ends_must_be_the_claimed_product_and_theme():
+    assert (
+        _synthesis("ET-9000", "HBM", "ET-9000 supports HBM testing.").support_basis
+        == SupportBasis.PRIMARY_SYNTHESIS
+    )
+    off_theme = _synthesis("ET-9000", "PCIe", "ET-9000 supports PCIe.")
+    assert off_theme.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "synthesis_application_not_theme" in off_theme.hold_reasons
+    off_product = _synthesis("XR-1", "HBM", "XR-1 supports HBM testing.")
+    assert off_product.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "synthesis_subject_not_product" in off_product.hold_reasons
+
+
+def test_exposure_end_cannot_rest_on_a_synthesis():
+    result = _synthesis(
+        "ET-9000", "HBM", "ET-9000 supports HBM testing.", kind="exposure_end"
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "exit_requires_explicit_primary" in result.hold_reasons

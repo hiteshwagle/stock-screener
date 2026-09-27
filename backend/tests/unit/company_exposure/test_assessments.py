@@ -35,6 +35,8 @@ def _materiality(dossier, period, date):
         scope_label="Memory test",
         quote="Memory test was 20% of revenue",
         passage_id=str(passage.id),
+        # The cited filing's reporting period grounds the implicit period.
+        period_evidence=(period,),
     )
     assert not measure.held
     return verified_claim(
