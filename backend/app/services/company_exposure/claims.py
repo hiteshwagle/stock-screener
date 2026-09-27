@@ -334,6 +334,14 @@ def _issuers_own(clause: str, term: str, issuer_names) -> bool:
         possessor = _POSSESSOR.search(before + " ")
         if possessor and possessor.group(1).casefold() not in _GROUP_POSSESSORS:
             continue
+        # A company name right before the product ("NVIDIA H100") makes it
+        # that company's; "The ET-9000" or "Our ET-9000" does not.
+        if (
+            words
+            and words[-1][:1].isupper()
+            and words[-1].casefold().strip(",;:") not in _FUNCTION_WORDS
+        ):
+            continue
         if _THIRD_PARTY.search(" ".join(words[-3:])):
             continue
         return True
@@ -879,9 +887,11 @@ def _materiality(
                 return unknown_materiality("materiality_quote_not_found"), []
             if not _primary_item(item):
                 return unknown_materiality("materiality_not_primary"), []
-            if _measure_scope(spec.get("scope")) == (
-                ReportingScope.SEGMENT_OR_SUBSIDIARY.value
-            ) and not spec.get("scope_label"):
+            if (
+                _measure_scope(spec.get("scope"))
+                == (ReportingScope.SEGMENT_OR_SUBSIDIARY.value)
+                and not str(spec.get("scope_label") or "").strip()
+            ):
                 return unknown_materiality("segment_scope_requires_label"), []
             return (
                 validate_measure(
@@ -909,9 +919,11 @@ def _materiality(
                     return unknown_materiality(f"{role}_quote_not_found"), []
                 if not _primary_item(item):
                     return unknown_materiality(f"{role}_not_primary"), []
-                if _measure_scope(part.get("scope")) == (
-                    ReportingScope.SEGMENT_OR_SUBSIDIARY.value
-                ) and not part.get("label"):
+                if (
+                    _measure_scope(part.get("scope"))
+                    == (ReportingScope.SEGMENT_OR_SUBSIDIARY.value)
+                    and not str(part.get("label") or "").strip()
+                ):
                     return unknown_materiality("segment_scope_requires_label"), []
                 operands.append(
                     Operand(
@@ -954,6 +966,8 @@ def validate_candidate(
     scope_label = raw.get("scope_label") or None
     if scope_label is not None and not isinstance(scope_label, str):
         raise ValueError("scope_label_not_text")
+    # A label of only whitespace names no segment.
+    scope_label = scope_label.strip() or None if scope_label is not None else None
     if scope_label is not None and len(scope_label) > 200:
         raise ValueError("scope_label_too_long")
     if reporting_scope == ReportingScope.SEGMENT_OR_SUBSIDIARY and not scope_label:
@@ -1008,8 +1022,12 @@ def validate_candidate(
                 elif role == EvidenceRole.ORIGINAL_SECONDARY:
                     secondary = True
 
+    # A conflicting citation disputes this claim only if it is about the
+    # claimed product; "We do not support legacy X100" says nothing here.
     conflicting_primary = any(
-        c.direction == "conflicting" and c.role == EvidenceRole.ORIGINAL_PRIMARY
+        c.direction == "conflicting"
+        and c.role == EvidenceRole.ORIGINAL_PRIMARY
+        and _names_product(c.quote, product_terms, key_tokens)
         for c in cited
     )
 

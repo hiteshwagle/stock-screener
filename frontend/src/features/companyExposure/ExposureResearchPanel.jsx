@@ -43,9 +43,14 @@ function materialityText(materiality) {
   if (materiality.qualitative_label) return `Qualitative: ${materiality.qualitative_label}`;
   const scope = materiality.scope_label ? ` of ${materiality.scope_label}` : '';
   const unit = materiality.unit ? ` ${materiality.unit}` : '';
+  // The currency is stored apart from the unit: show it unless the unit
+  // already names it (e.g. "USD_million").
+  const currency = materiality.currency
+    && !(materiality.unit || '').toUpperCase().includes(materiality.currency.toUpperCase())
+    ? ` ${materiality.currency}` : '';
   const denominator = materiality.denominator_definition
     ? ` (denominator: ${materiality.denominator_definition})` : '';
-  return `${materiality.metric} ${materiality.value}${unit}${scope}, ${materiality.period}${denominator}`;
+  return `${materiality.metric}${currency} ${materiality.value}${unit}${scope}, ${materiality.period}${denominator}`;
 }
 
 function ClaimCard({ claim }) {

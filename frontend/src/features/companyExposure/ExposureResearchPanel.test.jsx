@@ -48,6 +48,27 @@ describe('ExposureResearchPanel', () => {
     expect(screen.getByText('ET-9000 revenue was USD 5 million in FY2024.')).toBeVisible();
   });
 
+  it('shows the currency stored apart from the unit', () => {
+    const measured = {
+      ...shadowPreview,
+      claims: [{
+        ...shadowPreview.claims[0],
+        materiality: {
+          basis: 'disclosed',
+          metric: 'revenue',
+          value: '20',
+          unit: 'million',
+          currency: 'EUR',
+          period: 'FY2024',
+          hold_reasons: [],
+          evidence: [],
+        },
+      }],
+    };
+    renderWithProviders(<ExposureResearchPanel job={shadowCompletedJob} preview={measured} />);
+    expect(screen.getByText(/revenue EUR 20 million, FY2024/)).toBeVisible();
+  });
+
   it('surfaces verifier hold reasons on a current claim', () => {
     const flagged = {
       ...shadowPreview,

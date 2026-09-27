@@ -507,3 +507,30 @@ def test_metric_words_must_be_whole_words(metric, held):
         passage_id="p",
     )
     assert ("metric_not_in_quote" in result.hold_reasons) is held
+
+
+@pytest.mark.parametrize(
+    ("value", "held"),
+    [("20", False), ("2024", True)],
+)
+def test_value_cannot_be_the_reporting_year(value, held):
+    result = validate_measure(
+        metric="revenue",
+        value=Decimal(value),
+        unit="million",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote="HBM revenue was USD 20 million in FY2024.",
+        passage_id="p",
+        currency="USD",
+    )
+    assert ("value_not_in_quote" in result.hold_reasons) is held
+
+
+def test_year_inside_a_date_is_not_a_value():
+    from app.services.company_exposure.materiality import quote_contains_value
+
+    quote = "Revenue for the year ended 2024-12-31 was 2024 units."
+    assert quote_contains_value(quote, Decimal(2024))  # the amount, not the date
+    assert not quote_contains_value("As of 2024-12-31 revenue grew.", Decimal(2024))

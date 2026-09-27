@@ -104,14 +104,44 @@ def parse_decimal(text: str) -> Decimal:
     return value
 
 
+# Numbers that name a period rather than an amount: "FY2024", "Q1", "fiscal
+# 2024", "in 2024", or part of a date such as 2024-12-31.
+_PERIOD_PREFIX = re.compile(
+    r"(?:\bfy|\bcy|\bfiscal(?:\s+year)?|\byear|\bq|\bh)\s*'?$", re.IGNORECASE
+)
+_YEAR_PREFIX = re.compile(
+    r"\b(?:in|during|since|for|through|until|by|from|to|ended|ending)\s+$",
+    re.IGNORECASE,
+)
+_YEAR_SHAPED = re.compile(r"(?:19|20)\d{2}")
+
+
+def _names_period(quote: str, match: re.Match) -> bool:
+    token = match.group(0).lstrip("+-")
+    before = quote[max(0, match.start() - 20) : match.start()]
+    after = quote[match.end() : match.end() + 2]
+    if _PERIOD_PREFIX.search(before):
+        return True
+    in_date = re.match(r"[-/]\d", after) or re.search(r"\d[-/]$", before)
+    return bool(_YEAR_SHAPED.fullmatch(token)) and bool(
+        in_date or _YEAR_PREFIX.search(before)
+    )
+
+
 def quote_contains_value(quote: str | None, value: Decimal) -> bool:
-    """A cited operand must appear in its quote (exact decimal equality)."""
+    """A cited operand must appear in its quote as an amount.
+
+    Exact decimal equality, and never a number that names the period: "USD
+    20 million in FY2024" does not state a value of 2024.
+    """
 
     if not quote:
         return False
-    for token in _NUMBER.findall(quote):
+    for match in _NUMBER.finditer(quote):
+        if _names_period(quote, match):
+            continue
         try:
-            if Decimal(token.replace(",", "")) == value:
+            if Decimal(match.group(0).replace(",", "")) == value:
                 return True
         except InvalidOperation:
             continue

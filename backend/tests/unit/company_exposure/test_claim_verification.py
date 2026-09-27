@@ -362,6 +362,9 @@ def test_non_text_scope_label_is_rejected_output():
         # Another company's product is not the issuer's exposure.
         ("Our supplier Acme's ET-9000 supports HBM testing.", False),
         ("A competitor's ET-9000 supports HBM testing.", False),
+        # A named company before the product makes it that company's.
+        ("Acme ET-9000 testers support HBM testing.", False),
+        ("The ET-9000 supports HBM testing.", True),
     ],
 )
 def test_linked_product_must_be_the_issuers_own(text, linked):
@@ -415,6 +418,46 @@ def test_segment_measure_needs_its_label(label):
         "segment_scope_requires_label"
     )
     assert held is (label is None)
+
+
+def test_whitespace_segment_label_is_no_label():
+    text = "The ET-9000 supports HBM testing."
+    batch = ClaimVerifier.validate_payload(
+        {
+            "claims": [
+                claim(
+                    reporting_scope="segment_or_subsidiary",
+                    scope_label="   ",
+                    support=[{"ref": "P1", "quote": text}],
+                )
+            ]
+        },
+        [item("P1", text)],
+        SCOPE,
+    )
+    assert batch.claims == ()
+    assert "segment_scope_requires_label" in batch.rejected[0]
+
+
+@pytest.mark.parametrize(
+    ("conflict", "disputed"),
+    [
+        ("We do not support legacy X100 products.", False),
+        ("The ET-9000 does not support HBM testing.", True),
+    ],
+)
+def test_conflicting_citation_must_be_about_the_claimed_product(conflict, disputed):
+    text = "The ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim(
+            support=[{"ref": "P1", "quote": text}],
+            conflicts=[{"ref": "P2", "quote": conflict}],
+        ),
+        evidence(item("P1", text), item("P2", conflict)),
+        SCOPE,
+    )
+    assert (result.conclusion == Conclusion.DISPUTED) is disputed
+    assert ("conflicting_primary_evidence" in result.hold_reasons) is disputed
 
 
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
