@@ -464,6 +464,38 @@ def backfill_breadth_data(self, start_date: str, end_date: str, market: str = "U
     }
 
 
+def _fill_breadth_gaps(
+    calculator: BreadthCalculatorService,
+    *,
+    max_gap_days: int,
+    target_date,
+    policy,
+) -> dict:
+    logger.info(f"Checking for gaps in last {max_gap_days} days...")
+    missing_dates = calculator.find_missing_dates(
+        lookback_days=max_gap_days,
+        end_date=target_date,
+    )
+    if not missing_dates:
+        logger.info("No missing dates found - breadth data is complete")
+        return {
+            'total_dates': 0,
+            'processed': 0,
+            'errors': 0,
+            'message': 'No gaps detected'
+        }
+
+    logger.info(f"Found {len(missing_dates)} missing breadth dates")
+    logger.info(f"Date range: {missing_dates[0]} to {missing_dates[-1]}")
+    gap_stats = calculator.fill_gaps(missing_dates, policy=policy)
+    logger.info(
+        f"✓ Gap-fill complete: {gap_stats['processed']} dates filled, "
+        f"{gap_stats['errors']} errors, "
+        f"{gap_stats.get('unavailable', 0)} unavailable"
+    )
+    return gap_stats
+
+
 @celery_app.task(
     bind=True,
     name='app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill',
@@ -561,36 +593,30 @@ def calculate_daily_breadth_with_gapfill(
 
         # Step 1: Check if gap-fill is enabled
         if settings.breadth_gapfill_enabled:
-            logger.info(f"Checking for gaps in last {max_gap_days} days...")
-
-            # Find missing dates
-            missing_dates = calculator.find_missing_dates(
-                lookback_days=max_gap_days,
-                end_date=target_date,
-            )
-
-            if missing_dates:
-                logger.info(f"Found {len(missing_dates)} missing breadth dates")
-                logger.info(f"Date range: {missing_dates[0]} to {missing_dates[-1]}")
-
-                # Fill gaps
-                gap_stats = calculator.fill_gaps(
-                    missing_dates,
+            try:
+                result['gap_fill'] = _fill_breadth_gaps(
+                    calculator,
+                    max_gap_days=max_gap_days,
+                    target_date=target_date,
                     policy=gap_policy,
                 )
-                result['gap_fill'] = gap_stats
-
-                logger.info(
-                    f"✓ Gap-fill complete: {gap_stats['processed']} dates filled, "
-                    f"{gap_stats['errors']} errors"
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as gap_error:
+                # History is best-effort context for the target date. A
+                # failure here must not cost the target date's breadth; the
+                # next run retries the gaps.
+                db.rollback()
+                logger.error(
+                    "Breadth gap-fill failed for %s; continuing with %s: %s",
+                    effective_market,
+                    target_date,
+                    gap_error,
+                    exc_info=True,
                 )
-            else:
-                logger.info("No missing dates found - breadth data is complete")
                 result['gap_fill'] = {
-                    'total_dates': 0,
-                    'processed': 0,
-                    'errors': 0,
-                    'message': 'No gaps detected'
+                    'status': 'failed',
+                    'error': str(gap_error),
                 }
         else:
             logger.info("Gap-fill disabled in settings, skipping gap detection")

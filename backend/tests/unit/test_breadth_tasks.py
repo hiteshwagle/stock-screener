@@ -666,3 +666,65 @@ def test_breadth_tasks_use_ordinary_runner_without_task_introspection():
     assert "disable_serialized_market_workload" not in source
     assert "unittest.mock" not in source
     assert ".run(**kwargs)" not in source
+
+
+def _gapfill_task_with_failing_gaps(monkeypatch, gap_error):
+    import app.tasks.breadth_tasks as module
+
+    fake_db = MagicMock()
+    fake_calculator = MagicMock()
+    fake_calculator.find_missing_dates.return_value = [date(2026, 3, 18)]
+    fake_calculator.fill_gaps.side_effect = gap_error
+    monkeypatch.setattr(module, "SessionLocal", lambda: fake_db)
+    monkeypatch.setattr(
+        module, "BreadthCalculatorService", lambda *args, **kwargs: fake_calculator
+    )
+    monkeypatch.setattr(module.settings, "breadth_gapfill_enabled", True)
+    monkeypatch.setattr(
+        "app.services.runtime_preferences_service.is_market_enabled_now",
+        lambda _market: True,
+    )
+    _patch_serialized_lock(monkeypatch)
+    _patch_calendar_service(monkeypatch, datetime(2026, 3, 20, 17, 40, 0))
+    target_call = MagicMock(
+        return_value=_breadth_outcome(calculation_date=date(2026, 3, 19))
+    )
+    monkeypatch.setattr(module, "run_daily_breadth", target_call)
+    return module, fake_db, target_call
+
+
+def test_gapfill_failure_does_not_fail_the_target_date(monkeypatch):
+    module, fake_db, target_call = _gapfill_task_with_failing_gaps(
+        monkeypatch, RuntimeError("historical universe exploded")
+    )
+
+    result = module.calculate_daily_breadth_with_gapfill.run(
+        market="US",
+        calculation_date="2026-03-19",
+        execution_policy="refresh_guarded",
+    )
+
+    assert "error" not in result
+    assert result["gap_fill"] == {
+        "status": "failed",
+        "error": "historical universe exploded",
+    }
+    assert target_call.call_args.args[1].calculation_date == date(2026, 3, 19)
+    assert result["today"]["date"] == "2026-03-19"
+    fake_db.rollback.assert_called()
+
+
+def test_gapfill_soft_time_limit_still_stops_the_task(monkeypatch):
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    module, _, target_call = _gapfill_task_with_failing_gaps(
+        monkeypatch, SoftTimeLimitExceeded()
+    )
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        module.calculate_daily_breadth_with_gapfill.run(
+            market="US",
+            calculation_date="2026-03-19",
+            execution_policy="refresh_guarded",
+        )
+    target_call.assert_not_called()
