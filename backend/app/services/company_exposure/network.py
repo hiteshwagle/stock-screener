@@ -184,8 +184,19 @@ class PublicDocumentTransport:
                 timeout=httpx.Timeout(request.timeout_seconds, connect=10.0),
                 follow_redirects=False,
             ) as client:
+                previous = None
                 for _ in range(request.max_redirects + 1):
                     address, failure = self._check(url, request)
+                    # Never follow a downgrade: plain-HTTP bytes could be
+                    # altered in transit yet keep the verified origin.
+                    if (
+                        failure is None
+                        and previous is not None
+                        and urlsplit(previous).scheme == "https"
+                        and urlsplit(url).scheme != "https"
+                    ):
+                        failure = "insecure_redirect"
+                    previous = url
                     hops.append(sanitize_url(url))
                     if failure is not None:
                         return FetchResponse(

@@ -67,6 +67,7 @@ _GAP_OUTCOMES = {
     "origin_not_permitted": CoverageOutcome.BLOCKED_DESTINATION,
     "url_credentials_forbidden": CoverageOutcome.BLOCKED_DESTINATION,
     "unsupported_url": CoverageOutcome.BLOCKED_DESTINATION,
+    "insecure_redirect": CoverageOutcome.BLOCKED_DESTINATION,
     # The document itself was refused: retrying the stage cannot change it.
     "retention_not_permitted": CoverageOutcome.OMITTED,
     "media_unrecognized": CoverageOutcome.OMITTED,

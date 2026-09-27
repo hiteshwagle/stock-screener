@@ -161,6 +161,16 @@ def test_credentials_are_never_forwarded_to_a_redirect_host():
     assert "secret" not in result.final_url
 
 
+def test_https_to_http_redirect_is_never_followed(
+    public_transport, public_request, network_spy
+):
+    # Same allowed host, but plain HTTP: its bytes could be altered in transit.
+    network_spy.respond_redirect("http://www.sec.gov/Archives/final.htm")
+    result = public_transport.fetch_once(public_request)
+    assert (result.ok, result.failure_code) == (False, "insecure_redirect")
+    assert network_spy.connected_hosts == ["www.sec.gov"]
+
+
 def test_each_hop_calls_before_request(public_transport, public_request, network_spy):
     network_spy.resolution["www.sec.gov"] = [PUBLIC_IP]
     network_spy.respond_redirect("https://www.sec.gov/Archives/final.htm")

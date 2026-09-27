@@ -14,6 +14,9 @@ const errorCode = (error) => error?.response?.data?.detail?.code
   || (typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : null)
   || error?.message || 'Request failed';
 
+// Live freshness and holds on a sealed preview: recheck once a minute.
+export const PREVIEW_REFRESH_MS = 60_000;
+
 const newIdempotencyKey = () => `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export default function ExposureResearchWorkspace() {
@@ -36,7 +39,10 @@ export default function ExposureResearchWorkspace() {
     queryKey: researchPreviewKey(jobId, revisionId),
     queryFn: () => getResearchJobPreview(adminKey, jobId),
     enabled: Boolean(adminKey && jobId && revisionId),
-    staleTime: Infinity,
+    // Freshness and holds are evaluated when read and change without a new
+    // revision (a deadline passes, a hold is recorded): refresh them.
+    staleTime: PREVIEW_REFRESH_MS,
+    refetchInterval: PREVIEW_REFRESH_MS,
   });
 
   // One idempotency key per submission: a retry after a lost response reuses

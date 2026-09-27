@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../api/companyExposures';
 import { renderWithProviders } from '../../test/renderWithProviders';
-import ExposureResearchWorkspace from './ExposureResearchWorkspace';
+import ExposureResearchWorkspace, { PREVIEW_REFRESH_MS } from './ExposureResearchWorkspace';
 import { shadowCompletedJob, shadowPreview } from './fixtures';
 
 vi.mock('../../api/companyExposures', async (importOriginal) => {
@@ -46,6 +46,37 @@ describe('ExposureResearchWorkspace', () => {
     expect(await screen.findByText(/shadow preview/i)).toBeVisible();
     expect(api.getResearchJobPreview).toHaveBeenCalledWith('secret', shadowCompletedJob.job_id);
     expect(screen.getByText('The ET-9000 supports HBM testing.')).toBeVisible();
+  });
+
+  it('refreshes the preview so live freshness and holds stay current', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.requestExposureResearch.mockResolvedValue({
+        job_id: shadowCompletedJob.job_id, created: true, state: 'queued', dispatch: 'queued',
+      });
+      api.getResearchJob.mockResolvedValue(shadowCompletedJob);
+      api.getResearchJobPreview.mockResolvedValue(shadowPreview);
+      renderWithProviders(<ExposureResearchWorkspace />);
+      fireEvent.change(screen.getByLabelText(/admin key/i), { target: { value: 'secret' } });
+      fireEvent.click(screen.getByRole('button', { name: /unlock/i }));
+      fireEvent.change(screen.getByLabelText(/us symbol/i), { target: { value: 'exmp' } });
+      fireEvent.change(screen.getByLabelText(/economic theme id/i), {
+        target: { value: shadowCompletedJob.economic_theme_id },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /request research/i }));
+      expect(await screen.findByText(/shadow preview/i)).toBeVisible();
+
+      // Same sealed revision, but a hold was recorded since it was loaded.
+      const held = {
+        ...shadowPreview,
+        claims: [{ ...shadowPreview.claims[0], active_holds: ['stale'], freshness_state: 'stale' }],
+      };
+      api.getResearchJobPreview.mockResolvedValue(held);
+      await vi.advanceTimersByTimeAsync(PREVIEW_REFRESH_MS + 1);
+      expect(await screen.findByText('Hold: stale')).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces typed request errors', async () => {

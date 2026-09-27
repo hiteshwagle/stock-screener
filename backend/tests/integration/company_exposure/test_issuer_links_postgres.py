@@ -60,3 +60,59 @@ def test_concurrent_registry_acceptance_creates_one_link():
     check = factory()
     assert check.query(IssuerSecurityLinkRevision).count() == 1
     check.close()
+
+
+def test_concurrent_revisions_of_one_identifier_get_distinct_numbers():
+    from time import sleep
+
+    from app.domain.company_exposure.contracts import LinkState
+    from app.models.company_exposure import IssuerIdentifierRevision
+    from tests.fixtures.company_exposure.factory import make_issuer
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    setup = factory()
+    issuer = make_issuer(setup, "shared-identifier-issuer")
+    setup.commit()
+    setup.close()
+    key = ("US", "cik", "8675309")
+    barrier = Barrier(2)
+
+    def revise(label):
+        session = factory()
+        try:
+            adapter = IssuerIdentityAdapter(session)
+            flush = session.flush
+
+            def slow_flush(*args, **kwargs):
+                # Widen the window between reading the maximum and inserting.
+                sleep(0.5)
+                return flush(*args, **kwargs)
+
+            session.flush = slow_flush
+            barrier.wait(timeout=10)
+            row = adapter._add_identifier(
+                issuer.id,
+                key,
+                state=LinkState.PROPOSED,
+                policy=None,
+                evidence={"reference": label},
+                actor="test:admin",
+                reason=label,
+            )
+            session.commit()
+            return row.revision_number
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        numbers = sorted(executor.map(revise, ["a", "b"]))
+
+    assert numbers == [1, 2]
+    check = factory()
+    assert (
+        check.query(IssuerIdentifierRevision)
+        .filter_by(market="US", scheme="cik", value="8675309")
+        .count()
+        == 2
+    )
+    check.close()

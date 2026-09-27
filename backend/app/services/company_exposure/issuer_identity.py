@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.domain.company_exposure.contracts import (
@@ -93,6 +93,17 @@ def _is_admin(principal) -> bool:
     roles = getattr(principal, "roles", None)
     subject = getattr(principal, "subject", None)
     return bool(subject) and roles is not None and "taxonomy:review" in roles
+
+
+def _identifier_lock(session: Session, key: tuple[str, str, str]) -> None:
+    """Transaction-scoped lock for one (market, scheme, value) identifier."""
+
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": "company_exposure:identifier:" + "\x1f".join(key)},
+    )
 
 
 class IssuerIdentityAdapter:
@@ -226,6 +237,9 @@ class IssuerIdentityAdapter:
         actor: str,
         reason: str,
     ) -> IssuerIdentifierRevision:
+        # Two listings sharing one identifier may be resolved at once, and the
+        # shared research fence admits both: serialize numbering per identifier.
+        _identifier_lock(self.session, key)
         current = self.session.execute(
             select(func.max(IssuerIdentifierRevision.revision_number)).where(
                 IssuerIdentifierRevision.market == key[0],
