@@ -85,6 +85,15 @@ def test_http_error_responses_are_dispatched_with_unchanged_codes(status, code):
     assert raised.value.retry_after_seconds == (7.0 if status == 429 else None)
 
 
+def test_oversized_retry_after_is_capped_to_a_storable_delay():
+    def handler(request):
+        return httpx.Response(429, headers={"retry-after": "3000000000"})
+
+    with pytest.raises(PreparationFailure) as raised:
+        _client(handler).complete_json([{"role": "user", "content": "x"}], max_tokens=10)
+    assert raised.value.retry_after_seconds == 86_400.0
+
+
 def test_invalid_body_is_dispatched():
     def handler(request):
         return httpx.Response(200, content=b"not json")

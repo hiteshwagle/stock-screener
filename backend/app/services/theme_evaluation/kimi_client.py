@@ -27,6 +27,9 @@ def opencode_go_endpoint() -> str:
     return base.rstrip("/") + "/chat/completions"
 
 
+_MAX_RETRY_AFTER_SECONDS = 86_400.0
+
+
 def _retry_after_seconds(value: str | None) -> float | None:
     if value is None:
         return None
@@ -40,7 +43,11 @@ def _retry_after_seconds(value: str | None) -> float | None:
         if retry_at.tzinfo is None:
             return None
         delay = max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
-    return delay if math.isfinite(delay) and delay >= 0 else None
+    if not math.isfinite(delay) or delay < 0:
+        return None
+    # Longer advertised waits are capped: they must fit the stored integer
+    # column and the stage scheduler, and a day is already a long pause.
+    return min(delay, _MAX_RETRY_AFTER_SECONDS)
 
 
 def _session_id(value: str | None) -> str:

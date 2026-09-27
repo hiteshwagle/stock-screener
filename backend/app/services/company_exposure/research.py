@@ -360,6 +360,34 @@ class ResearchStageRunner:
                 )
         return self._finish(work_id, lease_token, request, stage, outcome, attempts)
 
+    def fail_step(
+        self, work_id: UUID, lease_token: UUID, error: BaseException
+    ) -> ResearchStepResult | None:
+        """Record an unexpected stage exception as a retryable failure.
+
+        Otherwise a deterministic crash would be reclaimed after every lease
+        expiry forever; recorded like any retry, the attempt budget ends it
+        as a terminal failure. The caller has already rolled back the stage.
+        """
+
+        try:
+            item = self.repo.heartbeat(work_id, lease_token)
+        except WorkLeaseError:
+            self.session.rollback()
+            return None
+        request = self.session.get(ExposureResearchRequest, item.request_id)
+        attempts = int(item.claim_count or 1)
+        outcome = StageOutcome.retry("stage_error", error=type(error).__name__)
+        if attempts >= MAX_STAGE_ATTEMPTS:
+            outcome = StageOutcome(
+                StepStatus.FAILED,
+                ResearchJobState.TERMINAL_FAILURE,
+                {**outcome.detail, "attempts": attempts},
+            )
+        return self._finish(
+            work_id, lease_token, request, item.stage, outcome, attempts
+        )
+
     def _finish(self, work_id, lease_token, request, stage, outcome, attempts):
         detail = {"stage": stage, **outcome.detail}
         try:

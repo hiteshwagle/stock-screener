@@ -513,6 +513,30 @@ def test_worker_task_runs_leased_stages(harness, monkeypatch):
     ]
 
 
+def test_a_stage_that_always_raises_ends_as_a_terminal_failure(harness, monkeypatch):
+    harness.request()
+    harness.db.commit()
+    monkeypatch.setattr(
+        "app.services.company_exposure.config.load_config", lambda *_a, **_k: SHADOW
+    )
+
+    def crash(_request):
+        raise RuntimeError("deterministic bug")
+
+    monkeypatch.setitem(harness.runner._stages, "resolve_issuer", crash)
+    recorded = []
+    for _ in range(6):
+        outcome = company_exposure_tasks.process_exposure_work.run(
+            max_steps=1, runner_factory=lambda _session, _config: harness.runner
+        )
+        recorded += [s.get("recorded") for s in outcome.get("steps", [])]
+        harness.clock.advance(hours=2)  # past the lease and any backoff
+    # Each crash counts as an attempt; the budget ends it, then nothing runs.
+    assert recorded == ["retryable", "retryable", "retryable", "failed"]
+    item = harness.db.execute(select(ResearchWorkItem)).scalar_one()
+    assert item.status == "failed"
+
+
 def test_theme_context_reads_latest_sealed_definition(db_session):
     from datetime import datetime, timezone
 

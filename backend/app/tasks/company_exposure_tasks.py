@@ -61,11 +61,25 @@ def process_exposure_work(max_steps: int = 1, *, runner_factory=None) -> dict:
             session.commit()
             try:
                 result = runner.run_step(work_id, lease_token)
-            except Exception:
-                # The lease expires and the stage is retried; nothing is lost.
+            except Exception as exc:
                 session.rollback()
                 logger.exception("exposure research stage failed: work_id=%s", work_id)
-                steps.append({"work_id": str(work_id), "status": "error"})
+                # Record the crash so the attempt budget applies: a stage
+                # that always raises ends as a terminal failure instead of
+                # being reclaimed after every lease expiry.
+                try:
+                    failed = runner.fail_step(work_id, lease_token, exc)
+                except Exception:
+                    session.rollback()
+                    logger.exception("recording stage failure failed: %s", work_id)
+                    failed = None
+                steps.append(
+                    {
+                        "work_id": str(work_id),
+                        "status": "error",
+                        "recorded": None if failed is None else failed.status,
+                    }
+                )
                 continue
             steps.append(
                 {
