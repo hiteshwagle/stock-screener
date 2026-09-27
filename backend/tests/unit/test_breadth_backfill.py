@@ -930,8 +930,13 @@ def _walk_df(end_date: date, seed: int, periods: int = 320) -> pd.DataFrame:
 _STREAM_SYMBOLS = ("AAA", "BBB", "CCC", "DDD", "EEE")
 
 
-def _run_streaming_backfill(monkeypatch, trading_dates, *, batch_size):
-    """Backfill five symbols; return stored rows and add_prices batch sizes."""
+def _run_streaming_backfill(
+    monkeypatch, trading_dates, *, batch_size, reread=None, price_cache_out=None
+):
+    """Backfill five symbols; return stored rows and add_prices batch sizes.
+
+    ``reread(symbol, frame)`` replaces what a second read of a symbol returns.
+    """
     monkeypatch.setattr(breadth_backfill_module, "PRICE_BATCH_SIZE", batch_size)
     db = _make_db_session()
     db.add_all(
@@ -943,10 +948,22 @@ def _run_streaming_backfill(monkeypatch, trading_dates, *, batch_size):
         symbol: _walk_df(date(2026, 3, 13), seed)
         for seed, symbol in enumerate(_STREAM_SYMBOLS)
     }
+    reads: dict[str, int] = {}
+
+    def read(symbols, **_):
+        loaded = {}
+        for symbol in symbols:
+            reads[symbol] = reads.get(symbol, 0) + 1
+            frame = frames[symbol]
+            if reread is not None and reads[symbol] > 1:
+                frame = reread(symbol, frame)
+            loaded[symbol] = frame
+        return loaded
+
     price_cache = MagicMock()
-    price_cache.get_many_cached_only_fresh.side_effect = lambda symbols, **_: {
-        symbol: frames[symbol] for symbol in symbols
-    }
+    price_cache.get_many_cached_only_fresh.side_effect = read
+    if price_cache_out is not None:
+        price_cache_out.append(price_cache)
     service = BreadthCalculatorService(db, price_cache)
     accumulators = []
     make_accumulator = service.engine.accumulator
@@ -998,25 +1015,86 @@ def test_backfill_streams_prices_one_batch_at_a_time(monkeypatch):
     assert sizes == [2, 2, 1]
 
 
-def test_unprocessed_leading_date_does_not_reload_prices(monkeypatch):
-    # No cached session exists on the Saturday, so it cannot be processed.
-    # Prices are still loaded exactly once: a second load could re-fetch
-    # from providers or see different cached data than the first pass.
+def test_rejected_leading_date_replays_from_cache_to_match_a_direct_request(
+    monkeypatch,
+):
+    # The Saturday has no cached session, so it is not processed, but it
+    # starts the warm-up window before sessions 3/9-3/11. Persisted rows must
+    # not depend on it: the processed window is replayed from the cache only.
     saturday = date(2026, 3, 7)
     processed = [date(2026, 3, 12), date(2026, 3, 13)]
+    caches = []
 
     result, rows, accumulators = _run_streaming_backfill(
-        monkeypatch, [saturday, *processed], batch_size=2
+        monkeypatch, [saturday, *processed], batch_size=2, price_cache_out=caches
     )
     _, direct_rows, _ = _run_streaming_backfill(
         monkeypatch, processed, batch_size=2
     )
 
     assert result["error_dates"] == [saturday.isoformat()]
-    [(dates, sizes)] = accumulators
-    assert dates == (saturday, *processed)
-    assert sizes == [2, 2, 1]
+    assert [dates for dates, _ in accumulators] == [
+        (saturday, *processed),
+        tuple(processed),
+    ]
+    [price_cache] = caches
+    price_cache.get_historical_data.assert_not_called()
+    replay_reads = price_cache.get_many_cached_only_fresh.call_args_list[3:]
+    assert replay_reads and all(
+        call.kwargs.get("minimum_rows") == 1 for call in replay_reads
+    )
     assert rows == direct_rows
+    assert set(rows) == set(processed)
+
+
+def test_rejected_leading_date_without_earlier_sessions_needs_no_replay(
+    monkeypatch,
+):
+    # Sunday 3/8 is followed directly by the first processed session, so the
+    # warm-up window is already the processed one: prices load exactly once.
+    sunday = date(2026, 3, 8)
+    processed = [date(2026, 3, 9), date(2026, 3, 10)]
+
+    _, rows, accumulators = _run_streaming_backfill(
+        monkeypatch, [sunday, *processed], batch_size=2
+    )
+    _, direct_rows, _ = _run_streaming_backfill(
+        monkeypatch, processed, batch_size=2
+    )
+
+    assert [dates for dates, _ in accumulators] == [(sunday, *processed)]
+    assert rows == direct_rows
+
+
+def test_replay_is_abandoned_when_a_cached_history_changed(monkeypatch, caplog):
+    saturday = date(2026, 3, 7)
+    processed = [date(2026, 3, 12), date(2026, 3, 13)]
+
+    def changed(symbol, frame):
+        if symbol != "CCC":
+            return frame
+        frame = frame.copy()
+        frame.iloc[-1, frame.columns.get_loc("Close")] *= 1.5
+        return frame
+
+    with caplog.at_level("WARNING"):
+        _, rows, accumulators = _run_streaming_backfill(
+            monkeypatch, [saturday, *processed], batch_size=2, reread=changed
+        )
+    monkeypatch.setattr(
+        BreadthBackfillExecutor,
+        "_replay_processed_window",
+        lambda self, batches, **_: None,
+    )
+    _, first_pass_rows, _ = _run_streaming_backfill(
+        monkeypatch, [saturday, *processed], batch_size=2
+    )
+
+    # The replay started but CCC's history differed, so nothing from the
+    # second read was used: the rows are exactly the first pass's.
+    assert len(accumulators) == 2
+    assert "differs from the first pass" in caplog.text
+    assert rows == first_pass_rows
     assert set(rows) == set(processed)
 
 

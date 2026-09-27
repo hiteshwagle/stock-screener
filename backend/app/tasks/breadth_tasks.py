@@ -493,18 +493,6 @@ def _fill_breadth_gaps(
         f"{gap_stats['errors']} errors, "
         f"{gap_stats.get('unavailable', 0)} unavailable"
     )
-    not_filled = {
-        *gap_stats.get('error_dates', ()),
-        *gap_stats.get('unavailable_dates', ()),
-    }
-    filled = [value for value in missing_dates if value.isoformat() not in not_filled]
-    if filled:
-        # Rows written after a gap (e.g. while an earlier gap-fill failed)
-        # computed their rolling ratios over a window that skipped it.
-        gap_stats['ratios_refreshed'] = calculator.refresh_ratios_between(
-            min(filled),
-            target_date,
-        )
     return gap_stats
 
 
@@ -629,6 +617,32 @@ def calculate_daily_breadth_with_gapfill(
                 result['gap_fill'] = {
                     'status': 'failed',
                     'error': str(gap_error),
+                }
+            # Rows written while an earlier session was missing (e.g. after a
+            # failed gap-fill) computed their rolling ratios over a window that
+            # skipped it. Recompute the lookback window from stored counts on
+            # every run, independent of gap detection, so a failed or
+            # interrupted repair is simply retried by the next run.
+            try:
+                result['ratio_refresh'] = {
+                    'rows_changed': calculator.refresh_ratios_between(
+                        target_date - timedelta(days=max_gap_days + 1),
+                        target_date,
+                    ),
+                }
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as refresh_error:
+                db.rollback()
+                logger.error(
+                    "Breadth ratio refresh failed for %s; retried next run: %s",
+                    effective_market,
+                    refresh_error,
+                    exc_info=True,
+                )
+                result['ratio_refresh'] = {
+                    'status': 'failed',
+                    'error': str(refresh_error),
                 }
         else:
             logger.info("Gap-fill disabled in settings, skipping gap detection")

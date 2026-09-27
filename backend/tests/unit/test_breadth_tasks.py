@@ -730,28 +730,43 @@ def test_gapfill_soft_time_limit_still_stops_the_task(monkeypatch):
     target_call.assert_not_called()
 
 
-def test_successful_gapfill_repairs_ratios_of_rows_after_the_gap(monkeypatch):
-    import app.tasks.breadth_tasks as module
+def test_ratio_refresh_runs_every_run_even_when_gap_fill_fails(monkeypatch):
+    # The refresh does not depend on gap detection: a repair that failed or
+    # was interrupted after its gap was committed is retried next run.
+    module, _, target_call = _gapfill_task_with_failing_gaps(
+        monkeypatch, RuntimeError("historical universe exploded")
+    )
+    calculator = module.BreadthCalculatorService()
+    calculator.refresh_ratios_between.return_value = 2
 
-    fake_calculator = MagicMock()
-    missing = [date(2026, 3, 16), date(2026, 3, 17), date(2026, 3, 18)]
-    fake_calculator.find_missing_dates.return_value = missing
-    fake_calculator.fill_gaps.return_value = {
-        "total_dates": 3,
-        "processed": 2,
-        "errors": 1,
-        "error_dates": ["2026-03-16"],
-    }
-    fake_calculator.refresh_ratios_between.return_value = 1
-
-    stats = module._fill_breadth_gaps(
-        fake_calculator,
+    result = module.calculate_daily_breadth_with_gapfill.run(
+        market="US",
+        calculation_date="2026-03-19",
+        execution_policy="refresh_guarded",
         max_gap_days=30,
-        target_date=date(2026, 3, 19),
-        policy=MagicMock(),
     )
 
-    fake_calculator.refresh_ratios_between.assert_called_once_with(
-        date(2026, 3, 17), date(2026, 3, 19)
+    calculator.refresh_ratios_between.assert_called_once_with(
+        date(2026, 2, 16), date(2026, 3, 19)
     )
-    assert stats["ratios_refreshed"] == 1
+    assert result["ratio_refresh"] == {"rows_changed": 2}
+    assert target_call.called
+
+
+def test_ratio_refresh_failure_does_not_fail_the_target_date(monkeypatch):
+    module, fake_db, target_call = _gapfill_task_with_failing_gaps(
+        monkeypatch, RuntimeError("gap")
+    )
+    calculator = module.BreadthCalculatorService()
+    calculator.refresh_ratios_between.side_effect = RuntimeError("db blip")
+
+    result = module.calculate_daily_breadth_with_gapfill.run(
+        market="US",
+        calculation_date="2026-03-19",
+        execution_policy="refresh_guarded",
+    )
+
+    assert "error" not in result
+    assert result["ratio_refresh"] == {"status": "failed", "error": "db blip"}
+    assert target_call.called
+    fake_db.rollback.assert_called()
