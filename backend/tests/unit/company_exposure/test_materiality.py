@@ -330,3 +330,74 @@ def test_subsidiary_share_of_parent_needs_consolidation_wording(label, quote, he
     hold = "subsidiary_share_of_parent_requires_consolidation_evidence"
     assert (hold in result.hold_reasons) is held
     assert (result.value is None) is held
+
+
+def test_standalone_numerator_over_consolidated_denominator_is_held():
+    result = calculate_materiality(
+        metric="revenue_share",
+        numerator=operand(
+            "200",
+            scope="issuer_standalone",
+            quote="Memory test revenue was USD 200 million in FY2025",
+        ),
+        denominator=operand(
+            "1000",
+            label="Total revenue",
+            quote="Total revenue was USD 1000 million in FY2025",
+        ),
+    )
+    assert result.value is None
+    assert "scope_mismatch" in result.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("numerator_quote", "basis", "hold"),
+    [
+        # Labelled GAAP by the model, but the quote reports an adjusted figure.
+        (
+            "Adjusted memory test revenue was USD 200 million in FY2025",
+            "GAAP",
+            "numerator_accounting_basis_not_in_quote",
+        ),
+        # No labels at all: the quotes themselves differ in basis.
+        (
+            "Non-GAAP memory test revenue was USD 200 million in FY2025",
+            None,
+            "accounting_basis_mismatch",
+        ),
+    ],
+)
+def test_each_operand_basis_must_be_stated_by_its_own_quote(
+    numerator_quote, basis, hold
+):
+    result = calculate_materiality(
+        metric="revenue_share",
+        numerator=operand("200", accounting_basis=basis, quote=numerator_quote),
+        denominator=operand(
+            "1000",
+            label="Total revenue",
+            accounting_basis=basis,
+            quote="Total GAAP revenue was USD 1000 million in FY2025",
+        ),
+    )
+    assert result.value is None
+    assert hold in result.hold_reasons
+
+
+def test_grounded_matching_basis_keeps_the_ratio():
+    result = calculate_materiality(
+        metric="revenue_share",
+        numerator=operand(
+            "200",
+            accounting_basis="GAAP",
+            quote="GAAP memory test revenue was USD 200 million in FY2025",
+        ),
+        denominator=operand(
+            "1000",
+            label="Total revenue",
+            accounting_basis="GAAP",
+            quote="Total GAAP revenue was USD 1000 million in FY2025",
+        ),
+    )
+    assert result.hold_reasons == ()
+    assert result.value == Decimal("0.2")

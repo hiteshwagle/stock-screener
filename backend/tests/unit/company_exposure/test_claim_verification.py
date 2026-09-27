@@ -165,6 +165,39 @@ def test_product_terms_must_belong_to_the_claimed_product():
     assert "cooccurrence_only" in result.hold_reasons
 
 
+def test_one_token_of_a_product_key_is_not_a_product_term():
+    # "ET" shares a token with "et-9000" but may name a different product.
+    text = "ET supports HBM testing."
+    result = validate_candidate(
+        claim(
+            "role",
+            product_terms=["ET"],
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+
+
+def test_status_wording_must_name_the_whole_product_key():
+    link = "The ET-9000 supports HBM testing."
+    shipping = "ET is shipping in volume."
+    result = validate_candidate(
+        claim(
+            "commercial_status",
+            commercial_status="shipping_or_operating",
+            statement=link,
+            support=[{"ref": "P1", "quote": link}, {"ref": "P2", "quote": shipping}],
+        ),
+        evidence(item("P1", link), item("P2", shipping)),
+        SCOPE,
+    )
+    assert result.commercial_status == CommercialStatus.UNKNOWN
+    assert "status_not_stated" in result.hold_reasons
+
+
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
     text = "The ET-9000 supports HBM testing."
     grounded = validate_candidate(

@@ -150,6 +150,32 @@ _CONSOLIDATED = re.compile(
     re.IGNORECASE,
 )
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
+# Wording that marks a figure as adjusted rather than as reported under the
+# filing's accounting standard.
+_ADJUSTED = re.compile(
+    r"\bnon[-\s]?(?:gaap|ifrs)\b|\badjusted\b|\bpro[-\s]?forma\b|\bunderlying\b"
+    r"|\borganic\b|\bconstant[-\s]currency\b|調整後|调整后|經調整|经调整",
+    re.IGNORECASE,
+)
+_STANDARD = re.compile(r"\b(gaap|ifrs)\b", re.IGNORECASE)
+
+
+def _stated_basis(quote: str, supplied: str | None) -> tuple[str, list[str]]:
+    """The basis a quote states, and holds for a supplied one it does not.
+
+    A figure is taken as reported unless its own wording marks it adjusted;
+    a model label ("GAAP") never makes an adjusted figure comparable.
+    """
+
+    stated = "adjusted" if _ADJUSTED.search(quote or "") else "reported"
+    if not supplied:
+        return stated, []
+    if ("adjusted" if _ADJUSTED.search(supplied) else "reported") != stated or any(
+        not re.search(rf"\b{standard}\b", quote or "", re.IGNORECASE)
+        for standard in _STANDARD.findall(supplied)
+    ):
+        return stated, ["accounting_basis_not_in_quote"]
+    return stated, []
 
 
 def _grounding_holds(
@@ -337,9 +363,15 @@ def calculate_materiality(
     """Validated ratio of two cited disclosed quantities (E05/E06/I03)."""
 
     holds = []
+    stated_bases = set()
     for role, operand in (("numerator", numerator), ("denominator", denominator)):
         if not quote_contains_value(operand.quote, operand.value):
             holds.append(f"{role}_value_not_in_quote")
+        stated, basis_holds = _stated_basis(
+            operand.quote or "", operand.accounting_basis
+        )
+        stated_bases.add(stated)
+        holds.extend(f"{role}_{hold}" for hold in basis_holds)
         # Each operand's metadata must be stated by its own quote, or two
         # unrelated figures ("$20m revenue", "100 employees") could be
         # labelled as compatible revenue operands.
@@ -363,15 +395,17 @@ def calculate_materiality(
         holds.append("unit_mismatch")
     if (numerator.currency or "").upper() != (denominator.currency or "").upper():
         holds.append("currency_mismatch_requires_approved_conversion")
-    if _norm(numerator.accounting_basis or "") != _norm(
+    if len(stated_bases) > 1 or _norm(numerator.accounting_basis or "") != _norm(
         denominator.accounting_basis or ""
     ):
         holds.append("accounting_basis_mismatch")
-    # A subsidiary/segment figure may only be divided by a denominator of the
-    # same reporting entity; never by the consolidated parent (I03).
-    if (
-        numerator.scope != denominator.scope
-        and denominator.scope != "issuer_consolidated"
+    # Operands must come from the same reporting entity. The one exception,
+    # a segment or subsidiary of the consolidated parent, needs consolidation
+    # wording (below); a parent-only (standalone) figure is never a share of
+    # the group's consolidated total (I03).
+    if numerator.scope != denominator.scope and not (
+        numerator.scope == "segment_or_subsidiary"
+        and denominator.scope == "issuer_consolidated"
     ):
         holds.append("scope_mismatch")
     # A segment or subsidiary figure over the consolidated parent needs the

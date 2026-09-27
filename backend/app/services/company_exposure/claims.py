@@ -539,9 +539,12 @@ def _customer_clauses(
 
 
 def _names_product(text: str, product_terms, key_tokens) -> bool:
-    """Whether text names the claimed product (a term or a key token)."""
+    """Whether text names the claimed product: a term, or every key token.
 
-    return bool(_tokens(text) & key_tokens) or any(
+    One shared token is not enough: "ET" must not stand for "ET-9000".
+    """
+
+    return (bool(key_tokens) and key_tokens <= _tokens(text)) or any(
         mentions(text, t) for t in product_terms
     )
 
@@ -780,8 +783,9 @@ def validate_candidate(
         and not any(
             t.casefold() in theme or theme in t.casefold() for theme in theme_folded
         )
-        # Bound to the claimed product: "demand" is not a term of "et-9000".
-        and _tokens(t) & key_tokens
+        # Bound to the whole claimed product: "demand" is not a term of
+        # "et-9000", and neither is "ET" (it could name another product).
+        and key_tokens <= _tokens(t)
     )
     holds: list[str] = []
     rejected: list[str] = []
