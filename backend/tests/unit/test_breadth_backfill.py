@@ -1066,7 +1066,9 @@ def test_rejected_leading_date_without_earlier_sessions_needs_no_replay(
     assert rows == direct_rows
 
 
-def test_replay_is_abandoned_when_a_cached_history_changed(monkeypatch, caplog):
+def test_failed_replay_persists_nothing_and_leaves_dates_for_gap_fill(
+    monkeypatch, caplog
+):
     saturday = date(2026, 3, 7)
     processed = [date(2026, 3, 12), date(2026, 3, 13)]
 
@@ -1078,24 +1080,21 @@ def test_replay_is_abandoned_when_a_cached_history_changed(monkeypatch, caplog):
         return frame
 
     with caplog.at_level("WARNING"):
-        _, rows, accumulators = _run_streaming_backfill(
+        result, rows, accumulators = _run_streaming_backfill(
             monkeypatch, [saturday, *processed], batch_size=2, reread=changed
         )
-    monkeypatch.setattr(
-        BreadthBackfillExecutor,
-        "_replay_processed_window",
-        lambda self, batches, **_: None,
-    )
-    _, first_pass_rows, _ = _run_streaming_backfill(
-        monkeypatch, [saturday, *processed], batch_size=2
-    )
 
-    # The replay started but CCC's history differed, so nothing from the
-    # second read was used: the rows are exactly the first pass's.
+    # The first-pass values depend on the rejected Saturday and CCC could not
+    # be re-read identically, so no row is written and every date is left as
+    # an error for the next gap-fill to retry.
     assert len(accumulators) == 2
     assert "differs from the first pass" in caplog.text
-    assert rows == first_pass_rows
-    assert set(rows) == set(processed)
+    assert rows == {}
+    assert result["processed"] == 0
+    assert result["error_dates"] == [
+        value.isoformat() for value in (saturday, *processed)
+    ]
+    assert result["warmup_replay_failed"] is True
 
 
 def test_contributor_backfill_refuses_dates_without_a_universe(monkeypatch):

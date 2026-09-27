@@ -396,7 +396,16 @@ def refresh_official_market_universe(
             )
         )
     except LeaseNotHeld:
-        # A leftover same-id lease expired and was taken before we started.
+        # The lease was lost (or could not be confirmed) before we started.
+        if acquired and not is_reentrant:
+            try:
+                lock.release(task_id, market=_market)
+            except Exception:
+                logger.warning(
+                    "Could not release %s data fetch lock before retrying",
+                    _market,
+                    exc_info=True,
+                )
         raise self.retry(
             countdown=_official_lock_retry_delay(getattr(self.request, "retries", 0)),
             max_retries=_OFFICIAL_UNIVERSE_LOCK_MAX_RETRIES,

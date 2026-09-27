@@ -152,7 +152,7 @@ class BreadthBackfillExecutor:
         """Re-evaluate the first pass's histories with the processed window.
 
         Returns the new accumulator, or ``None`` when any history could not be
-        re-read identically (the caller then keeps its first-pass results).
+        re-read identically (the caller then persists nothing for the range).
         """
         calculator = self._calculator
         accumulator = calculator.engine.accumulator(
@@ -168,8 +168,8 @@ class BreadthBackfillExecutor:
                 if history is None or _history_fingerprint(history) != fingerprints[symbol]:
                     logger.warning(
                         "Breadth warm-up replay for %s abandoned: cached history "
-                        "for %s differs from the first pass; keeping the "
-                        "first-pass window",
+                        "for %s differs from the first pass; the processed "
+                        "dates are left for the next gap-fill",
                         calculator.market,
                         symbol,
                     )
@@ -405,6 +405,7 @@ class BreadthBackfillExecutor:
         # earliest in-window session: see the replay below.
         fingerprints: dict[str, int] = {}
         earliest_session: date | None = None
+        warmup_replay_failed = False
         outcomes_by_date = {
             calculation_date: BreadthOutcomeCounter()
             for calculation_date in ordered_dates
@@ -473,17 +474,21 @@ class BreadthBackfillExecutor:
             # A rejected leading date moved some symbol's warm-up window. Re-
             # evaluate over the processed dates so persisted results never
             # depend on rejected dates. The replay reads the cache only (no
-            # provider access) and only the symbols the first pass used; any
-            # history that is missing or differs from the first pass abandons
-            # the replay, keeping the first-pass results rather than mixing
-            # data from two reads.
+            # provider access) and only the symbols the first pass used. If
+            # any history is missing or differs from the first pass, nothing
+            # is persisted: the first-pass values depend on the rejected date
+            # and mixing two reads is worse. The dates are reported as errors
+            # so the next gap-fill retries them.
             replayed = self._replay_processed_window(
                 price_batches(sorted(fingerprints), cache_only=True),
                 fingerprints=fingerprints,
                 processed_dates=tuple(processed_dates),
                 universes_by_date=universes_by_date,
             )
-            if replayed is not None:
+            if replayed is None:
+                warmup_replay_failed = True
+                processed_dates = []
+            else:
                 accumulator = replayed
         contributor_metadata_available = True
         try:
@@ -557,6 +562,8 @@ class BreadthBackfillExecutor:
             "errors": len(error_dates),
             "error_dates": error_dates,
         }
+        if warmup_replay_failed:
+            result["warmup_replay_failed"] = True
         if unavailable_dates:
             result["unavailable"] = len(unavailable_dates)
             result["unavailable_dates"] = [

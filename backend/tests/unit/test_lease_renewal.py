@@ -161,19 +161,39 @@ def test_data_fetch_retries_instead_of_running_when_lease_lost_on_entry(
     assert "lease_lost_before_start" in retries[0]
 
 
-def test_renewal_errors_are_retried_on_the_next_beat():
-    outcomes = iter([ConnectionError("redis blip"), True, True])
-    renewed = threading.Event()
+def test_renewal_errors_while_running_are_retried_on_the_next_beat():
+    # Entry renewal succeeds, one heartbeat fails, the next succeeds.
+    outcomes = iter([True, ConnectionError("redis blip"), True, True])
+    calls = []
+    renewed_after_error = threading.Event()
 
     def renew():
         outcome = next(outcomes, True)
+        calls.append(outcome)
         if isinstance(outcome, Exception):
             raise outcome
-        renewed.set()
+        if len(calls) >= 3:
+            renewed_after_error.set()
         return outcome
 
     with keep_leases_alive([("flaky", renew)], interval_seconds=0.01):
-        assert renewed.wait(2.0)
+        assert renewed_after_error.wait(2.0)
+
+
+def test_an_entry_renewal_error_prevents_the_body_from_starting():
+    # The entry check fails closed: an unconfirmed lease may already belong
+    # to another worker.
+    from app.tasks.lease_renewal import LeaseNotHeld
+
+    body_ran = False
+    with pytest.raises(LeaseNotHeld, match="market_workload:us"):
+        with keep_leases_alive(
+            [("market_workload:us", MagicMock(side_effect=TimeoutError("redis")))],
+            interval_seconds=60,
+        ):
+            body_ran = True
+
+    assert body_ran is False
 
 
 def test_no_renewals_starts_no_thread():

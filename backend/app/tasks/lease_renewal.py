@@ -69,8 +69,8 @@ def keep_leases_alive(
     """Run each ``(name, renew)`` every interval until the block exits.
 
     ``renew`` returns whether the lease is still held. Every lease is renewed
-    once before the block runs; if one is already gone then, ``LeaseNotHeld``
-    is raised and the block never starts. Once running, a lease that is lost
+    once before the block runs; if one is already gone then, or its renewal
+    raises, ``LeaseNotHeld`` is raised and the block never starts. Once running, a lease that is lost
     is dropped and logged; the task is not interrupted, since aborting
     mid-write would be worse than finishing unserialized. Redis errors are
     logged and retried on the next beat.
@@ -85,7 +85,7 @@ def keep_leases_alive(
     stop = threading.Event()
     active = list(renewals)
 
-    def renew_all() -> list[str]:
+    def renew_all(*, errors_lose_lease: bool = False) -> list[str]:
         lost: list[str] = []
         for entry in tuple(active):
             name, renew = entry
@@ -93,7 +93,9 @@ def keep_leases_alive(
                 held = renew()
             except Exception:
                 logger.warning("Lease renewal failed for %s", name, exc_info=True)
-                continue
+                if not errors_lose_lease:
+                    continue
+                held = False
             if not held:
                 logger.error(
                     "Lease %s is no longer held by this task; stopped renewing",
@@ -110,8 +112,9 @@ def keep_leases_alive(
     # Renew once before the body starts: a lease reused by a retried task
     # (same id) may have less than one interval left and would otherwise
     # expire before the first beat. If it already expired and was taken by
-    # another task, the body must not start at all.
-    lost = renew_all()
+    # another task, or the renewal cannot be confirmed at all (e.g. a Redis
+    # timeout), the body must not start: this check fails closed.
+    lost = renew_all(errors_lose_lease=True)
     if lost:
         raise LeaseNotHeld(", ".join(lost))
     thread = threading.Thread(target=beat, name="lease-renewal", daemon=True)
