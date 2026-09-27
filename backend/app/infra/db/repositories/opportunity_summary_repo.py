@@ -50,9 +50,14 @@ _COUNT_INDEX_NAME = "ix_sfd_run_action_state_survivor"
 # against the name alone: PostgreSQL allows the same index name in another
 # schema, and a valid index there would otherwise answer for a missing or
 # invalid one here -- selecting the slow counted path on the strength of an
-# index it cannot use. ``current_schemas(false)`` confines the match to the
-# search path, so the unqualified relation name resolves the way Django's
-# ``stock_feature_daily`` reference does.
+# index it cannot use.
+#
+# ``to_regclass`` resolves the name exactly the way the runtime query does --
+# first match in ``search_path`` -- and yields its OID, so the probe is tied to
+# the *same* relation the aggregation will read. Matching every same-named table
+# across ``current_schemas(false)`` would not: with the table in a later schema
+# but a valid index in the first, the probe would answer "usable" for a relation
+# the counted query cannot index.
 #
 # ``indisvalid AND indisready`` -- an interrupted ``CREATE INDEX CONCURRENTLY``
 # leaves a same-named index that exists, refuses inserts, and cannot serve a
@@ -62,11 +67,8 @@ _INDEX_USABLE_SQL = text(
     SELECT count(*)
     FROM pg_index i
     JOIN pg_class idx ON idx.oid = i.indexrelid
-    JOIN pg_class tbl ON tbl.oid = i.indrelid
-    JOIN pg_namespace n ON n.oid = tbl.relnamespace
     WHERE idx.relname = :name
-      AND tbl.relname = :table
-      AND n.nspname = ANY (current_schemas(false))
+      AND i.indrelid = to_regclass(:table)
       AND i.indisvalid
       AND i.indisready
     """
@@ -84,20 +86,32 @@ def _count_index_is_usable(session: Session) -> bool:
     A backend without these catalogs returns ``False``, which keeps the grouped
     fallback in charge -- correct on every backend, fastest on one.
 
-    The probe runs inside a savepoint. A statement PostgreSQL rejects otherwise
-    leaves the transaction aborted, and every later statement on that session
-    fails with ``current transaction is aborted`` -- so the fallback this
-    function exists to trigger could not run at all on the very path it is for.
-    The savepoint clears the error state and leaves unrelated session work
-    intact. Verified against PostgreSQL:
+    The probe runs on a **connection-level** savepoint, not
+    ``session.begin_nested()``. That distinction is the whole point: the ORM
+    version flushes the session unconditionally before opening the savepoint --
+    measured, even with the project's ``autoflush=False``:
 
-        BEGIN; SELECT 1/0; SELECT 99;
-          ERROR: current transaction is aborted, commands ignored
-        BEGIN; SAVEPOINT sp; SELECT 1/0; ROLLBACK TO sp; SELECT 99;
-          99
+        sessionmaker(autoflush=False); session.add(pending); with session.begin_nested():
+          -> before_flush fired, INSERT issued
+
+    This repository shares one session with every writer repository, so a
+    pending write that fails during that flush would surface here as an index
+    probe failure. ``_recover_aborted_probe`` could then roll back the caller's
+    unit of work and this method would carry on through the fallback -- quietly
+    discarding staged work that had nothing to do with the index.
+
+    ``session.connection().begin_nested()`` issues ``SAVEPOINT`` on the
+    connection without touching the ORM's pending state. Verified against the
+    same probe-failure path:
+
+        before_flush fired   : no
+        staged write retained: yes
+        session still usable : yes
     """
     try:
-        with session.begin_nested():
+        # ``begin_nested`` on the connection, not the session: no flush, so the
+        # caller's pending writes are neither issued nor risked here.
+        with session.connection().begin_nested():
             return bool(
                 session.execute(
                     _INDEX_USABLE_SQL,

@@ -732,11 +732,20 @@ def test_opportunity_summary_migration_matches_the_repository_shape():
 
         is_active = True
 
-        def begin_nested(self):
-            """Stand in for the savepoint the probe opens; nothing to unwind."""
-            import contextlib
+        def connection(self):
+            """The connection the probe opens its savepoint on."""
 
-            return contextlib.nullcontext()
+            class _C:
+                """No-op savepoint; nothing to unwind in this double."""
+
+                @staticmethod
+                def begin_nested():
+                    """Stand in for the probe's savepoint."""
+                    import contextlib
+
+                    return contextlib.nullcontext()
+
+            return _C()
 
         def execute(self, statement, params=None):
             """Answer the probe; capture every other statement for the caller."""
