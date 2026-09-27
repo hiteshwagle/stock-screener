@@ -728,3 +728,30 @@ def test_gapfill_soft_time_limit_still_stops_the_task(monkeypatch):
             execution_policy="refresh_guarded",
         )
     target_call.assert_not_called()
+
+
+def test_successful_gapfill_repairs_ratios_of_rows_after_the_gap(monkeypatch):
+    import app.tasks.breadth_tasks as module
+
+    fake_calculator = MagicMock()
+    missing = [date(2026, 3, 16), date(2026, 3, 17), date(2026, 3, 18)]
+    fake_calculator.find_missing_dates.return_value = missing
+    fake_calculator.fill_gaps.return_value = {
+        "total_dates": 3,
+        "processed": 2,
+        "errors": 1,
+        "error_dates": ["2026-03-16"],
+    }
+    fake_calculator.refresh_ratios_between.return_value = 1
+
+    stats = module._fill_breadth_gaps(
+        fake_calculator,
+        max_gap_days=30,
+        target_date=date(2026, 3, 19),
+        policy=MagicMock(),
+    )
+
+    fake_calculator.refresh_ratios_between.assert_called_once_with(
+        date(2026, 3, 17), date(2026, 3, 19)
+    )
+    assert stats["ratios_refreshed"] == 1

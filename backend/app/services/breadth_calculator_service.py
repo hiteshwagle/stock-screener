@@ -352,6 +352,60 @@ class BreadthCalculatorService:
         )
         return tuple(sorted(prior, key=lambda item: item.date))
 
+    def refresh_ratios_between(self, after: date, before: date) -> int:
+        """Recompute stored 5/10-day ratios for rows strictly between two dates.
+
+        Ratios are sums over the preceding sessions' stored 4% counts, and the
+        seed query takes the latest rows regardless of gaps. A row computed
+        while an earlier session was still missing therefore used a window
+        that skipped it. Once gap-fill has written that session, the rows
+        after it are recomputed here from stored counts (no price data).
+        Returns the number of rows whose ratios changed.
+        """
+        from .breadth.ratios import calculate_inclusive_ratios
+
+        records = (
+            self.db.query(MarketBreadth)
+            .filter(
+                MarketBreadth.date > after,
+                MarketBreadth.date < before,
+                MarketBreadth.market == self.market,
+                MarketBreadth.calculation_revision
+                == CURRENT_BREADTH_CALCULATION_REVISION,
+            )
+            .order_by(MarketBreadth.date.asc())
+            .all()
+        )
+        if not records:
+            return 0
+        ratios = calculate_inclusive_ratios(
+            (
+                BreadthDailyCount(
+                    date=record.date,
+                    stocks_up_4pct=record.stocks_up_4pct,
+                    stocks_down_4pct=record.stocks_down_4pct,
+                    market=self.market,
+                    calculation_revision=record.calculation_revision,
+                )
+                for record in records
+            ),
+            self._load_ratio_seed_counts(records[0].date, limit=9),
+            market=self.market,
+            calculation_revision=CURRENT_BREADTH_CALCULATION_REVISION,
+        )
+        changed = 0
+        for record in records:
+            refreshed = ratios[record.date]
+            if (record.ratio_5day, record.ratio_10day) != (
+                refreshed.ratio_5day,
+                refreshed.ratio_10day,
+            ):
+                record.ratio_5day = refreshed.ratio_5day
+                record.ratio_10day = refreshed.ratio_10day
+                changed += 1
+        self.db.commit()
+        return changed
+
     def backfill_range(
         self,
         start_date: date,

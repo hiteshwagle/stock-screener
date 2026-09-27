@@ -19,7 +19,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in desktop packaging
     redis = None
 
 from ..config import settings
-from .lease_renewal import RENEW_LEASE_LUA, keep_leases_alive, lease_ttl_seconds
+from .lease_renewal import (
+    LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
+    LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
+    RENEW_LEASE_LUA,
+    keep_leases_alive,
+    lease_ttl_seconds,
+)
 from .market_queues import SUPPORTED_MARKETS, market_suffix, normalize_market
 from .transient_database import retry_transient_database_error
 from .workload_coordination import (
@@ -138,7 +144,9 @@ class DataFetchLock:
         self.redis = redis.Redis(
             host=settings.redis_host,
             port=settings.redis_port,
-            db=settings.redis_db
+            db=settings.redis_db,
+            socket_connect_timeout=LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
         )
         # Short lease, renewed by the holder's heartbeat (see lease_renewal).
         self.lock_timeout = lease_ttl_seconds(

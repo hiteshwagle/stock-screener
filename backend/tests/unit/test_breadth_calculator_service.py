@@ -1703,3 +1703,43 @@ def test_backfill_reports_unreconstructable_dates_unavailable_not_failed(
         "unavailable_dates": [empty_date.isoformat(), broken_date.isoformat()],
     }
     assert [row.date for row in db.query(MarketBreadth).all()] == [good_date]
+
+
+def test_refresh_ratios_between_repairs_rows_written_across_a_gap():
+    from app.services.breadth.ratios import calculate_inclusive_ratios
+    from app.services.breadth.types import BreadthDailyCount
+
+    db = _make_db_session()
+    sessions = [date(2026, 3, day) for day in (9, 10, 11, 12, 13, 16, 17)]
+    gap = date(2026, 3, 12)
+    counts = {day: (index + 1, 2) for index, day in enumerate(sessions)}
+    for day in sessions:
+        if day != gap:
+            _add_breadth_row(db, day, up=counts[day][0], down=counts[day][1])
+    db.commit()
+    service = BreadthCalculatorService(db, MagicMock())
+    # 3/13 and 3/16 were computed while 3/12 was missing: their windows
+    # skipped it. Store what that produced, then fill the gap.
+    stale = service.refresh_ratios_between(date(2026, 3, 8), date(2026, 3, 17))
+    assert stale > 0
+    _add_breadth_row(db, gap, up=counts[gap][0], down=counts[gap][1])
+    db.commit()
+
+    changed = service.refresh_ratios_between(gap, date(2026, 3, 17))
+
+    expected = calculate_inclusive_ratios(
+        BreadthDailyCount(day, up, down, market="US", calculation_revision=3)
+        for day, (up, down) in counts.items()
+    )
+    stored = {
+        row.date: (row.ratio_5day, row.ratio_10day)
+        for row in db.query(MarketBreadth).filter(MarketBreadth.date > gap)
+    }
+    assert changed == 2
+    assert {day: stored[day] for day in (date(2026, 3, 13), date(2026, 3, 16))} == {
+        day: (expected[day].ratio_5day, expected[day].ratio_10day)
+        for day in (date(2026, 3, 13), date(2026, 3, 16))
+    }
+    # The target date itself is excluded: it is calculated next, with the
+    # repaired rows as its seeds.
+    assert stored[date(2026, 3, 17)] == (None, None)

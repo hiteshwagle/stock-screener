@@ -18,6 +18,11 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 DEFAULT_LEASE_TTL_SECONDS = 300
+# Lease clients must never block indefinitely: one stalled call would stall
+# every lease renewed on the same heartbeat thread. Three renewals at the
+# worst case (connect + read) stay far below the default 100 s interval.
+LEASE_REDIS_CONNECT_TIMEOUT_SECONDS = 2
+LEASE_REDIS_SOCKET_TIMEOUT_SECONDS = 5
 
 # Refresh the TTL only while the lease still names this holder, so a lease
 # that expired and was taken by another task is never extended by us.
@@ -70,24 +75,29 @@ def keep_leases_alive(
     stop = threading.Event()
     active = list(renewals)
 
-    def beat() -> None:
-        while not stop.wait(interval):
-            for entry in tuple(active):
-                name, renew = entry
-                try:
-                    held = renew()
-                except Exception:
-                    logger.warning("Lease renewal failed for %s", name, exc_info=True)
-                    continue
-                if not held:
-                    logger.error(
-                        "Lease %s is no longer held by this task; stopped renewing",
-                        name,
-                    )
-                    active.remove(entry)
-            if not active:
-                return
+    def renew_all() -> None:
+        for entry in tuple(active):
+            name, renew = entry
+            try:
+                held = renew()
+            except Exception:
+                logger.warning("Lease renewal failed for %s", name, exc_info=True)
+                continue
+            if not held:
+                logger.error(
+                    "Lease %s is no longer held by this task; stopped renewing",
+                    name,
+                )
+                active.remove(entry)
 
+    def beat() -> None:
+        while active and not stop.wait(interval):
+            renew_all()
+
+    # Renew once before the body starts: a lease reused by a retried task
+    # (same id) may have less than one interval left and would otherwise
+    # expire before the first beat.
+    renew_all()
     thread = threading.Thread(target=beat, name="lease-renewal", daemon=True)
     thread.start()
     try:

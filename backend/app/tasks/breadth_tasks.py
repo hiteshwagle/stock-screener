@@ -493,6 +493,18 @@ def _fill_breadth_gaps(
         f"{gap_stats['errors']} errors, "
         f"{gap_stats.get('unavailable', 0)} unavailable"
     )
+    not_filled = {
+        *gap_stats.get('error_dates', ()),
+        *gap_stats.get('unavailable_dates', ()),
+    }
+    filled = [value for value in missing_dates if value.isoformat() not in not_filled]
+    if filled:
+        # Rows written after a gap (e.g. while an earlier gap-fill failed)
+        # computed their rolling ratios over a window that skipped it.
+        gap_stats['ratios_refreshed'] = calculator.refresh_ratios_between(
+            min(filled),
+            target_date,
+        )
     return gap_stats
 
 

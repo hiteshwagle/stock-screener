@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.tasks.lease_renewal import keep_leases_alive, lease_ttl_seconds
 
 
@@ -44,6 +46,15 @@ def test_leases_are_renewed_while_running_and_not_after_exit():
     calls_at_exit = renew.call_count
     time.sleep(0.05)
     assert renew.call_count == calls_at_exit
+
+
+def test_leases_are_renewed_once_before_the_body_starts():
+    # A lease inherited by a retried task (same id) may have less than one
+    # interval left, so the first renewal cannot wait for the first beat.
+    renew = MagicMock(return_value=True)
+
+    with keep_leases_alive([("market_workload:us", renew)], interval_seconds=60):
+        assert renew.call_count == 1
 
 
 def test_a_lost_lease_stops_renewing_while_others_continue():
@@ -162,6 +173,26 @@ def test_serialized_data_fetch_renews_all_three_leases(
     lock.renew.assert_called_with("task-9", market="US")
     coordination.renew_external_fetch.assert_called_with("task-9")
     lock.release.assert_called_once_with("task-9", market="US")
+
+
+@pytest.mark.parametrize(
+    ("module_path", "class_name"),
+    [
+        ("app.tasks.data_fetch_lock", "DataFetchLock"),
+        ("app.tasks.workload_coordination", "WorkloadCoordination"),
+    ],
+)
+def test_lease_redis_clients_have_bounded_timeouts(module_path, class_name):
+    import importlib
+
+    module = importlib.import_module(module_path)
+    with patch(f"{module_path}.redis.Redis") as mock_redis_cls:
+        mock_redis_cls.return_value = MagicMock()
+        getattr(module, class_name)()
+
+    kwargs = mock_redis_cls.call_args.kwargs
+    assert 0 < kwargs["socket_connect_timeout"] <= 5
+    assert 0 < kwargs["socket_timeout"] <= 10
 
 
 def test_data_fetch_lock_renew_and_extend_are_capped_at_the_lease():
