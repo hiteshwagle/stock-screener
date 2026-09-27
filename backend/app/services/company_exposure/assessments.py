@@ -270,6 +270,8 @@ class ExposureAssessmentService:
                 "theme": scope.economic_theme_id,
                 "theme_fingerprint": scope.theme_fingerprint,
                 "issuer_links": sorted(scope.link_revision_ids),
+                # Names steer the provider prompt and issuer-ownership checks.
+                "issuer_names": sorted(name for name in scope.issuer_names if name),
             },
             "policies": {
                 "verification": VERIFICATION_POLICY,
@@ -394,14 +396,18 @@ class ExposureAssessmentService:
 
     @staticmethod
     def _unchanged(result: AssessmentResult, latest: AssessmentRevision) -> bool:
-        """Same selection and the same coverage gaps: nothing to record.
+        """Same selection, coverage gaps and identity scope: nothing to record.
 
         Successful captures differ only in audit detail (captured/unchanged),
-        which lives in capture events, not in a new dossier revision.
+        which lives in capture events, not in a new dossier revision. A relink
+        or renamed issuer is a new identity scope even when the same claims
+        carry forward, so the job's preview pins the current link revisions.
         """
 
         return (
             not result.changes
+            and _jsonable(result.manifest["scope"])
+            == (latest.input_manifest or {}).get("scope")
             and _gaps(result.manifest["coverage"]) == _gaps(latest.coverage or [])
             and result.manifest["unresolved_questions"]
             == (latest.unresolved_questions or [])

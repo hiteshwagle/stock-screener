@@ -5,9 +5,11 @@
   gives candidates; each candidate's submissions record must list the ticker.
   Both documents are retained as captured revisions. The result is a
   ``RegistryMatch`` for ``IssuerIdentityAdapter.accept_registry_match``.
-* Filing discovery reads ``filings.recent`` from the submissions record. Its
-  parallel arrays must have equal lengths; a mismatch is reported as a
-  partial route rather than silently shifting rows.
+* Filing discovery reads ``filings.recent`` from the submissions record,
+  then, while too few filings match, up to ``MAX_HISTORY_SHARDS`` of the
+  issuer's older ``filings.files`` shards (newest first). Parallel arrays
+  must have equal lengths; a mismatch is reported as a partial route rather
+  than silently shifting rows.
 * Every SEC request uses the operator's identifying User-Agent and the
   existing ``sec_edgar`` pacing key. Without a User-Agent the route is a
   typed capability gap.
@@ -19,6 +21,7 @@ theme-specific business exposure.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from uuid import UUID
@@ -50,6 +53,9 @@ TICKERS_EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 RESOLVER_POLICY = "sec-ticker-cik-v1"
 MAX_CIK_CANDIDATES = 3
+# Older submissions shards fetched per discovery when recent filings fall short.
+MAX_HISTORY_SHARDS = 3
+_SHARD_NAME = re.compile(r"CIK(\d{10})-submissions-\d{3}\.json")
 ANNUAL_FORMS = ("10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A")
 FORMS_BY_KIND = {
     "annual_report": ANNUAL_FORMS,
@@ -116,8 +122,37 @@ class FilingRows:
 
 
 def recent_filings(submissions: dict) -> FilingRows:
-    recent = ((submissions or {}).get("filings") or {}).get("recent") or {}
-    columns = {name: recent.get(name) for name in _RECENT_FIELDS}
+    return filing_rows(((submissions or {}).get("filings") or {}).get("recent") or {})
+
+
+def history_shards(submissions: dict, cik: str, since_year: int | None) -> list[str]:
+    """The issuer's older submissions shards, newest first.
+
+    Only shard names for this CIK are followed, and shards ending before the
+    query window are skipped.
+    """
+
+    files = ((submissions or {}).get("filings") or {}).get("files")
+    shards = []
+    for entry in files if isinstance(files, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", ""))
+        match = _SHARD_NAME.fullmatch(name)
+        if match is None or match.group(1) != cik.zfill(10):
+            continue
+        filing_to = str(entry.get("filingTo") or "")
+        if since_year is not None and filing_to and filing_to[:4] < str(since_year):
+            continue
+        shards.append((filing_to, name))
+    return [name for _, name in sorted(shards, reverse=True)]
+
+
+def filing_rows(block: dict) -> FilingRows:
+    """Rows of one block of parallel filing arrays (recent or a shard)."""
+
+    block = block if isinstance(block, dict) else {}
+    columns = {name: block.get(name) for name in _RECENT_FIELDS}
     if any(not isinstance(values, list) for values in columns.values()):
         return FilingRows((), False, "filing_arrays_missing")
     lengths = {len(values) for values in columns.values()}
@@ -314,16 +349,60 @@ class USDocumentAdapter:
             for kind in query.document_kinds
             for form in FORMS_BY_KIND.get(kind, ())
         }
-        matching = [
-            row
-            for row in filings.rows
-            if row["form"] in wanted
-            and (
-                query.since_year is None
-                or str(row.get("filingDate", ""))[:4] >= str(query.since_year)
-            )
-        ]
+
+        def matches(rows) -> list[dict]:
+            return [
+                row
+                for row in rows
+                if row["form"] in wanted
+                and (
+                    query.since_year is None
+                    or str(row.get("filingDate", ""))[:4] >= str(query.since_year)
+                )
+            ]
+
+        matching = matches(filings.rows)
         limit = min(query.max_documents, limits.max_documents)
+        # High-volume filers roll annual reports out of ``recent``; follow
+        # the bounded history shards until enough filings match.
+        shards = history_shards(submissions, cik, query.since_year)
+        for index, name in enumerate(shards):
+            if len(matching) >= limit:
+                break
+            if index == MAX_HISTORY_SHARDS:
+                coverage.append(
+                    CoverageItem(
+                        route="us_sec_filings",
+                        outcome=CoverageOutcome.PARTIAL,
+                        reason="filing_history_limit",
+                        detail={"shards": len(shards), "read": index},
+                    )
+                )
+                break
+            shard_capture, shard = self._fetch_json(
+                self._json_target(
+                    f"sec:submissions:{name}",
+                    f"https://data.sec.gov/submissions/{name}",
+                    "filing_index",
+                ),
+                budget,
+            )
+            coverage.append(shard_capture.coverage)
+            rows = None if shard is None else filing_rows(shard)
+            if rows is None or not rows.complete:
+                coverage.append(
+                    CoverageItem(
+                        route="us_sec_filings",
+                        outcome=CoverageOutcome.PARTIAL,
+                        reason="filing_history_unavailable",
+                        detail={"shard": name},
+                    )
+                )
+                break
+            seen = {row["accessionNumber"] for row in matching}
+            matching += [
+                row for row in matches(rows.rows) if row["accessionNumber"] not in seen
+            ]
         chosen = sorted(matching, key=lambda r: r["filingDate"], reverse=True)[:limit]
         issuer_id = getattr(issuer, "issuer_id", None)
         targets = tuple(

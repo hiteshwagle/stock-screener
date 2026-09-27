@@ -163,6 +163,65 @@ def test_discovery_selects_latest_annual_filings_with_amendments(
     assert any(item.reason == "document_limit" for item in result.coverage)
 
 
+def _history_split(submissions):
+    """Recent block with only the quarterly report; annual reports in shards."""
+
+    recent = submissions["filings"]["recent"]
+    rows = recent_filings(submissions).rows
+    keep = [row for row in rows if row["form"] == "10-Q"]
+    older = [row for row in rows if row["form"] != "10-Q"]
+    split = json.loads(json.dumps(submissions))
+    split["filings"]["recent"] = {k: [r[k] for r in keep] for k in recent}
+    split["filings"]["files"] = [
+        # A shard for another CIK is never followed.
+        {"name": "CIK0009999999-submissions-001.json", "filingTo": "2026-01-01"},
+        {
+            "name": "CIK0001234567-submissions-001.json",
+            "filingCount": len(older),
+            "filingFrom": "2024-01-01",
+            "filingTo": "2026-03-31",
+        },
+    ]
+    shard = {k: [r[k] for r in older] for k in recent}
+    return split, shard
+
+
+def test_discovery_follows_history_shards_when_recent_falls_short(
+    us_adapter, sec_mock, budget
+):
+    split, shard = _history_split(SUBMISSIONS)
+    sec_mock.serve_json(sec_submission_url("0001234567"), split)
+    sec_mock.serve_json(
+        "https://data.sec.gov/submissions/CIK0001234567-submissions-001.json", shard
+    )
+    issuer = type("Issuer", (), {"identifiers": {("US", "cik"): "0001234567"}})()
+    result = us_adapter.discover(
+        issuer,
+        DocumentQuery(document_kinds=("annual_report",), max_documents=2),
+        AcquisitionLimits(),
+        budget,
+    )
+    assert [t.provider_document_id for t in result.targets] == [
+        "0001234567-26-000011",
+        "0001234567-25-000007",
+    ]
+    assert not any("CIK0009999999" in str(r.url) for r in sec_mock.requests)
+
+
+def test_unavailable_history_shard_is_a_partial_route(us_adapter, sec_mock, budget):
+    split, _ = _history_split(SUBMISSIONS)
+    sec_mock.serve_json(sec_submission_url("0001234567"), split)
+    issuer = type("Issuer", (), {"identifiers": {("US", "cik"): "0001234567"}})()
+    result = us_adapter.discover(
+        issuer,
+        DocumentQuery(document_kinds=("annual_report",)),
+        AcquisitionLimits(),
+        budget,
+    )
+    assert result.targets == ()
+    assert any(item.reason == "filing_history_unavailable" for item in result.coverage)
+
+
 def test_missing_user_agent_is_a_capability_gap_without_network(
     db_session, tmp_path, sec_mock, rate_spy, budget
 ):

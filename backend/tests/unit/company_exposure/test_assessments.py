@@ -127,6 +127,31 @@ def test_redownload_does_not_reaffirm_business_evidence(dossier):
     assert _claim_revisions(dossier.db) == before
 
 
+@pytest.mark.parametrize(
+    "change",
+    [{"link_revision_ids": ("link-2",)}, {"issuer_names": ("Example Renamed Corp",)}],
+)
+def test_identity_scope_change_records_a_new_revision(dossier, change):
+    scope = replace(
+        dossier.scope, link_revision_ids=("link-1",), issuer_names=("Example Corp",)
+    )
+    role = verified_claim(
+        "role", passage=dossier.passages["role"], supported_as_of=FY2024_DATE
+    )
+    _, first = dossier.persist(dossier.attempt(role, scope=scope))
+    first_manifest = dossier.db.get(AssessmentRevision, first.id).input_manifest
+    assert first_manifest["scope"]["issuer_names"] == ["Example Corp"]
+
+    dossier.clock.advance(days=1)
+    moved = replace(scope, **change)
+    _, second = dossier.persist(dossier.attempt(role, scope=moved))
+    # Same claims carried forward, but the preview must pin the new identity.
+    assert not second.unchanged and second.revision_number == 2
+    manifest = dossier.db.get(AssessmentRevision, second.id).input_manifest
+    assert manifest["scope"]["issuer_links"] == sorted(moved.link_revision_ids)
+    assert manifest["scope"]["issuer_names"] == list(moved.issuer_names)
+
+
 def test_first_assessment_links_evidence_and_seals(dossier):
     role = verified_claim(
         "role", passage=dossier.passages["role"], supported_as_of=ROLE_DATE
