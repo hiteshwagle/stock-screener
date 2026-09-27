@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..models.market_breadth import MarketBreadth
 from .breadth.contributor_metadata import BreadthContributorMetadataLoader
-from .breadth.engine import BreadthEngine, BreadthEngineRequest
+from .breadth.engine import BreadthEngine
 from .breadth.formulas import (
     BREADTH_FEATURE_WARMUP_SESSIONS,
     prices_for_feature_window,
@@ -33,7 +33,11 @@ from .breadth.types import (
     BreadthIndicatorValues,
 )
 from .breadth.universe import build_breadth_universe_snapshots
-from .breadth_backfill import BreadthBackfillExecutor, BreadthBackfillPlan
+from .breadth_backfill import (
+    PRICE_BATCH_SIZE,
+    BreadthBackfillExecutor,
+    BreadthBackfillPlan,
+)
 from .breadth_coverage import (
     BreadthCalculationResult,
     BreadthCoverageReport,
@@ -45,6 +49,7 @@ from .derived_data_execution_policy import (
     DerivedDataExecutionPolicy,
     DerivedDataTargetKind,
 )
+from .point_in_time_universe_service import PointInTimeUniverseService
 from .price_cache_service import PriceCacheService
 
 logger = logging.getLogger(__name__)
@@ -128,11 +133,16 @@ class BreadthCalculatorService:
             else "2y"
         )
 
-        prices_by_symbol: dict[str, pd.DataFrame] = {}
+        accumulator = self.engine.accumulator(
+            market=self.market,
+            dates=(calculation_date,),
+            universes_by_date={calculation_date: snapshot},
+            market_policy=self.market_policy,
+        )
         price_coverage = BreadthPriceCoverageAccumulator()
         outcomes = BreadthOutcomeCounter()
-        for offset in range(0, len(symbols), 500):
-            batch_symbols = symbols[offset : offset + 500]
+        for offset in range(0, len(symbols), PRICE_BATCH_SIZE):
+            batch_symbols = symbols[offset : offset + PRICE_BATCH_SIZE]
             loaded, cache_misses = self._load_price_data_for_batch(
                 batch_symbols=batch_symbols,
                 cache_only=policy.cache_only,
@@ -140,6 +150,7 @@ class BreadthCalculatorService:
                 period=history_period,
             )
             price_coverage.record_batch(batch_symbols, cache_misses)
+            usable: dict[str, pd.DataFrame] = {}
             for symbol in batch_symbols:
                 history = loaded.get(symbol)
                 if history is None or history.empty:
@@ -153,13 +164,15 @@ class BreadthCalculatorService:
                 if not self._has_usable_target_session(history, calculation_date):
                     outcomes.record_insufficient()
                     continue
-                prices_by_symbol[symbol] = history
+                usable[symbol] = history
                 outcomes.record_scanned()
+            # Reduce this batch to per-date counts before loading the next, so
+            # only one batch of price histories is alive at a time.
+            accumulator.add_prices(
+                self._prices_for_feature_window(usable, (calculation_date,))
+            )
+            del loaded, usable
 
-        prices_by_symbol = self._prices_for_feature_window(
-            prices_by_symbol,
-            (calculation_date,),
-        )
         seeds = self._load_ratio_seed_counts(calculation_date, limit=9)
         contributor_metadata_available = True
         try:
@@ -184,18 +197,9 @@ class BreadthCalculatorService:
             )
             contributor_metadata = {}
             contributor_metadata_available = False
-        batch = self.engine.calculate_with_contributors(
-            BreadthEngineRequest(
-                market=self.market,
-                dates=(calculation_date,),
-                universes_by_date={calculation_date: snapshot},
-                prices_by_symbol=prices_by_symbol,
-                market_policy=self.market_policy,
-                seed_counts=seeds,
-                contributor_metadata_by_date={
-                    calculation_date: contributor_metadata,
-                },
-            )
+        batch = accumulator.finish(
+            seed_counts=seeds,
+            contributor_metadata_by_date={calculation_date: contributor_metadata},
         )
         canonical = batch.daily_results[calculation_date]
         coverage_report = BreadthCoverageReport.from_parts(
@@ -348,6 +352,60 @@ class BreadthCalculatorService:
         )
         return tuple(sorted(prior, key=lambda item: item.date))
 
+    def refresh_ratios_between(self, after: date, before: date) -> int:
+        """Recompute stored 5/10-day ratios for rows strictly between two dates.
+
+        Ratios are sums over the preceding sessions' stored 4% counts, and the
+        seed query takes the latest rows regardless of gaps. A row computed
+        while an earlier session was still missing therefore used a window
+        that skipped it. Once gap-fill has written that session, the rows
+        after it are recomputed here from stored counts (no price data).
+        Returns the number of rows whose ratios changed.
+        """
+        from .breadth.ratios import calculate_inclusive_ratios
+
+        records = (
+            self.db.query(MarketBreadth)
+            .filter(
+                MarketBreadth.date > after,
+                MarketBreadth.date < before,
+                MarketBreadth.market == self.market,
+                MarketBreadth.calculation_revision
+                == CURRENT_BREADTH_CALCULATION_REVISION,
+            )
+            .order_by(MarketBreadth.date.asc())
+            .all()
+        )
+        if not records:
+            return 0
+        ratios = calculate_inclusive_ratios(
+            (
+                BreadthDailyCount(
+                    date=record.date,
+                    stocks_up_4pct=record.stocks_up_4pct,
+                    stocks_down_4pct=record.stocks_down_4pct,
+                    market=self.market,
+                    calculation_revision=record.calculation_revision,
+                )
+                for record in records
+            ),
+            self._load_ratio_seed_counts(records[0].date, limit=9),
+            market=self.market,
+            calculation_revision=CURRENT_BREADTH_CALCULATION_REVISION,
+        )
+        changed = 0
+        for record in records:
+            refreshed = ratios[record.date]
+            if (record.ratio_5day, record.ratio_10day) != (
+                refreshed.ratio_5day,
+                refreshed.ratio_10day,
+            ):
+                record.ratio_5day = refreshed.ratio_5day
+                record.ratio_10day = refreshed.ratio_10day
+                changed += 1
+        self.db.commit()
+        return changed
+
     def backfill_range(
         self,
         start_date: date,
@@ -497,6 +555,27 @@ class BreadthCalculatorService:
         )
 
         existing_date_set = {d[0] for d in existing_dates}
+
+        # Dates before any symbol was first seen resolve to an empty
+        # point-in-time universe. They are unavailable rather than missing:
+        # requesting them again every run can never produce a row.
+        membership_floor = PointInTimeUniverseService().earliest_membership_date(
+            self.db,
+            market=self.market,
+        )
+        if membership_floor is None:
+            logger.info(
+                "No %s universe history exists; no breadth gaps to fill",
+                self.market,
+            )
+            return []
+        if membership_floor > start_date:
+            logger.info(
+                "Skipping %s breadth dates before %s: no point-in-time universe",
+                self.market,
+                membership_floor,
+            )
+            start_date = membership_floor
 
         # Generate all trading days in range using the per-market calendar
         missing_dates = []

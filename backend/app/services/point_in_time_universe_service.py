@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domain.markets.catalog import MarketCatalog, get_market_catalog
@@ -69,6 +70,37 @@ class PointInTimeUniverseService:
             universe_hash=hash_point_in_time_universe_symbols(symbols),
             members=members,
         )
+
+    def earliest_membership_date(
+        self,
+        db: Session,
+        *,
+        market: str,
+    ) -> date | None:
+        """First market-local date whose historical universe can have members.
+
+        ``resolve`` admits only rows first seen before the end of
+        ``as_of_date`` in the market's timezone, so every earlier date
+        resolves to an empty universe: it is unavailable, not a failure.
+        Returns ``None`` when the market has no common-stock rows at all.
+        """
+        normalized = self._market_calendar.normalize_market(market)
+        first_seen = (
+            db.query(func.min(StockUniverse.first_seen_at))
+            .filter(
+                StockUniverse.market == normalized,
+                StockUniverse.is_common_stock.is_(True),
+            )
+            .scalar()
+        )
+        if first_seen is None:
+            return None
+        if first_seen.tzinfo is None:
+            first_seen = first_seen.replace(tzinfo=timezone.utc)
+        market_timezone = ZoneInfo(
+            self._market_catalog.get(normalized).display_timezone
+        )
+        return first_seen.astimezone(market_timezone).date()
 
     def resolve(
         self,

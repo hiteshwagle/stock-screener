@@ -255,3 +255,47 @@ def test_latest_completed_resolve_uses_event_cutoff_during_post_close_buffer(
     )
 
     assert snapshot.symbols == ("CHANGED_AFTER_CUTOFF",)
+
+
+def test_earliest_membership_date_is_the_market_local_first_seen_date(db_session):
+    service = PointInTimeUniverseService(market_calendar=_CalendarStub(date(2026, 3, 20)))
+    assert service.earliest_membership_date(db_session, market="US") is None
+
+    db_session.add_all(
+        [
+            # 02:00 UTC on the 10th is still the 9th in New York.
+            _universe_row("OLD", first_seen_at=datetime(2026, 3, 10, 2, tzinfo=UTC)),
+            _universe_row("NEW", first_seen_at=datetime(2026, 3, 15, 15, tzinfo=UTC)),
+            _universe_row(
+                "ETF",
+                first_seen_at=datetime(2026, 1, 2, 15, tzinfo=UTC),
+                is_common_stock=False,
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            _status_event(
+                "OLD",
+                UNIVERSE_STATUS_ACTIVE,
+                created_at=datetime(2026, 3, 10, 2, tzinfo=UTC),
+            ),
+            _status_event(
+                "NEW",
+                UNIVERSE_STATUS_ACTIVE,
+                created_at=datetime(2026, 3, 15, 15, tzinfo=UTC),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    floor = service.earliest_membership_date(db_session, market="US")
+
+    assert floor == date(2026, 3, 9)
+    assert service.resolve(db_session, market="US", as_of_date=floor).symbols == ("OLD",)
+    assert (
+        service.resolve(
+            db_session, market="US", as_of_date=date(2026, 3, 8)
+        ).symbols
+        == ()
+    )

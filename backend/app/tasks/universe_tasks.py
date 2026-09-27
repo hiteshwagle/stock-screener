@@ -6,6 +6,7 @@ Provides scheduled tasks for:
 - S&P 500 membership refresh
 """
 import logging
+from contextlib import ExitStack
 from datetime import datetime
 from typing import Any, Optional
 
@@ -25,7 +26,8 @@ from ..services.official_universe_dispatch import (
     ingest_official_market_snapshot,
 )
 from ..wiring.bootstrap import get_provider_snapshot_service, get_stock_universe_service
-from .data_fetch_lock import serialized_data_fetch_task
+from .data_fetch_lock import _lock_key_for_market, serialized_data_fetch_task
+from .lease_renewal import LeaseNotHeld, keep_leases_alive
 from .transient_database import raise_if_transient_database_error
 
 logger = logging.getLogger(__name__)
@@ -380,6 +382,38 @@ def refresh_official_market_universe(
             ),
         )
 
+    # The lock is taken directly rather than through the decorator, so keep
+    # its short lease renewed here for as long as this refresh runs (also when
+    # reentrant: a retry reuses the task id and may find its own old lease).
+    lease_renewal = ExitStack()
+    try:
+        lease_renewal.enter_context(
+            keep_leases_alive(
+                [(
+                    _lock_key_for_market(_market),
+                    lambda: lock.renew(task_id, market=_market),
+                )]
+            )
+        )
+    except LeaseNotHeld:
+        # The lease was lost (or could not be confirmed) before we started.
+        if acquired and not is_reentrant:
+            try:
+                lock.release(task_id, market=_market)
+            except Exception:
+                logger.warning(
+                    "Could not release %s data fetch lock before retrying",
+                    _market,
+                    exc_info=True,
+                )
+        raise self.retry(
+            countdown=_official_lock_retry_delay(getattr(self.request, "retries", 0)),
+            max_retries=_OFFICIAL_UNIVERSE_LOCK_MAX_RETRIES,
+            exc=RuntimeError(
+                f"Market data fetch lock for {_market} was lost before the "
+                "official universe refresh started; retrying"
+            ),
+        )
     try:
         activity_db = SessionLocal()
         try:
@@ -571,6 +605,7 @@ def refresh_official_market_universe(
         logger.exception("Error refreshing official universe for %s", _market)
         raise
     finally:
+        lease_renewal.close()
         if acquired and not is_reentrant:
             lock.release(task_id, market=_market)
 

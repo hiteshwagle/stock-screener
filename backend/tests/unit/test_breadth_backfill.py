@@ -906,3 +906,229 @@ def test_backfill_range_rejects_signature_for_different_eligible_symbols():
             eligible_symbols_by_date={calculation_date: ("AAA",)},
             eligibility_signatures_by_date={calculation_date: "wrong"},
         )
+
+
+def _walk_df(end_date: date, seed: int, periods: int = 320) -> pd.DataFrame:
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    index = pd.bdate_range(end=end_date, periods=periods)
+    close = 40.0 * np.exp(np.cumsum(rng.normal(0.0, 0.03, len(index))))
+    return pd.DataFrame(
+        {
+            "Open": close,
+            "High": close * 1.03,
+            "Low": close * 0.97,
+            "Close": close,
+            "Adj Close": close,
+            "Volume": rng.integers(500_000, 3_000_000, len(index)).astype(float),
+        },
+        index=index,
+    )
+
+
+_STREAM_SYMBOLS = ("AAA", "BBB", "CCC", "DDD", "EEE")
+
+
+def _run_streaming_backfill(
+    monkeypatch, trading_dates, *, batch_size, reread=None, price_cache_out=None
+):
+    """Backfill five symbols; return stored rows and add_prices batch sizes.
+
+    ``reread(symbol, frame)`` replaces what a second read of a symbol returns.
+    """
+    monkeypatch.setattr(breadth_backfill_module, "PRICE_BATCH_SIZE", batch_size)
+    db = _make_db_session()
+    db.add_all(
+        StockUniverse(symbol=symbol, is_active=True, status=UNIVERSE_STATUS_ACTIVE)
+        for symbol in _STREAM_SYMBOLS
+    )
+    db.commit()
+    frames = {
+        symbol: _walk_df(date(2026, 3, 13), seed)
+        for seed, symbol in enumerate(_STREAM_SYMBOLS)
+    }
+    reads: dict[str, int] = {}
+
+    def read(symbols, **_):
+        loaded = {}
+        for symbol in symbols:
+            reads[symbol] = reads.get(symbol, 0) + 1
+            frame = frames[symbol]
+            if reread is not None and reads[symbol] > 1:
+                frame = reread(symbol, frame)
+            loaded[symbol] = frame
+        return loaded
+
+    price_cache = MagicMock()
+    price_cache.get_many_cached_only_fresh.side_effect = read
+    if price_cache_out is not None:
+        price_cache_out.append(price_cache)
+    service = BreadthCalculatorService(db, price_cache)
+    accumulators = []
+    make_accumulator = service.engine.accumulator
+
+    def recording_accumulator(**kwargs):
+        accumulator = make_accumulator(**kwargs)
+        add_prices = accumulator.add_prices
+        sizes = []
+
+        def add(batch):
+            sizes.append(len(batch))
+            add_prices(batch)
+
+        accumulator.add_prices = add
+        accumulators.append((kwargs["dates"], sizes))
+        return accumulator
+
+    monkeypatch.setattr(service.engine, "accumulator", recording_accumulator)
+    result = service.backfill_range(
+        trading_dates[0], trading_dates[-1], trading_dates=trading_dates
+    )
+    rows = {
+        row.date: {
+            column.name: getattr(row, column.name)
+            for column in MarketBreadth.__table__.columns
+            if column.name not in {"id", "created_at", "updated_at"}
+            and "duration" not in column.name
+        }
+        for row in db.query(MarketBreadth).all()
+    }
+    return result, rows, accumulators
+
+
+def test_backfill_streams_prices_one_batch_at_a_time(monkeypatch):
+    trading_dates = [date(2026, 3, 11), date(2026, 3, 12), date(2026, 3, 13)]
+
+    streamed, streamed_rows, accumulators = _run_streaming_backfill(
+        monkeypatch, trading_dates, batch_size=2
+    )
+    whole, whole_rows, _ = _run_streaming_backfill(
+        monkeypatch, trading_dates, batch_size=500
+    )
+
+    assert streamed == whole
+    assert streamed["processed"] == 3
+    assert streamed_rows == whole_rows
+    [(dates, sizes)] = accumulators
+    assert dates == tuple(trading_dates)
+    assert sizes == [2, 2, 1]
+
+
+def test_rejected_leading_date_replays_from_cache_to_match_a_direct_request(
+    monkeypatch,
+):
+    # The Saturday has no cached session, so it is not processed, but it
+    # starts the warm-up window before sessions 3/9-3/11. Persisted rows must
+    # not depend on it: the processed window is replayed from the cache only.
+    saturday = date(2026, 3, 7)
+    processed = [date(2026, 3, 12), date(2026, 3, 13)]
+    caches = []
+
+    result, rows, accumulators = _run_streaming_backfill(
+        monkeypatch, [saturday, *processed], batch_size=2, price_cache_out=caches
+    )
+    _, direct_rows, _ = _run_streaming_backfill(
+        monkeypatch, processed, batch_size=2
+    )
+
+    assert result["error_dates"] == [saturday.isoformat()]
+    assert [dates for dates, _ in accumulators] == [
+        (saturday, *processed),
+        tuple(processed),
+    ]
+    [price_cache] = caches
+    price_cache.get_historical_data.assert_not_called()
+    replay_reads = price_cache.get_many_cached_only_fresh.call_args_list[3:]
+    assert replay_reads and all(
+        call.kwargs.get("minimum_rows") == 1 for call in replay_reads
+    )
+    assert rows == direct_rows
+    assert set(rows) == set(processed)
+
+
+def test_rejected_leading_date_without_earlier_sessions_needs_no_replay(
+    monkeypatch,
+):
+    # Sunday 3/8 is followed directly by the first processed session, so the
+    # warm-up window is already the processed one: prices load exactly once.
+    sunday = date(2026, 3, 8)
+    processed = [date(2026, 3, 9), date(2026, 3, 10)]
+
+    _, rows, accumulators = _run_streaming_backfill(
+        monkeypatch, [sunday, *processed], batch_size=2
+    )
+    _, direct_rows, _ = _run_streaming_backfill(
+        monkeypatch, processed, batch_size=2
+    )
+
+    assert [dates for dates, _ in accumulators] == [(sunday, *processed)]
+    assert rows == direct_rows
+
+
+def test_failed_replay_persists_nothing_and_leaves_dates_for_gap_fill(
+    monkeypatch, caplog
+):
+    saturday = date(2026, 3, 7)
+    processed = [date(2026, 3, 12), date(2026, 3, 13)]
+
+    def changed(symbol, frame):
+        if symbol != "CCC":
+            return frame
+        frame = frame.copy()
+        frame.iloc[-1, frame.columns.get_loc("Close")] *= 1.5
+        return frame
+
+    with caplog.at_level("WARNING"):
+        result, rows, accumulators = _run_streaming_backfill(
+            monkeypatch, [saturday, *processed], batch_size=2, reread=changed
+        )
+
+    # The first-pass values depend on the rejected Saturday and CCC could not
+    # be re-read identically, so no row is written and every date is left as
+    # an error for the next gap-fill to retry.
+    assert len(accumulators) == 2
+    assert "differs from the first pass" in caplog.text
+    assert rows == {}
+    assert result["processed"] == 0
+    assert result["error_dates"] == [
+        value.isoformat() for value in (saturday, *processed)
+    ]
+    assert result["warmup_replay_failed"] is True
+
+
+def test_contributor_backfill_refuses_dates_without_a_universe(monkeypatch):
+    db = _make_db_session()
+    empty_date, good_date = date(2026, 3, 12), date(2026, 3, 13)
+
+    def snapshots(_db, _market, dates):
+        return {
+            value: BreadthUniverseSnapshot(
+                calculation_date=value,
+                members=(
+                    () if value == empty_date else (BreadthUniverseMember("AAA", "USD"),)
+                ),
+                broad_signature="sig",
+            )
+            for value in dates
+        }
+
+    monkeypatch.setattr(
+        breadth_backfill_module, "build_breadth_universe_snapshots", snapshots
+    )
+    price_cache = MagicMock()
+    calculator = BreadthCalculatorService(db, price_cache)
+
+    with pytest.raises(BreadthContributorBackfillIncomplete, match="2026-03-12"):
+        BreadthBackfillExecutor(calculator).execute(
+            BreadthBackfillPlan(dates=(empty_date, good_date)),
+            policy=DerivedDataExecutionPolicy(
+                mode=DerivedDataExecutionMode.STRICT_CACHE_ONLY,
+                target_kind=DerivedDataTargetKind.HISTORICAL,
+            ),
+            require_complete_cache_coverage=True,
+            contributor_only=True,
+        )
+
+    price_cache.get_many_cached_only_fresh.assert_not_called()
+    assert db.query(MarketBreadthContributorSnapshot).count() == 0

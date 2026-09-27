@@ -209,3 +209,112 @@ def test_engine_rejects_a_policy_for_another_market() -> None:
                 market_policy=get_breadth_market_policy("CA"),
             )
         )
+
+
+def _random_walk(index, seed):
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    close = pd.Series(
+        50.0 * np.exp(np.cumsum(rng.normal(0.0, 0.03, len(index)))), index=index
+    )
+    return pd.DataFrame(
+        {
+            "Open": close * (1 + rng.normal(0, 0.01, len(index))),
+            "High": close * 1.02,
+            "Low": close * 0.98,
+            "Close": close,
+            "Adj Close": close,
+            "Volume": rng.integers(200_000, 2_000_000, len(index)).astype(float),
+        },
+        index=index,
+    )
+
+
+def _streaming_fixture():
+    index = pd.bdate_range(end="2026-08-21", periods=320)
+    dates = tuple(value.date() for value in index[-3:])
+    symbols = tuple(f"S{number}" for number in range(7))
+    members = tuple(BreadthUniverseMember(symbol, "USD") for symbol in symbols)
+    universes = {
+        calculation_date: BreadthUniverseSnapshot(
+            calculation_date=calculation_date,
+            members=members,
+            broad_signature=hash_point_in_time_universe_symbols(symbols),
+        )
+        for calculation_date in dates
+    }
+    prices = {
+        symbol: _random_walk(index, seed) for seed, symbol in enumerate(symbols)
+    }
+    return dates, universes, prices
+
+
+def test_accumulator_batches_match_a_single_whole_universe_call():
+    dates, universes, prices = _streaming_fixture()
+    engine = BreadthEngine()
+    whole = engine.calculate_with_contributors(
+        BreadthEngineRequest(
+            market="US",
+            dates=dates,
+            universes_by_date=universes,
+            prices_by_symbol=prices,
+            market_policy=get_breadth_market_policy("US"),
+        )
+    )
+
+    accumulator = engine.accumulator(
+        market="US",
+        dates=dates,
+        universes_by_date=universes,
+        market_policy=get_breadth_market_policy("US"),
+    )
+    symbols = list(reversed(prices))
+    for offset in range(0, len(symbols), 2):
+        accumulator.add_prices(
+            {symbol: prices[symbol] for symbol in symbols[offset : offset + 2]}
+        )
+
+    assert accumulator.finish() == whole
+    assert any(
+        snapshot.contributors for snapshot in whole.contributor_snapshots.values()
+    )
+
+
+def test_accumulator_rejects_a_symbol_supplied_twice():
+    dates, universes, prices = _streaming_fixture()
+    accumulator = BreadthEngine().accumulator(
+        market="US",
+        dates=dates,
+        universes_by_date=universes,
+        market_policy=get_breadth_market_policy("US"),
+    )
+    accumulator.add_prices({"S0": prices["S0"]})
+
+    with pytest.raises(ValueError, match="supplied twice"):
+        accumulator.add_prices({"S0": prices["S0"]})
+
+
+def test_accumulator_finish_on_a_subset_matches_a_request_for_that_subset():
+    dates, universes, prices = _streaming_fixture()
+    engine = BreadthEngine()
+    accumulator = engine.accumulator(
+        market="US",
+        dates=dates,
+        universes_by_date=universes,
+        market_policy=get_breadth_market_policy("US"),
+    )
+    accumulator.add_prices(prices)
+    subset = dates[1:]
+
+    assert accumulator.finish(dates=subset) == engine.calculate_with_contributors(
+        BreadthEngineRequest(
+            market="US",
+            dates=subset,
+            universes_by_date={value: universes[value] for value in subset},
+            prices_by_symbol=prices,
+            market_policy=get_breadth_market_policy("US"),
+        )
+    )
+    with pytest.raises(ValueError, match="accumulated dates"):
+        accumulator.finish(dates=(date(2020, 1, 2),))

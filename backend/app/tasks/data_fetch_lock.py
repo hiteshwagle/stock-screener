@@ -19,9 +19,21 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in desktop packaging
     redis = None
 
 from ..config import settings
+from .lease_renewal import (
+    LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
+    LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
+    RENEW_LEASE_LUA,
+    LeaseNotHeld,
+    keep_leases_alive,
+    lease_ttl_seconds,
+)
 from .market_queues import SUPPORTED_MARKETS, market_suffix, normalize_market
 from .transient_database import retry_transient_database_error
-from .workload_coordination import _coordination_retry
+from .workload_coordination import (
+    EXTERNAL_FETCH_GLOBAL_KEY,
+    _coordination_retry,
+    _market_workload_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +72,8 @@ return 0
 """
 
 # Lua script for atomic extend: only extends TTL if the task_id field matches.
-# Caps TTL at max_ttl (ARGV[3]) to prevent unbounded growth during long tasks.
+# Caps TTL at max_ttl (ARGV[3]), the lease TTL by default, so an extension can
+# never outlive a crashed holder by more than one lease.
 _EXTEND_LUA = """
 local val = redis.call('get', KEYS[1])
 if val and string.find(val, ARGV[1], 1, true) then
@@ -132,11 +145,17 @@ class DataFetchLock:
         self.redis = redis.Redis(
             host=settings.redis_host,
             port=settings.redis_port,
-            db=settings.redis_db
+            db=settings.redis_db,
+            socket_connect_timeout=LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
         )
-        self.lock_timeout = getattr(settings, 'data_fetch_lock_timeout', 7200)
+        # Short lease, renewed by the holder's heartbeat (see lease_renewal).
+        self.lock_timeout = lease_ttl_seconds(
+            getattr(settings, "data_fetch_lock_timeout", None)
+        )
         self._release_script = self.redis.register_script(_RELEASE_LUA)
         self._extend_script = self.redis.register_script(_EXTEND_LUA)
+        self._renew_script = self.redis.register_script(RENEW_LEASE_LUA)
 
     @contextmanager
     def external_hold(
@@ -378,18 +397,32 @@ class DataFetchLock:
             logger.warning("Legacy data fetch lock force released (key=%s)", LOCK_KEY)
         return count
 
+    def renew(self, task_id: str, market: Optional[str] = None) -> bool:
+        """Reset the lease to its full TTL if ``task_id`` still holds it."""
+        return bool(
+            self._renew_script(
+                keys=[_lock_key_for_market(market)],
+                args=[f":{task_id}:", self.lock_timeout],
+            )
+        )
+
     def extend_lock(
         self,
         task_id: str,
         additional_seconds: int = 300,
-        max_ttl: int = 7200,
+        max_ttl: Optional[int] = None,
         market: Optional[str] = None,
     ) -> bool:
         """Atomically extend the lock timeout if we own it, for the given market scope."""
         key = _lock_key_for_market(market)
         match_pattern = f":{task_id}:"
         new_ttl = self._extend_script(
-            keys=[key], args=[match_pattern, additional_seconds, max_ttl]
+            keys=[key],
+            args=[
+                match_pattern,
+                additional_seconds,
+                self.lock_timeout if max_ttl is None else max_ttl,
+            ],
         )
         if new_ttl > 0:
             logger.info(
@@ -502,7 +535,26 @@ def _serialized_data_fetch(task_name: str):
                 )
                 start_time = datetime.now()
 
-                result = func(*args, **kwargs)
+                # Renewed even when reentrant: a retried or redelivered task
+                # reuses its id and may hold a leftover lease nobody renews.
+                renewals = [
+                    (
+                        _lock_key_for_market(market_value),
+                        lambda: lock.renew(task_id, market=market_value),
+                    ),
+                    (
+                        _market_workload_key(market_value),
+                        lambda: coordination.renew_market_workload(
+                            task_id, market=market_value
+                        ),
+                    ),
+                    (
+                        EXTERNAL_FETCH_GLOBAL_KEY,
+                        lambda: coordination.renew_external_fetch(task_id),
+                    ),
+                ]
+                with keep_leases_alive(renewals):
+                    result = func(*args, **kwargs)
 
                 duration = (datetime.now() - start_time).total_seconds()
                 logger.info(
@@ -516,6 +568,17 @@ def _serialized_data_fetch(task_name: str):
                     task_name, market_label, e,
                 )
                 raise
+            except LeaseNotHeld as e:
+                # A leftover same-id lease expired and was taken before the
+                # body started: wait for the new holder like any busy lease.
+                message = f"lease_lost_before_start ({e})"
+                if task_instance is not None and hasattr(task_instance, "retry"):
+                    _coordination_retry(task_instance, message)
+                return {
+                    "status": "waiting",
+                    "wait_reason": "lease_lost_before_start",
+                    "lost_leases": str(e),
+                }
             except Exception as e:
                 retry_transient_database_error(
                     task_instance,

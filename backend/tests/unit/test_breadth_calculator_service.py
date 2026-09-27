@@ -713,11 +713,15 @@ def test_backfill_range_fallback_uses_market_calendar(monkeypatch):
 
     result = service.backfill_range(date(2026, 3, 12), date(2026, 3, 14))
 
+    # The HK universe has no rows, so the calendar-selected date has no
+    # point-in-time membership: unavailable, not a failed calculation.
     assert result == {
         "total_dates": 1,
         "processed": 0,
-        "errors": 1,
-        "error_dates": ["2026-03-13"],
+        "errors": 0,
+        "error_dates": [],
+        "unavailable": 1,
+        "unavailable_dates": ["2026-03-13"],
     }
     price_cache.get_many_cached_only_fresh.assert_not_called()
     price_cache.get_many_cached_only.assert_not_called()
@@ -1553,3 +1557,189 @@ def test_live_and_backfill_use_identical_canonical_counts():
     for field in BreadthIndicatorValues.__dataclass_fields__:
         assert getattr(stored, field) == live.indicators[field]
     assert stored.calculation_revision == live.indicators["calculation_revision"] == 3
+
+
+def test_calculate_daily_breadth_reduces_each_price_batch_before_the_next(
+    monkeypatch,
+):
+    calculation_date = date(2026, 3, 20)
+    frames = {
+        symbol: _make_price_df(calculation_date, base)
+        for symbol, base in (("AAA", 100.0), ("BBB", 200.0), ("CCC", 50.0))
+    }
+    monkeypatch.setattr(
+        breadth_calculator_module.BreadthContributorMetadataLoader,
+        "current",
+        lambda _db, _market, symbols: {},
+    )
+
+    def run(batch_size):
+        monkeypatch.setattr(breadth_calculator_module, "PRICE_BATCH_SIZE", batch_size)
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = [
+            SimpleNamespace(symbol=symbol) for symbol in frames
+        ]
+        price_cache = MagicMock()
+        price_cache.get_many_cached_only_fresh.side_effect = lambda symbols, **_: {
+            symbol: frames[symbol] for symbol in symbols
+        }
+        calculator = BreadthCalculatorService(db, price_cache)
+        make_accumulator = calculator.engine.accumulator
+        sizes = []
+
+        def recording_accumulator(**kwargs):
+            accumulator = make_accumulator(**kwargs)
+            add_prices = accumulator.add_prices
+
+            def add(batch):
+                sizes.append(len(batch))
+                add_prices(batch)
+
+            accumulator.add_prices = add
+            return accumulator
+
+        monkeypatch.setattr(calculator.engine, "accumulator", recording_accumulator)
+        result = calculator.calculate_daily_breadth(
+            calculation_date,
+            policy=_policy("refresh_guarded", calculation_date),
+        )
+        return result, sizes, price_cache.get_many_cached_only_fresh.call_count
+
+    streamed, streamed_sizes, streamed_loads = run(1)
+    whole, whole_sizes, whole_loads = run(500)
+
+    assert streamed_sizes == [1, 1, 1]
+    assert streamed_loads == 3
+    assert (whole_sizes, whole_loads) == ([3], 1)
+    assert streamed.to_metrics_dict() == whole.to_metrics_dict()
+    assert streamed.daily_result == whole.daily_result
+    assert streamed.to_metrics_dict()["total_stocks_scanned"] == 3
+
+
+def test_find_missing_dates_skips_dates_before_the_universe_existed(monkeypatch):
+    from datetime import UTC, datetime
+
+    class _WeekdayCalendar:
+        def is_trading_day(self, market, current_date):
+            return current_date.weekday() < 5
+
+    monkeypatch.setattr(
+        "app.wiring.bootstrap.get_market_calendar_service",
+        lambda: _WeekdayCalendar(),
+    )
+    db = _make_db_session()
+    service = BreadthCalculatorService(db, MagicMock())
+
+    assert service.find_missing_dates(14, end_date=date(2026, 3, 20)) == []
+
+    db.add(
+        StockUniverse(
+            symbol="AAA",
+            market="US",
+            is_active=True,
+            status=UNIVERSE_STATUS_ACTIVE,
+            first_seen_at=datetime(2026, 3, 16, 15, tzinfo=UTC),
+        )
+    )
+    db.commit()
+
+    assert service.find_missing_dates(14, end_date=date(2026, 3, 20)) == [
+        date(2026, 3, 16),
+        date(2026, 3, 17),
+        date(2026, 3, 18),
+        date(2026, 3, 19),
+    ]
+
+
+def test_backfill_reports_unreconstructable_dates_unavailable_not_failed(
+    monkeypatch,
+):
+    from app.services.point_in_time_universe_service import (
+        PointInTimeUniverseUnavailable,
+    )
+
+    db = _make_db_session()
+    good_date = date(2026, 3, 20)
+    broken_date = date(2026, 3, 19)
+    empty_date = date(2026, 3, 18)
+
+    def snapshots(_db, _market, dates):
+        dates = tuple(dates)
+        if broken_date in dates:
+            raise PointInTimeUniverseUnavailable("missing lifecycle events")
+        return {
+            value: BreadthUniverseSnapshot(
+                calculation_date=value,
+                members=(
+                    ()
+                    if value == empty_date
+                    else (BreadthUniverseMember("AAA", "USD"),)
+                ),
+                broad_signature="sig",
+            )
+            for value in dates
+        }
+
+    monkeypatch.setattr(
+        breadth_backfill_module, "build_breadth_universe_snapshots", snapshots
+    )
+    price_cache = MagicMock()
+    price_cache.get_many_cached_only_fresh.return_value = {
+        "AAA": _make_price_df(good_date)
+    }
+
+    result = BreadthCalculatorService(db, price_cache).backfill_range(
+        empty_date,
+        good_date,
+        trading_dates=[empty_date, broken_date, good_date],
+    )
+
+    assert result == {
+        "total_dates": 3,
+        "processed": 1,
+        "errors": 0,
+        "error_dates": [],
+        "unavailable": 2,
+        "unavailable_dates": [empty_date.isoformat(), broken_date.isoformat()],
+    }
+    assert [row.date for row in db.query(MarketBreadth).all()] == [good_date]
+
+
+def test_refresh_ratios_between_repairs_rows_written_across_a_gap():
+    from app.services.breadth.ratios import calculate_inclusive_ratios
+    from app.services.breadth.types import BreadthDailyCount
+
+    db = _make_db_session()
+    sessions = [date(2026, 3, day) for day in (9, 10, 11, 12, 13, 16, 17)]
+    gap = date(2026, 3, 12)
+    counts = {day: (index + 1, 2) for index, day in enumerate(sessions)}
+    for day in sessions:
+        if day != gap:
+            _add_breadth_row(db, day, up=counts[day][0], down=counts[day][1])
+    db.commit()
+    service = BreadthCalculatorService(db, MagicMock())
+    # 3/13 and 3/16 were computed while 3/12 was missing: their windows
+    # skipped it. Store what that produced, then fill the gap.
+    stale = service.refresh_ratios_between(date(2026, 3, 8), date(2026, 3, 17))
+    assert stale > 0
+    _add_breadth_row(db, gap, up=counts[gap][0], down=counts[gap][1])
+    db.commit()
+
+    changed = service.refresh_ratios_between(gap, date(2026, 3, 17))
+
+    expected = calculate_inclusive_ratios(
+        BreadthDailyCount(day, up, down, market="US", calculation_revision=3)
+        for day, (up, down) in counts.items()
+    )
+    stored = {
+        row.date: (row.ratio_5day, row.ratio_10day)
+        for row in db.query(MarketBreadth).filter(MarketBreadth.date > gap)
+    }
+    assert changed == 2
+    assert {day: stored[day] for day in (date(2026, 3, 13), date(2026, 3, 16))} == {
+        day: (expected[day].ratio_5day, expected[day].ratio_10day)
+        for day in (date(2026, 3, 13), date(2026, 3, 16))
+    }
+    # The target date itself is excluded: it is calculated next, with the
+    # repaired rows as its seeds.
+    assert stored[date(2026, 3, 17)] == (None, None)
