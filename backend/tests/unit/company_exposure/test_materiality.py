@@ -558,3 +558,31 @@ def test_every_metric_part_must_be_stated(metric, quote, held):
         currency="USD",
     )
     assert ("metric_not_in_quote" in result.hold_reasons) is held
+
+
+@pytest.mark.parametrize(
+    ("value", "held"),
+    [("20", False), ("100", True)],
+)
+def test_value_cannot_be_digits_of_a_product_name(value, held):
+    result = validate_measure(
+        metric="revenue",
+        value=Decimal(value),
+        unit="million",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote="A100 HBM revenue was USD 20 million in FY2024.",
+        passage_id="p",
+        currency="USD",
+    )
+    assert ("value_not_in_quote" in result.hold_reasons) is held
+
+
+def test_identifier_digits_are_not_amounts_but_scale_suffixes_are():
+    from app.services.company_exposure.materiality import quote_contains_value
+
+    assert not quote_contains_value("ET-9000 revenue grew.", Decimal(9000))
+    assert not quote_contains_value("The A100X ships.", Decimal(100))
+    assert quote_contains_value("Revenue was 20m in FY2024.", Decimal(20))
+    assert quote_contains_value("Revenue was USD 5bn.", Decimal(5))

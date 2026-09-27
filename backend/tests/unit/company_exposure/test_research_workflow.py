@@ -208,6 +208,25 @@ def test_relink_after_the_early_check_is_caught_inside_the_sealing_fence(
     assert db_session.execute(revisions).scalar() == 0
 
 
+def test_rename_during_provider_call_is_never_sealed(harness, db_session):
+    harness.serve_sec()
+
+    def rename_then_answer(request_json):
+        # The listing's name, which the prompt carries, changes mid-call.
+        harness.security.name = "Renamed Test Systems Corp"
+        db_session.commit()
+        return claims_for(request_json)
+
+    harness.go.queue_builder(rename_then_answer)
+    harness.request()
+    harness.step(), harness.step()
+    verified = harness.step()
+    assert (verified.stage, verified.status) == ("verify", "retryable")
+    assert verified.detail["condition"] == "scope_changed_during_verification"
+    revisions = select(func.count()).select_from(AssessmentRevision)
+    assert db_session.execute(revisions).scalar() == 0
+
+
 def test_ambiguous_cik_pauses_for_review_then_resumes_after_admin_link(
     harness, db_session
 ):

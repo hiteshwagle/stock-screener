@@ -128,6 +128,25 @@ def _names_period(quote: str, match: re.Match) -> bool:
     )
 
 
+# Letters a number may carry as its own scale or unit ("20m", "5bn", "3x").
+_AMOUNT_SUFFIX = re.compile(r"(?:mn|mm|bn|m|b|k|x)(?![A-Za-z])", re.IGNORECASE)
+
+
+def _in_identifier(quote: str, match: re.Match) -> bool:
+    """Digits that belong to a name rather than an amount ("A100", "ET-9000").
+
+    A number joined to letters before it, or followed by letters that are
+    not a scale suffix, is part of an identifier.
+    """
+
+    start = match.start()
+    before = quote[max(0, start - 2) : start]
+    if before[-1:].isalpha() or (before[-1:] in "-_/" and before[:1].isalpha()):
+        return True
+    after = quote[match.end() :]
+    return bool(after[:1].isalpha()) and not _AMOUNT_SUFFIX.match(after)
+
+
 def quote_contains_value(quote: str | None, value: Decimal) -> bool:
     """A cited operand must appear in its quote as an amount.
 
@@ -138,7 +157,7 @@ def quote_contains_value(quote: str | None, value: Decimal) -> bool:
     if not quote:
         return False
     for match in _NUMBER.finditer(quote):
-        if _names_period(quote, match):
+        if _names_period(quote, match) or _in_identifier(quote, match):
             continue
         try:
             if Decimal(match.group(0).replace(",", "")) == value:

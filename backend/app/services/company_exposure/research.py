@@ -691,7 +691,11 @@ class ResearchStageRunner:
         security = (
             None
             if request.security_id is None
-            else self.session.get(StockUniverse, request.security_id)
+            # Fresh, not the session's cached row: a rename during the
+            # provider call must be seen by the pre-seal recheck.
+            else self.session.get(
+                StockUniverse, request.security_id, populate_existing=True
+            )
         )
         return AssessmentScope(
             issuer_id=issuer.issuer_id,
@@ -709,11 +713,18 @@ class ResearchStageRunner:
         if theme is None or issuer is None:
             return True
         current = self._scope(request, issuer, theme)
+        # The issuer names are in the prompt: a rename also changes the scope.
         return (
             current.issuer_id,
             tuple(current.link_revision_ids),
             current.theme_fingerprint,
-        ) != (scope.issuer_id, tuple(scope.link_revision_ids), scope.theme_fingerprint)
+            tuple(current.issuer_names),
+        ) != (
+            scope.issuer_id,
+            tuple(scope.link_revision_ids),
+            scope.theme_fingerprint,
+            tuple(scope.issuer_names),
+        )
 
     def _verify(self, request) -> StageOutcome:
         theme = self.theme_loader(self.session, request.economic_theme_id)
