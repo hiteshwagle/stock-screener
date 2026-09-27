@@ -26,9 +26,12 @@ def operand(value, **kw):
         label="Memory test revenue",
         currency="USD",
         passage_id="p",
-        quote=f"revenue of {value}",
     )
     base.update(kw)
+    # By default the quote states everything the operand claims.
+    base.setdefault(
+        "quote", f"{base['label']} (revenue) of USD {value} million in FY2025"
+    )
     return Operand(**base)
 
 
@@ -72,13 +75,15 @@ def test_e05_compatible_disclosed_ratio():
     result = calculate_materiality(
         metric="revenue_share",
         numerator=operand(
-            "200", passage_id="p-num", quote="Memory test revenue was 200"
+            "200",
+            passage_id="p-num",
+            quote="Memory test revenue was USD 200 million in FY2025",
         ),
         denominator=operand(
             "1,000",
             label="Total revenue",
             passage_id="p-den",
-            quote="Total revenue was 1,000",
+            quote="Total revenue was USD 1,000 million in FY2025",
         ),
         theme_terms=THEME,
     )
@@ -124,7 +129,11 @@ def test_e05_compatible_disclosed_ratio():
             operand("1000", label="Total"),
             "numerator_value_not_in_quote",
         ),
-        (operand("1500"), operand("1000", label="Total"), "share_out_of_range"),
+        (
+            operand("1500"),
+            operand("1000", label="Total"),
+            "share_out_of_range",
+        ),
     ],
 )
 def test_e06_incompatible_inputs_held(numerator, denominator, hold):
@@ -244,3 +253,24 @@ def test_document_period_grounds_an_implicit_period():
     }
     assert validate_measure(**kwargs).hold_reasons == ("period_not_in_quote",)
     assert not validate_measure(**kwargs, period_evidence=("FY2025",)).held
+
+
+def test_ratio_operands_must_each_state_their_metadata():
+    result = calculate_materiality(
+        metric="revenue_share",
+        numerator=operand(
+            "20", quote="Memory test revenue was USD 20 million in FY2025"
+        ),
+        # A headcount relabelled as USD revenue.
+        denominator=operand(
+            "100", label="Total revenue", quote="We had 100 employees in FY2025"
+        ),
+        theme_terms=THEME,
+    )
+    assert result.value is None
+    assert {
+        "denominator_metric_not_in_quote",
+        "denominator_currency_not_in_quote",
+        "denominator_scope_not_in_quote",
+    } <= set(result.hold_reasons)
+    assert not any(h.startswith("numerator_") for h in result.hold_reasons)

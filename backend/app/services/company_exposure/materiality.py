@@ -47,6 +47,8 @@ class Operand:
     passage_id: str | None = None
     quote: str | None = None
     forecast: bool = False
+    # The cited document's reporting period/date, grounding an implicit period.
+    period_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +321,21 @@ def calculate_materiality(
     for role, operand in (("numerator", numerator), ("denominator", denominator)):
         if not quote_contains_value(operand.quote, operand.value):
             holds.append(f"{role}_value_not_in_quote")
+        # Each operand's metadata must be stated by its own quote, or two
+        # unrelated figures ("$20m revenue", "100 employees") could be
+        # labelled as compatible revenue operands.
+        holds.extend(
+            f"{role}_{hold}"
+            for hold in _grounding_holds(
+                metric=metric,
+                unit=operand.unit,
+                currency=operand.currency,
+                period=operand.period,
+                scope_label=operand.label,
+                quote=operand.quote or "",
+                period_evidence=operand.period_evidence,
+            )
+        )
     if numerator.forecast or denominator.forecast:
         holds.append("forecast_operand")
     if _norm(numerator.period) != _norm(denominator.period):

@@ -18,7 +18,8 @@ after that is deterministic and can only *downgrade*:
   one non-negated clause of support, and a customer relationship a clause
   asserting it with the counterparty the statement names;
 * every name and figure in the model-written statement must be grounded in
-  its citations or the scope, including a sentence-initial name;
+  its citations or the scope, including a sentence-initial name, and a
+  statement asserting more than its evidence is replaced by that evidence;
 * freshness is anchored to the passages that carry the claim;
 * the substantive date comes from the document (effective/publication
   date), never from when it was downloaded.
@@ -106,6 +107,12 @@ _MODALITY = re.compile(
     r"\b(plan(?:s|ned)?|expect(?:s|ed)?|intend(?:s|ed)?|will|may|could|aim(?:s)? to|"
     r"qualification|qualifying|sampl(?:e|es|ing)|pilot|evaluat(?:e|ion|ing))\b"
     r"|予定|計画|見込み|認定|サンプル|計劃|计划|預計|预计|認證|认证|送樣|送样",
+    re.IGNORECASE,
+)
+# Pre-commercial stages: a clause in one is never evidence of availability.
+_STAGE = re.compile(
+    r"\b(qualification|qualifying|sampl(?:e|es|ing)|pilot|evaluat(?:e|ion|ing))\b"
+    r"|認定|サンプル|認證|认证|送樣|送样",
     re.IGNORECASE,
 )
 _ACTIVE_STATUSES = {
@@ -349,6 +356,98 @@ def _ungrounded(statement: str, quotes: list[str], scope: AssessmentScope) -> li
     return [c for c in dict.fromkeys(candidates) if c.casefold() not in known]
 
 
+# Function words a statement may add without asserting anything new.
+_STOPWORDS = frozenset(
+    [
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "its",
+        "their",
+        "our",
+        "are",
+        "was",
+        "were",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "which",
+        "who",
+        "whom",
+        "into",
+        "onto",
+        "over",
+        "under",
+        "also",
+        "such",
+        "than",
+        "then",
+        "there",
+        "here",
+        "while",
+        "where",
+        "when",
+        "both",
+        "each",
+        "other",
+        "more",
+        "most",
+        "some",
+        "any",
+        "all",
+        "only",
+        "very",
+        "can",
+        "about",
+        "across",
+        "after",
+        "before",
+        "between",
+        "during",
+        "through",
+        "upon",
+        "within",
+        "company",
+        "issuer",
+    ]
+)
+
+
+def _unasserted_words(
+    statement: str, quotes: list[str], scope: AssessmentScope
+) -> list[str]:
+    """Content words of the statement that its evidence never uses.
+
+    Words match on their first four letters ("tester" ~ "testing"), so an
+    added predicate ("... and dominates the market") is caught while simple
+    inflection is not. Non-Latin words are left to the name checks.
+    """
+
+    known = _tokens(
+        " ".join(
+            [*quotes, *scope.issuer_names, *scope.theme_terms, scope.theme_label or ""]
+        )
+    )
+    stems = {word[:4] for word in known}
+    return [
+        word
+        for word in _TOKEN.findall(statement.casefold())
+        if len(word) >= 4
+        and word.isascii()
+        and not word.isdigit()
+        and word not in _STOPWORDS
+        and word[:4] not in stems
+    ]
+
+
 def _affirmed(clauses: list[str]) -> bool:
     """True when some clause is not negated."""
 
@@ -416,29 +515,47 @@ def _status_guard(
 
     if status not in _ACTIVE_STATUSES:
         return status, [], []
-    joined = " ".join(quotes)
-    if NEGATION.search(joined):
-        return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []
-    if _MODALITY.search(joined):
-        return CommercialStatus.UNKNOWN, ["modal_commercial_status"], []
     wording = (
         (SHIPPING,)
         if status == CommercialStatus.SHIPPING_OR_OPERATING
         else (AVAILABLE, SHIPPING)
     )
+    every = clauses(quotes)
+    # Negation and modality count only in clauses about the status: an
+    # unrelated "we may expand capacity" does not veto "ET-9000 is shipping".
+    bearing = [c for c in every if any(pattern.search(c) for pattern in wording)]
+    if any(NEGATION.search(c) for c in bearing):
+        return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []
     stating = [
         clause
-        for clause in clauses(quotes)
-        if any(pattern.search(clause) for pattern in wording)
-        and affirmed(clause)
+        for clause in bearing
+        if not _MODALITY.search(clause)
         and (
             not product_terms
             or any(t.casefold() in clause.casefold() for t in product_terms)
         )
     ]
-    if not stating:
-        return CommercialStatus.UNKNOWN, ["status_not_stated"], []
-    return status, [], stating
+    if stating:
+        return status, [], stating
+    if any(_MODALITY.search(c) for c in bearing) or any(
+        _STAGE.search(c) for c in every
+    ):
+        return CommercialStatus.UNKNOWN, ["modal_commercial_status"], []
+    return CommercialStatus.UNKNOWN, ["status_not_stated"], []
+
+
+def _period_evidence(item: EvidenceItem) -> tuple[str, ...]:
+    """The cited document's own period and dates."""
+
+    return tuple(
+        str(value)
+        for value in (
+            item.reporting_period,
+            item.effective_at and item.effective_at.date(),
+            item.published_at and item.published_at.date(),
+        )
+        if value
+    )
 
 
 def _materiality(
@@ -471,15 +588,7 @@ def _materiality(
                     passage_id=str(item.passage_id),
                     theme_terms=scope.theme_terms,
                     currency=spec.get("currency"),
-                    period_evidence=tuple(
-                        str(v)
-                        for v in (
-                            item.reporting_period,
-                            item.effective_at and item.effective_at.date(),
-                            item.published_at and item.published_at.date(),
-                        )
-                        if v
-                    ),
+                    period_evidence=_period_evidence(item),
                 ),
                 [str(item.passage_id)],
             )
@@ -503,6 +612,7 @@ def _materiality(
                         passage_id=str(item.passage_id),
                         quote=quote,
                         forecast=bool(part.get("forecast", False)),
+                        period_evidence=_period_evidence(item),
                     )
                 )
             return (
@@ -679,9 +789,10 @@ def validate_candidate(
     elif secondary:
         basis = SupportBasis.SECONDARY_REPORTED
 
+    statement = _normalize(str(raw.get("statement", "")))
+    grounding = [c.quote for c in cited if c.direction == "supporting"]
     if basis in {SupportBasis.PRIMARY_EXPLICIT, SupportBasis.PRIMARY_SYNTHESIS}:
-        grounding = [c.quote for c in cited if c.direction == "supporting"]
-        unsupported = _ungrounded(str(raw.get("statement", "")), grounding, scope)
+        unsupported = _ungrounded(statement, grounding, scope)
         if unsupported:
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("statement_not_grounded")
@@ -692,6 +803,13 @@ def validate_candidate(
     holds.extend(status_holds)
     if kind == ClaimKind.COMMERCIAL_STATUS:
         bearing = stating
+    if basis in {
+        SupportBasis.PRIMARY_EXPLICIT,
+        SupportBasis.PRIMARY_SYNTHESIS,
+    } and _unasserted_words(statement, grounding, scope):
+        # The model's sentence asserts more than its evidence ("... and
+        # dominates the market"): show the verified wording itself instead.
+        statement = " ".join(dict.fromkeys(bearing or grounding))
     if bearing and synthesis is None:
         # Freshness follows the evidence that established the claim, not an
         # unrelated newer citation alongside it.
@@ -721,7 +839,7 @@ def validate_candidate(
     return VerifiedClaim(
         claim_kind=kind,
         product_or_activity_key=product_key[:200],
-        statement=_normalize(str(raw.get("statement", "")))[:2000],
+        statement=_normalize(statement)[:2000],
         reporting_scope=reporting_scope,
         scope_label=scope_label,
         commercial_status=status,

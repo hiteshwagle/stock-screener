@@ -45,6 +45,7 @@ _REFUSAL_STATUS = {
     "security_not_found": status.HTTP_404_NOT_FOUND,
     "economic_theme_not_found": status.HTTP_404_NOT_FOUND,
     "market_not_installed": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "idempotency_key_reused": status.HTTP_409_CONFLICT,
 }
 
 

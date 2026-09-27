@@ -110,6 +110,25 @@ async def test_actor_field_is_rejected_even_for_admin(api, db_session, subject):
 
 
 @pytest.mark.asyncio
+async def test_reused_idempotency_key_for_another_theme_conflicts(
+    api, db_session, subject
+):
+    first = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=_body(subject))
+    other = make_theme(db_session, "api-theme-2")
+    db_session.commit()
+    reused = await api["call"](
+        "POST",
+        PATH,
+        headers=ADMIN_HEADERS,
+        json=_body(subject, economic_theme_id=str(other.id)),
+    )
+    assert reused.status_code == 409
+    assert reused.json()["detail"]["code"] == "idempotency_key_reused"
+    assert reused.json()["detail"]["job_id"] == first.json()["job_id"]
+    assert _requests(db_session) == 1
+
+
+@pytest.mark.asyncio
 async def test_admin_request_is_queued_once_and_recorded_with_trusted_identity(
     api, db_session, subject
 ):

@@ -8,6 +8,7 @@ from app.domain.company_exposure.contracts import ReservationState, ResourceUnit
 from app.infra.db.repositories.company_exposure_work_repo import (
     ROOT_PROVIDER_ATTEMPTS,
     CompanyExposureWorkRepository,
+    IdempotencyKeyReused,
     ReservationLedger,
     ReservationTransitionError,
     WorkLeaseError,
@@ -248,3 +249,26 @@ def test_events_are_append_only_ordered(repo, request_row, clock):
     clock.advance(seconds=timedelta(seconds=1).total_seconds())
     repo.append_event(request_row.id, "researching", {"stage": "acquire"})
     assert [e.sequence for e in repo.events(request_row.id)] == [1, 2]
+
+
+def test_idempotency_key_is_bound_to_its_payload(db_session, repo, request_row):
+    same = {
+        "kind": "verify",
+        "requester_principal": "test:admin",
+        "idempotency_namespace": "test:admin",
+        "idempotency_key": "verify-1",
+        "economic_theme_id": request_row.economic_theme_id,
+        "security_id": request_row.security_id,
+    }
+    again, created = repo.create_request(**same)
+    assert (again.id, created) == (request_row.id, False)
+    other_theme = make_theme(db_session, "other")
+    other_security = make_security(db_session, "OTHR")
+    for change in (
+        {"economic_theme_id": other_theme.id},
+        {"security_id": other_security.id},
+        {"kind": "refresh"},
+    ):
+        with pytest.raises(IdempotencyKeyReused) as reused:
+            repo.create_request(**{**same, **change})
+        assert reused.value.request_id == request_row.id

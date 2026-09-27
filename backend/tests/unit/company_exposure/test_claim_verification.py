@@ -699,3 +699,47 @@ def test_exposure_end_cannot_rest_on_a_synthesis():
     )
     assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
     assert "exit_requires_explicit_primary" in result.hold_reasons
+
+
+def test_statement_cannot_add_an_unstated_predicate():
+    quote = "The ET-9000 supports HBM testing."
+    embellished = validate_candidate(
+        claim(
+            statement="The ET-9000 supports HBM testing and dominates the market.",
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert embellished.support_basis == SupportBasis.PRIMARY_EXPLICIT
+    # The displayed statement is the verified wording, not the model's.
+    assert embellished.statement == quote
+    paraphrase = validate_candidate(
+        claim(
+            statement="The ET-9000 tester supports HBM testing.",
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert paraphrase.statement == "The ET-9000 tester supports HBM testing."
+
+
+def test_unrelated_modal_citation_does_not_veto_a_stated_status():
+    shipping = "ET-9000 testers are shipping in volume."
+    capacity = "We may expand capacity next year."
+    result = validate_candidate(
+        claim(
+            "commercial_status",
+            commercial_status="shipping_or_operating",
+            statement=shipping,
+            support=[
+                {"ref": "P1", "quote": shipping},
+                {"ref": "P2", "quote": capacity},
+            ],
+        ),
+        evidence(item("P1", shipping), item("P2", capacity)),
+        SCOPE,
+    )
+    assert result.commercial_status == CommercialStatus.SHIPPING_OR_OPERATING
+    assert "modal_commercial_status" not in result.hold_reasons

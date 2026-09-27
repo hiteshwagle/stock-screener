@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
 from app.services.company_exposure.holds import HoldRegistry
+from app.services.company_exposure.materiality import validate_measure
 from tests.fixtures.company_exposure.factory import verified_claim
 
 PARTICIPATION_DATE = datetime(2024, 3, 1, tzinfo=timezone.utc)
@@ -123,3 +125,35 @@ def test_exit_holds_only_the_same_product(dossier):
     result = dossier.service.assess(dossier.attempt(unrelated, related, exit_claim))
     assert result.claim("role", "hbm-test-equipment").ended
     assert not result.claim("role", "probe-cards").ended
+
+
+def test_same_date_candidates_with_different_materiality_conflict(dossier):
+    passage = dossier.passages["materiality"]
+
+    def candidate(percent):
+        quote = f"Memory test was {percent}% of revenue in fiscal 2025."
+        measure = validate_measure(
+            metric="revenue_percent",
+            value=Decimal(percent),
+            unit="percent",
+            period="FY2025",
+            scope="segment_or_subsidiary",
+            scope_label="Memory test",
+            quote=quote,
+            passage_id=str(passage.id),
+        )
+        assert not measure.held
+        return verified_claim(
+            "materiality",
+            passage=passage,
+            quote=quote,
+            supported_as_of=ORIGINAL_10K,
+            materiality=measure,
+        )
+
+    result = dossier.service.assess(dossier.attempt(candidate(10), candidate(20)))
+    selected = result.claim("materiality")
+    assert "conflict" in selected.hold_kinds
+    assert result.conflicts == (
+        {"proposition": selected.proposition_key, "reason": "same_date_disagreement"},
+    )

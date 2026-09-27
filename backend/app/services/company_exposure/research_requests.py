@@ -24,6 +24,7 @@ from app.domain.company_exposure.contracts import (
 )
 from app.infra.db.repositories.company_exposure_work_repo import (
     CompanyExposureWorkRepository,
+    IdempotencyKeyReused,
 )
 from app.models.company_exposure import ExposureResearchRequest
 from app.models.economic_taxonomy import EconomicTheme
@@ -42,8 +43,8 @@ INSTALLED_MARKETS = frozenset({"US"})
 
 class ResearchUnavailable(RuntimeError):
     """A typed refusal: research_disabled, live_mode_not_installed,
-    discovery_not_installed, security_not_found, market_not_installed or
-    economic_theme_not_found."""
+    discovery_not_installed, security_not_found, market_not_installed,
+    economic_theme_not_found or idempotency_key_reused."""
 
     def __init__(self, code: str, **detail):
         super().__init__(code)
@@ -121,17 +122,22 @@ class ResearchRequests:
         security = self._listing(request)
         if self.session.get(EconomicTheme, request.economic_theme_id) is None:
             raise ResearchUnavailable("economic_theme_not_found")
-        row, created = self.repo.create_request(
-            kind=request.kind,
-            requester_principal=principal,
-            idempotency_namespace=f"company-exposure:{principal}",
-            idempotency_key=idempotency_key,
-            economic_theme_id=request.economic_theme_id,
-            security_id=security.id,
-            market=security.market,
-            supplied_links=list(request.supplied_links),
-            limits=self.config.limits,
-        )
+        try:
+            row, created = self.repo.create_request(
+                kind=request.kind,
+                requester_principal=principal,
+                idempotency_namespace=f"company-exposure:{principal}",
+                idempotency_key=idempotency_key,
+                economic_theme_id=request.economic_theme_id,
+                security_id=security.id,
+                market=security.market,
+                supplied_links=list(request.supplied_links),
+                limits=self.config.limits,
+            )
+        except IdempotencyKeyReused as exc:
+            raise ResearchUnavailable(
+                "idempotency_key_reused", job_id=str(exc.request_id)
+            ) from None
         proposal = None
         if created:
             enqueue_stage(self.repo, row, RESEARCH_STAGES[0])

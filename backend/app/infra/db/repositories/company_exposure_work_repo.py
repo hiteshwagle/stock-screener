@@ -86,6 +86,18 @@ def default_root_budgets(limits: ResearchLimits) -> dict[str, int]:
     }
 
 
+class IdempotencyKeyReused(ValueError):
+    """The idempotency key names an existing request with a different payload."""
+
+    def __init__(self, request_id: UUID):
+        super().__init__("idempotency_key_reused")
+        self.request_id = request_id
+
+
+def _same_request(existing: ExposureResearchRequest, payload: dict) -> bool:
+    return all(getattr(existing, name) == value for name, value in payload.items())
+
+
 class CompanyExposureWorkRepository:
     def __init__(self, session: Session, *, clock: Callable[[], datetime] = _utcnow):
         self.session = session
@@ -110,8 +122,22 @@ class CompanyExposureWorkRepository:
         trigger_origin: str = "requested",
         parent: ExposureResearchRequest | None = None,
     ) -> tuple[ExposureResearchRequest, bool]:
-        """Return ``(request, created)``; the same idempotency key reuses it."""
+        """Return ``(request, created)``; the same idempotency key reuses it.
 
+        Reusing a key for a different payload (another security, theme or
+        kind) raises ``IdempotencyKeyReused`` instead of returning a job for
+        the wrong subject.
+        """
+
+        payload = {
+            "kind": kind,
+            "security_id": security_id,
+            "issuer_id": issuer_id,
+            "economic_theme_id": economic_theme_id,
+            "market": market,
+            "supplied_links": list(supplied_links or []),
+            "parent_request_id": None if parent is None else parent.id,
+        }
         key = (
             ExposureResearchRequest.idempotency_namespace == idempotency_namespace,
             ExposureResearchRequest.idempotency_key == idempotency_key,
@@ -120,6 +146,8 @@ class CompanyExposureWorkRepository:
             select(ExposureResearchRequest).where(*key)
         ).scalar_one_or_none()
         if existing is not None:
+            if not _same_request(existing, payload):
+                raise IdempotencyKeyReused(existing.id)
             return existing, False
         limits = limits or ResearchLimits()
         root_id = None if parent is None else parent.effective_root_id
@@ -158,10 +186,13 @@ class CompanyExposureWorkRepository:
                 self.session.flush()
                 return request, True
         except IntegrityError:
+            existing = self.session.execute(
+                select(ExposureResearchRequest).where(*key)
+            ).scalar_one()
+            if not _same_request(existing, payload):
+                raise IdempotencyKeyReused(existing.id) from None
             return (
-                self.session.execute(
-                    select(ExposureResearchRequest).where(*key)
-                ).scalar_one(),
+                existing,
                 False,
             )
 

@@ -33,6 +33,7 @@ from uuid import UUID
 from app.domain.company_exposure.contracts import (
     ClaimKind,
     Conclusion,
+    MaterialityBasis,
     as_utc,
     content_hash,
 )
@@ -234,6 +235,40 @@ def _disagree(date_a, signature_a, date_b, signature_b) -> bool:
     return date_a is not None and date_a == date_b and signature_a != signature_b
 
 
+def _measure(candidate: VerifiedClaim) -> tuple | None:
+    measure = candidate.materiality
+    if measure is None or measure.held or measure.basis == MaterialityBasis.UNKNOWN:
+        return None
+    return (
+        measure.basis,
+        measure.metric,
+        measure.value,
+        measure.unit,
+        (measure.currency or "").upper() or None,
+        measure.period,
+        measure.scope_label,
+        measure.qualitative_label,
+    )
+
+
+def _candidates_disagree(a: VerifiedClaim, b: VerifiedClaim) -> bool:
+    """Same-date primary candidates that say different things.
+
+    Status and conclusion, a stated role, and a usable materiality measure
+    all count; statement wording does not (paraphrase is not disagreement).
+    """
+
+    date = as_utc(a.supported_as_of)
+    if date is None or date != as_utc(b.supported_as_of):
+        return False
+    if (a.conclusion, a.commercial_status) != (b.conclusion, b.commercial_status):
+        return True
+    if a.role and b.role and a.role.strip().casefold() != b.role.strip().casefold():
+        return True
+    measures = _measure(a), _measure(b)
+    return None not in measures and measures[0] != measures[1]
+
+
 def _decide(
     existing: CurrentClaim | None, best: VerifiedClaim | None
 ) -> tuple[SelectionAction, str]:
@@ -337,12 +372,7 @@ def _select_one(key, existing, candidates, scope, at):
     conflict = reason == SAME_DATE_DISAGREEMENT or any(
         _primary(c.support_basis, c.conclusion)
         and _primary(best.support_basis, best.conclusion)
-        and _disagree(
-            as_utc(c.supported_as_of),
-            (c.conclusion, c.commercial_status),
-            as_utc(best.supported_as_of),
-            (best.conclusion, best.commercial_status),
-        )
+        and _candidates_disagree(c, best)
         for c in ranked[1:]
     )
     holds = []
