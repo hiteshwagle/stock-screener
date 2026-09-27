@@ -34,9 +34,9 @@ from .types import (
     BreadthFormulaPolicy,
     BreadthIndicatorValues,
     BreadthMarketPolicy,
+    BreadthUniverseMember,
     BreadthUniverseSnapshot,
     SymbolBreadthEvaluation,
-    SymbolBreadthSignals,
 )
 from .universe import breadth_eligibility_signature
 
@@ -64,29 +64,142 @@ class BreadthEngine:
         """Compatibility projection for aggregate-only callers."""
         return self.calculate_with_contributors(request).daily_results
 
+    def accumulator(
+        self,
+        *,
+        market: str,
+        dates: tuple[date, ...],
+        universes_by_date: Mapping[date, BreadthUniverseSnapshot],
+        market_policy: BreadthMarketPolicy,
+        policy: BreadthFormulaPolicy | None = None,
+    ) -> BreadthAccumulator:
+        """Start a streaming calculation that accepts prices in batches."""
+        return BreadthAccumulator(
+            market=market,
+            dates=dates,
+            universes_by_date=universes_by_date,
+            market_policy=market_policy,
+            policy=policy or BreadthFormulaPolicy(),
+        )
+
     def calculate_with_contributors(
         self, request: BreadthEngineRequest
     ) -> BreadthEngineBatchResult:
-        market = request.market.strip().upper()
-        if request.market_policy.market != market:
+        accumulator = self.accumulator(
+            market=request.market,
+            dates=request.dates,
+            universes_by_date=request.universes_by_date,
+            market_policy=request.market_policy,
+            policy=request.policy,
+        )
+        accumulator.add_prices(request.prices_by_symbol)
+        return accumulator.finish(
+            seed_counts=request.seed_counts,
+            contributor_metadata_by_date=request.contributor_metadata_by_date,
+        )
+
+
+class _DateTotals:
+    """Running per-date sums; per-symbol evaluations are not retained.
+
+    Only symbols with qualifying contributor signals are kept, since the
+    contributor snapshot lists them individually.
+    """
+
+    __slots__ = (
+        "eligibility",
+        "values",
+        "stockbee_symbols",
+        "qualifying",
+    )
+
+    def __init__(self) -> None:
+        self.eligibility = dict.fromkeys(BreadthEligibilityCounts.__dataclass_fields__, 0)
+        self.values = dict.fromkeys(_COUNTED_VALUE_FIELDS, 0)
+        self.stockbee_symbols: list[str] = []
+        self.qualifying: dict[str, SymbolBreadthEvaluation] = {}
+
+    def add(self, symbol: str, evaluation: SymbolBreadthEvaluation) -> None:
+        signals = evaluation.signals
+        flags = signals.eligibility
+        for field_name, attribute in _ELIGIBILITY_ATTRIBUTES:
+            self.eligibility[field_name] += getattr(flags, attribute)
+        for field_name, attribute in _VALUE_ATTRIBUTES:
+            self.values[field_name] += getattr(signals, attribute)
+        if flags.stockbee_liquidity:
+            self.stockbee_symbols.append(symbol)
+        if evaluation.qualifying_values:
+            self.qualifying[symbol] = evaluation
+
+
+_ELIGIBILITY_ATTRIBUTES = (
+    ("advance_decline_eligible_count", "advance_decline"),
+    ("stockbee_daily_eligible_count", "stockbee_daily"),
+    ("stockbee_month_eligible_count", "stockbee_month"),
+    ("stockbee_34day_eligible_count", "stockbee_34day"),
+    ("stockbee_quarter_eligible_count", "stockbee_quarter"),
+    ("t2108_eligible_count", "t2108"),
+    ("high_low_52week_eligible_count", "high_low_52week"),
+    ("atr_extension_eligible_count", "atr_extension"),
+)
+_VALUE_ATTRIBUTES = (
+    *(
+        (definition.aggregate_field, definition.signal_attribute)
+        for definition in BREADTH_CONTRIBUTOR_SIGNALS.values()
+    ),
+    ("advancing_count", "advancing"),
+    ("declining_count", "declining"),
+    ("unchanged_count", "unchanged"),
+    ("new_high_52week_count", "new_high_52week"),
+    ("new_low_52week_count", "new_low_52week"),
+    ("t2108_count", "t2108_above"),
+)
+_COUNTED_VALUE_FIELDS = tuple(field_name for field_name, _ in _VALUE_ATTRIBUTES)
+
+
+class BreadthAccumulator:
+    """Streaming breadth calculation over one ordered set of dates.
+
+    Callers feed price histories in batches with ``add_prices`` and may drop
+    each batch afterwards: every symbol is reduced to per-date counts at once,
+    so peak memory is one batch of frames rather than the whole universe.
+    Each symbol may be supplied at most once. The result is identical to
+    evaluating every symbol in one call, because all aggregates are sums and
+    every ordered output (contributors, signatures) is sorted at ``finish``.
+    """
+
+    def __init__(
+        self,
+        *,
+        market: str,
+        dates: tuple[date, ...],
+        universes_by_date: Mapping[date, BreadthUniverseSnapshot],
+        market_policy: BreadthMarketPolicy,
+        policy: BreadthFormulaPolicy,
+    ) -> None:
+        market = market.strip().upper()
+        if market_policy.market != market:
             raise ValueError(
-                f"Breadth policy market {request.market_policy.market} "
+                f"Breadth policy market {market_policy.market} "
                 f"does not match request market {market}"
             )
 
-        dates = tuple(request.dates)
+        dates = tuple(dates)
         if dates != tuple(sorted(set(dates))):
             raise ValueError("Breadth calculation dates must be ordered and unique")
 
         currencies_by_symbol: dict[str, str] = {}
+        memberships: dict[str, list[tuple[date, BreadthUniverseMember]]] = {}
+        snapshots: dict[date, BreadthUniverseSnapshot] = {}
         for calculation_date in dates:
-            snapshot = request.universes_by_date.get(calculation_date)
+            snapshot = universes_by_date.get(calculation_date)
             if snapshot is None:
                 raise ValueError(
                     f"Missing breadth universe for {calculation_date.isoformat()}"
                 )
             if snapshot.calculation_date != calculation_date:
                 raise ValueError("Breadth universe date does not match request date")
+            snapshots[calculation_date] = snapshot
             for member in snapshot.members:
                 prior_currency = currencies_by_symbol.setdefault(
                     member.symbol,
@@ -96,10 +209,28 @@ class BreadthEngine:
                     raise ValueError(
                         f"Currency changed within breadth range for {member.symbol}"
                     )
+                memberships.setdefault(member.symbol, []).append(
+                    (calculation_date, member)
+                )
 
-        features_by_symbol: dict[str, pd.DataFrame] = {}
-        for symbol in currencies_by_symbol:
-            prices = request.prices_by_symbol.get(symbol)
+        self._market = market
+        self._dates = dates
+        self._snapshots = snapshots
+        self._market_policy = market_policy
+        self._policy = policy
+        self._memberships = memberships
+        self._supplied: set[str] = set()
+        self._totals = {calculation_date: _DateTotals() for calculation_date in dates}
+
+    def add_prices(self, prices_by_symbol: Mapping[str, pd.DataFrame]) -> None:
+        """Evaluate one batch of symbols on every date they are members."""
+        for symbol, prices in prices_by_symbol.items():
+            memberships = self._memberships.get(symbol)
+            if memberships is None:
+                continue
+            if symbol in self._supplied:
+                raise ValueError(f"Breadth prices supplied twice for {symbol}")
+            self._supplied.add(symbol)
             if prices is None or prices.empty:
                 continue
             try:
@@ -109,75 +240,61 @@ class BreadthEngine:
                     "Skipping malformed breadth prices for %s: %s", symbol, exc
                 )
                 continue
-            features_by_symbol[symbol] = prepare_feature_frame(
+            features = prepare_feature_frame(
                 prices,
-                atr_period=request.policy.atr_period,
+                atr_period=self._policy.atr_period,
             )
+            for calculation_date, member in memberships:
+                if not member.is_common_stock:
+                    continue
+                self._totals[calculation_date].add(
+                    symbol,
+                    evaluate_symbol_at(
+                        features,
+                        calculation_date,
+                        self._policy,
+                        self._market_policy,
+                        stockbee_currency_matches=(
+                            member.currency.upper() == self._market_policy.currency
+                        ),
+                    ),
+                )
+
+    def finish(
+        self,
+        *,
+        dates: tuple[date, ...] | None = None,
+        seed_counts: tuple[BreadthDailyCount, ...] = (),
+        contributor_metadata_by_date: Mapping[
+            date, Mapping[str, BreadthContributorMetadata]
+        ]
+        | None = None,
+    ) -> BreadthEngineBatchResult:
+        """Build results for ``dates`` (default: every accumulated date).
+
+        A subset may be requested when some dates turn out to be unusable
+        after all batches are seen; ratios are then computed over the subset
+        only, exactly as if only those dates had been requested.
+        """
+        policy = self._policy
+        if dates is None:
+            dates = self._dates
+        dates = tuple(dates)
+        if dates != tuple(sorted(set(dates))) or not set(dates) <= set(self._dates):
+            raise ValueError("Breadth result dates must be ordered accumulated dates")
+        contributor_metadata_by_date = contributor_metadata_by_date or {}
+        market = self._market
 
         partial_results: dict[date, BreadthDailyResult] = {}
         contributor_snapshots: dict[date, BreadthContributorSnapshotResult] = {}
         daily_counts: list[BreadthDailyCount] = []
         for calculation_date in dates:
-            snapshot = request.universes_by_date[calculation_date]
-            evaluations_by_symbol: dict[str, SymbolBreadthEvaluation] = {}
-            for member in snapshot.members:
-                features = features_by_symbol.get(member.symbol)
-                if features is None or not member.is_common_stock:
-                    continue
-                evaluations_by_symbol[member.symbol] = evaluate_symbol_at(
-                    features,
-                    calculation_date,
-                    request.policy,
-                    request.market_policy,
-                    stockbee_currency_matches=(
-                        member.currency.upper() == request.market_policy.currency
-                    ),
-                )
-
-            signals_by_symbol: dict[str, SymbolBreadthSignals] = {
-                symbol: evaluation.signals
-                for symbol, evaluation in evaluations_by_symbol.items()
-            }
-            signals = tuple(signals_by_symbol.values())
-            eligibility = BreadthEligibilityCounts(
-                advance_decline_eligible_count=sum(
-                    item.eligibility.advance_decline for item in signals
-                ),
-                stockbee_daily_eligible_count=sum(
-                    item.eligibility.stockbee_daily for item in signals
-                ),
-                stockbee_month_eligible_count=sum(
-                    item.eligibility.stockbee_month for item in signals
-                ),
-                stockbee_34day_eligible_count=sum(
-                    item.eligibility.stockbee_34day for item in signals
-                ),
-                stockbee_quarter_eligible_count=sum(
-                    item.eligibility.stockbee_quarter for item in signals
-                ),
-                t2108_eligible_count=sum(item.eligibility.t2108 for item in signals),
-                high_low_52week_eligible_count=sum(
-                    item.eligibility.high_low_52week for item in signals
-                ),
-                atr_extension_eligible_count=sum(
-                    item.eligibility.atr_extension for item in signals
-                ),
-            )
-            t2108_count = sum(item.t2108_above for item in signals)
-            contributor_counts = {
-                definition.aggregate_field: sum(
-                    getattr(item, definition.signal_attribute) for item in signals
-                )
-                for definition in BREADTH_CONTRIBUTOR_SIGNALS.values()
-            }
+            snapshot = self._snapshots[calculation_date]
+            totals = self._totals[calculation_date]
+            eligibility = BreadthEligibilityCounts(**totals.eligibility)
+            t2108_count = totals.values["t2108_count"]
             values = BreadthIndicatorValues(
-                **contributor_counts,
-                advancing_count=sum(item.advancing for item in signals),
-                declining_count=sum(item.declining for item in signals),
-                unchanged_count=sum(item.unchanged for item in signals),
-                new_high_52week_count=sum(item.new_high_52week for item in signals),
-                new_low_52week_count=sum(item.new_low_52week for item in signals),
-                t2108_count=t2108_count,
+                **totals.values,
                 t2108_pct=(
                     round(t2108_count / eligibility.t2108_eligible_count * 100.0, 2)
                     if eligibility.t2108_eligible_count
@@ -192,21 +309,11 @@ class BreadthEngine:
                 raise AssertionError("Advance/decline counts do not reconcile")
             if not 0 <= values.t2108_count <= eligibility.t2108_eligible_count:
                 raise AssertionError("T2108 count exceeds its eligible denominator")
-            if (
-                request.policy.calculation_revision
-                != CURRENT_BREADTH_CALCULATION_REVISION
-            ):
+            if policy.calculation_revision != CURRENT_BREADTH_CALCULATION_REVISION:
                 raise AssertionError(
                     "Canonical breadth engine must produce the current revision"
                 )
 
-            stockbee_symbols = tuple(
-                sorted(
-                    symbol
-                    for symbol, item in signals_by_symbol.items()
-                    if item.eligibility.stockbee_liquidity
-                )
-            )
             result = BreadthDailyResult(
                 market=market,
                 calculation_date=calculation_date,
@@ -217,20 +324,18 @@ class BreadthEngine:
                     member.symbol for member in snapshot.members
                 ),
                 stockbee_eligibility_signature=hash_point_in_time_universe_symbols(
-                    stockbee_symbols
+                    tuple(sorted(totals.stockbee_symbols))
                 ),
-                calculation_revision=request.policy.calculation_revision,
+                calculation_revision=policy.calculation_revision,
             )
             partial_results[calculation_date] = result
-            metadata_by_symbol = request.contributor_metadata_by_date.get(
+            metadata_by_symbol = contributor_metadata_by_date.get(
                 calculation_date,
                 {},
             )
             contributors: list[BreadthContributor] = []
-            for symbol in sorted(evaluations_by_symbol):
-                evaluation = evaluations_by_symbol[symbol]
-                if not evaluation.qualifying_values:
-                    continue
+            for symbol in sorted(totals.qualifying):
+                evaluation = totals.qualifying[symbol]
                 metadata = metadata_by_symbol.get(
                     symbol,
                     BreadthContributorMetadata(),
@@ -254,7 +359,7 @@ class BreadthEngine:
             contributor_snapshot = BreadthContributorSnapshotResult(
                 market=market,
                 calculation_date=calculation_date,
-                calculation_revision=request.policy.calculation_revision,
+                calculation_revision=policy.calculation_revision,
                 schema_id=CONTRIBUTOR_SCHEMA_ID,
                 contributors=tuple(contributors),
             )
@@ -272,9 +377,9 @@ class BreadthEngine:
 
         ratios_by_date = calculate_inclusive_ratios(
             daily_counts,
-            request.seed_counts,
+            seed_counts,
             market=market,
-            calculation_revision=request.policy.calculation_revision,
+            calculation_revision=policy.calculation_revision,
         )
         daily_results = {
             calculation_date: replace(

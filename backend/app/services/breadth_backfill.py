@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 from ..domain.providers.price_symbol_support import split_supported_price_symbols
 from ..models.stock_universe import StockUniverse
 from .breadth.contributor_metadata import BreadthContributorMetadataLoader
-from .breadth.engine import BreadthEngineRequest
 from .breadth.formulas import validate_price_frame
 from .breadth.types import BreadthUniverseMember, BreadthUniverseSnapshot
 from .breadth.universe import build_breadth_universe_snapshots
@@ -30,6 +29,9 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+# Price histories are loaded, evaluated and released this many symbols at a
+# time; holding a whole US universe of frames at once exhausted worker memory.
+PRICE_BATCH_SIZE = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +231,6 @@ class BreadthBackfillExecutor:
             )
         unsupported_symbols = set(skipped_unsupported_symbols)
 
-        prices_by_symbol: dict[str, Any] = {}
         price_coverage = BreadthPriceCoverageAccumulator()
         history_period = (
             calculator._history_period_for_dates(
@@ -239,17 +240,16 @@ class BreadthBackfillExecutor:
             if price_symbols
             else "2y"
         )
-        for offset in range(0, len(price_symbols), 500):
-            batch_symbols = price_symbols[offset : offset + 500]
+        dates_by_symbol: dict[str, list[date]] = {}
+        for calculation_date in ordered_dates:
+            for symbol in symbols_by_date[calculation_date]:
+                dates_by_symbol.setdefault(symbol, []).append(calculation_date)
+
+        def load_batch(batch_symbols: list[str]) -> tuple[dict[str, Any], list[str]]:
             if explicit_symbols is None or required_as_of_date is not None:
                 grouped: dict[date, list[str]] = {}
                 for symbol in batch_symbols:
-                    symbol_date = max(
-                        calculation_date
-                        for calculation_date in ordered_dates
-                        if symbol in symbols_by_date[calculation_date]
-                    )
-                    grouped.setdefault(symbol_date, []).append(symbol)
+                    grouped.setdefault(max(dates_by_symbol[symbol]), []).append(symbol)
                 loaded: dict[str, Any] = {}
                 cache_misses: list[str] = []
                 for symbol_date, symbols in grouped.items():
@@ -265,58 +265,79 @@ class BreadthBackfillExecutor:
                     )
                     loaded.update(group_prices)
                     cache_misses.extend(group_misses)
-            else:
-                kwargs: dict[str, Any] = (
-                    {"required_as_of_date": required_as_of_date}
-                    if required_as_of_date is not None
-                    else {}
-                )
-                if history_period != "2y":
-                    kwargs["period"] = history_period
-                loaded, cache_misses = calculator._load_price_data_for_batch(
-                    batch_symbols=batch_symbols,
-                    cache_only=policy.cache_only,
-                    **kwargs,
-                )
-            price_coverage.record_batch(batch_symbols, cache_misses)
-            for symbol, history in loaded.items():
-                if history is not None and not history.empty:
-                    prices_by_symbol[symbol] = history
+                return loaded, cache_misses
+            kwargs: dict[str, Any] = (
+                {"required_as_of_date": required_as_of_date}
+                if required_as_of_date is not None
+                else {}
+            )
+            if history_period != "2y":
+                kwargs["period"] = history_period
+            return calculator._load_price_data_for_batch(
+                batch_symbols=batch_symbols,
+                cache_only=policy.cache_only,
+                **kwargs,
+            )
 
+        def price_batches():
+            """Yield each batch's valid, non-empty histories, then drop them."""
+            for offset in range(0, len(price_symbols), PRICE_BATCH_SIZE):
+                batch_symbols = price_symbols[offset : offset + PRICE_BATCH_SIZE]
+                loaded, cache_misses = load_batch(batch_symbols)
+                valid: dict[str, Any] = {}
+                invalid: set[str] = set()
+                for symbol in batch_symbols:
+                    history = loaded.get(symbol)
+                    if history is None or history.empty:
+                        continue
+                    try:
+                        validate_price_frame(history)
+                    except ValueError:
+                        invalid.add(symbol)
+                        continue
+                    valid[symbol] = history
+                yield batch_symbols, cache_misses, valid, invalid
+
+        def new_accumulator(dates: tuple[date, ...]):
+            return calculator.engine.accumulator(
+                market=calculator.market,
+                dates=dates,
+                universes_by_date=universes_by_date,
+                market_policy=calculator.market_policy,
+            )
+
+        # One streaming pass records coverage outcomes and evaluates every
+        # planned date. Only one batch of price histories is alive at a time.
         outcomes_by_date = {
             calculation_date: BreadthOutcomeCounter()
             for calculation_date in ordered_dates
         }
         incomplete_target_session_dates: set[date] = set()
-        invalid_symbols: set[str] = set()
-        for symbol, history in prices_by_symbol.items():
-            try:
-                validate_price_frame(history)
-            except ValueError:
-                invalid_symbols.add(symbol)
-        for calculation_date in ordered_dates:
-            for symbol in symbols_by_date[calculation_date]:
-                history = prices_by_symbol.get(symbol)
-                if symbol in unsupported_symbols:
-                    outcomes_by_date[calculation_date].record_insufficient()
-                elif symbol in invalid_symbols:
-                    outcomes_by_date[calculation_date].record_error()
-                elif history is None or history.empty:
-                    outcomes_by_date[calculation_date].record_cache_miss()
-                elif calculator._has_usable_target_session(
-                    history,
-                    calculation_date,
-                ):
-                    outcomes_by_date[calculation_date].record_scanned()
-                else:
-                    outcomes_by_date[calculation_date].record_insufficient()
-                    incomplete_target_session_dates.add(calculation_date)
+        accumulator = new_accumulator(tuple(ordered_dates))
+        for batch_symbols, cache_misses, valid, invalid in price_batches():
+            price_coverage.record_batch(batch_symbols, cache_misses)
+            for symbol in batch_symbols:
+                history = valid.get(symbol)
+                for calculation_date in dates_by_symbol[symbol]:
+                    if symbol in invalid:
+                        outcomes_by_date[calculation_date].record_error()
+                    elif history is None:
+                        outcomes_by_date[calculation_date].record_cache_miss()
+                    elif calculator._has_usable_target_session(
+                        history,
+                        calculation_date,
+                    ):
+                        outcomes_by_date[calculation_date].record_scanned()
+                    else:
+                        outcomes_by_date[calculation_date].record_insufficient()
+                        incomplete_target_session_dates.add(calculation_date)
+            accumulator.add_prices(
+                calculator._prices_for_feature_window(valid, tuple(ordered_dates))
+            )
+        for symbol in unsupported_symbols:
+            for calculation_date in dates_by_symbol.get(symbol, ()):
+                outcomes_by_date[calculation_date].record_insufficient()
 
-        prices_by_symbol = {
-            symbol: history
-            for symbol, history in prices_by_symbol.items()
-            if symbol not in invalid_symbols
-        }
         reports_by_date = {
             calculation_date: outcome.report()
             for calculation_date, outcome in outcomes_by_date.items()
@@ -336,10 +357,18 @@ class BreadthBackfillExecutor:
                 )
             )
         ]
-        prices_by_symbol = calculator._prices_for_feature_window(
-            prices_by_symbol,
-            tuple(processed_dates),
-        )
+        if processed_dates and processed_dates[0] != ordered_dates[0]:
+            # Feature warm-up is anchored at the first processed date, and the
+            # recursive ATR depends on where its window starts. When leading
+            # dates dropped out, evaluate again over the processed window so
+            # results match a request for exactly those dates.
+            accumulator = new_accumulator(tuple(processed_dates))
+            for _, _, valid, _ in price_batches():
+                accumulator.add_prices(
+                    calculator._prices_for_feature_window(
+                        valid, tuple(processed_dates)
+                    )
+                )
         contributor_metadata_available = True
         try:
             contributor_metadata_by_date = BreadthContributorMetadataLoader.historical(
@@ -363,16 +392,10 @@ class BreadthBackfillExecutor:
                 ) from exc
             contributor_metadata_by_date = {}
             contributor_metadata_available = False
-        canonical_batch = calculator.engine.calculate_with_contributors(
-            BreadthEngineRequest(
-                market=calculator.market,
-                dates=tuple(processed_dates),
-                universes_by_date=universes_by_date,
-                prices_by_symbol=prices_by_symbol,
-                market_policy=calculator.market_policy,
-                seed_counts=calculator._load_ratio_context_counts(processed_dates),
-                contributor_metadata_by_date=contributor_metadata_by_date,
-            )
+        canonical_batch = accumulator.finish(
+            dates=tuple(processed_dates),
+            seed_counts=calculator._load_ratio_context_counts(processed_dates),
+            contributor_metadata_by_date=contributor_metadata_by_date,
         )
         canonical_by_date = canonical_batch.daily_results
 

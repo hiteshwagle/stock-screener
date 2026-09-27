@@ -906,3 +906,116 @@ def test_backfill_range_rejects_signature_for_different_eligible_symbols():
             eligible_symbols_by_date={calculation_date: ("AAA",)},
             eligibility_signatures_by_date={calculation_date: "wrong"},
         )
+
+
+def _walk_df(end_date: date, seed: int, periods: int = 320) -> pd.DataFrame:
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    index = pd.bdate_range(end=end_date, periods=periods)
+    close = 40.0 * np.exp(np.cumsum(rng.normal(0.0, 0.03, len(index))))
+    return pd.DataFrame(
+        {
+            "Open": close,
+            "High": close * 1.03,
+            "Low": close * 0.97,
+            "Close": close,
+            "Adj Close": close,
+            "Volume": rng.integers(500_000, 3_000_000, len(index)).astype(float),
+        },
+        index=index,
+    )
+
+
+_STREAM_SYMBOLS = ("AAA", "BBB", "CCC", "DDD", "EEE")
+
+
+def _run_streaming_backfill(monkeypatch, trading_dates, *, batch_size):
+    """Backfill five symbols; return stored rows and add_prices batch sizes."""
+    monkeypatch.setattr(breadth_backfill_module, "PRICE_BATCH_SIZE", batch_size)
+    db = _make_db_session()
+    db.add_all(
+        StockUniverse(symbol=symbol, is_active=True, status=UNIVERSE_STATUS_ACTIVE)
+        for symbol in _STREAM_SYMBOLS
+    )
+    db.commit()
+    frames = {
+        symbol: _walk_df(date(2026, 3, 13), seed)
+        for seed, symbol in enumerate(_STREAM_SYMBOLS)
+    }
+    price_cache = MagicMock()
+    price_cache.get_many_cached_only_fresh.side_effect = lambda symbols, **_: {
+        symbol: frames[symbol] for symbol in symbols
+    }
+    service = BreadthCalculatorService(db, price_cache)
+    accumulators = []
+    make_accumulator = service.engine.accumulator
+
+    def recording_accumulator(**kwargs):
+        accumulator = make_accumulator(**kwargs)
+        add_prices = accumulator.add_prices
+        sizes = []
+
+        def add(batch):
+            sizes.append(len(batch))
+            add_prices(batch)
+
+        accumulator.add_prices = add
+        accumulators.append((kwargs["dates"], sizes))
+        return accumulator
+
+    monkeypatch.setattr(service.engine, "accumulator", recording_accumulator)
+    result = service.backfill_range(
+        trading_dates[0], trading_dates[-1], trading_dates=trading_dates
+    )
+    rows = {
+        row.date: {
+            column.name: getattr(row, column.name)
+            for column in MarketBreadth.__table__.columns
+            if column.name not in {"id", "created_at", "updated_at"}
+            and "duration" not in column.name
+        }
+        for row in db.query(MarketBreadth).all()
+    }
+    return result, rows, accumulators
+
+
+def test_backfill_streams_prices_one_batch_at_a_time(monkeypatch):
+    trading_dates = [date(2026, 3, 11), date(2026, 3, 12), date(2026, 3, 13)]
+
+    streamed, streamed_rows, accumulators = _run_streaming_backfill(
+        monkeypatch, trading_dates, batch_size=2
+    )
+    whole, whole_rows, _ = _run_streaming_backfill(
+        monkeypatch, trading_dates, batch_size=500
+    )
+
+    assert streamed == whole
+    assert streamed["processed"] == 3
+    assert streamed_rows == whole_rows
+    [(dates, sizes)] = accumulators
+    assert dates == tuple(trading_dates)
+    assert sizes == [2, 2, 1]
+
+
+def test_backfill_reevaluates_when_leading_dates_are_not_processed(monkeypatch):
+    # No cached session exists on the Saturday, so it cannot be processed and
+    # the feature warm-up must be re-anchored at the first processed date.
+    saturday = date(2026, 3, 7)
+    processed = [date(2026, 3, 12), date(2026, 3, 13)]
+
+    result, rows, accumulators = _run_streaming_backfill(
+        monkeypatch, [saturday, *processed], batch_size=2
+    )
+    direct, direct_rows, direct_accumulators = _run_streaming_backfill(
+        monkeypatch, processed, batch_size=2
+    )
+
+    assert result["error_dates"] == [saturday.isoformat()]
+    assert [dates for dates, _ in accumulators] == [
+        (saturday, *processed),
+        tuple(processed),
+    ]
+    assert [dates for dates, _ in direct_accumulators] == [tuple(processed)]
+    assert rows == direct_rows
+    assert set(rows) == set(processed)

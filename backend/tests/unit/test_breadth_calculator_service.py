@@ -1553,3 +1553,60 @@ def test_live_and_backfill_use_identical_canonical_counts():
     for field in BreadthIndicatorValues.__dataclass_fields__:
         assert getattr(stored, field) == live.indicators[field]
     assert stored.calculation_revision == live.indicators["calculation_revision"] == 3
+
+
+def test_calculate_daily_breadth_reduces_each_price_batch_before_the_next(
+    monkeypatch,
+):
+    calculation_date = date(2026, 3, 20)
+    frames = {
+        symbol: _make_price_df(calculation_date, base)
+        for symbol, base in (("AAA", 100.0), ("BBB", 200.0), ("CCC", 50.0))
+    }
+    monkeypatch.setattr(
+        breadth_calculator_module.BreadthContributorMetadataLoader,
+        "current",
+        lambda _db, _market, symbols: {},
+    )
+
+    def run(batch_size):
+        monkeypatch.setattr(breadth_calculator_module, "PRICE_BATCH_SIZE", batch_size)
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = [
+            SimpleNamespace(symbol=symbol) for symbol in frames
+        ]
+        price_cache = MagicMock()
+        price_cache.get_many_cached_only_fresh.side_effect = lambda symbols, **_: {
+            symbol: frames[symbol] for symbol in symbols
+        }
+        calculator = BreadthCalculatorService(db, price_cache)
+        make_accumulator = calculator.engine.accumulator
+        sizes = []
+
+        def recording_accumulator(**kwargs):
+            accumulator = make_accumulator(**kwargs)
+            add_prices = accumulator.add_prices
+
+            def add(batch):
+                sizes.append(len(batch))
+                add_prices(batch)
+
+            accumulator.add_prices = add
+            return accumulator
+
+        monkeypatch.setattr(calculator.engine, "accumulator", recording_accumulator)
+        result = calculator.calculate_daily_breadth(
+            calculation_date,
+            policy=_policy("refresh_guarded", calculation_date),
+        )
+        return result, sizes, price_cache.get_many_cached_only_fresh.call_count
+
+    streamed, streamed_sizes, streamed_loads = run(1)
+    whole, whole_sizes, whole_loads = run(500)
+
+    assert streamed_sizes == [1, 1, 1]
+    assert streamed_loads == 3
+    assert (whole_sizes, whole_loads) == ([3], 1)
+    assert streamed.to_metrics_dict() == whole.to_metrics_dict()
+    assert streamed.daily_result == whole.daily_result
+    assert streamed.to_metrics_dict()["total_stocks_scanned"] == 3

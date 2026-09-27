@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..models.market_breadth import MarketBreadth
 from .breadth.contributor_metadata import BreadthContributorMetadataLoader
-from .breadth.engine import BreadthEngine, BreadthEngineRequest
+from .breadth.engine import BreadthEngine
 from .breadth.formulas import (
     BREADTH_FEATURE_WARMUP_SESSIONS,
     prices_for_feature_window,
@@ -33,7 +33,11 @@ from .breadth.types import (
     BreadthIndicatorValues,
 )
 from .breadth.universe import build_breadth_universe_snapshots
-from .breadth_backfill import BreadthBackfillExecutor, BreadthBackfillPlan
+from .breadth_backfill import (
+    PRICE_BATCH_SIZE,
+    BreadthBackfillExecutor,
+    BreadthBackfillPlan,
+)
 from .breadth_coverage import (
     BreadthCalculationResult,
     BreadthCoverageReport,
@@ -128,11 +132,16 @@ class BreadthCalculatorService:
             else "2y"
         )
 
-        prices_by_symbol: dict[str, pd.DataFrame] = {}
+        accumulator = self.engine.accumulator(
+            market=self.market,
+            dates=(calculation_date,),
+            universes_by_date={calculation_date: snapshot},
+            market_policy=self.market_policy,
+        )
         price_coverage = BreadthPriceCoverageAccumulator()
         outcomes = BreadthOutcomeCounter()
-        for offset in range(0, len(symbols), 500):
-            batch_symbols = symbols[offset : offset + 500]
+        for offset in range(0, len(symbols), PRICE_BATCH_SIZE):
+            batch_symbols = symbols[offset : offset + PRICE_BATCH_SIZE]
             loaded, cache_misses = self._load_price_data_for_batch(
                 batch_symbols=batch_symbols,
                 cache_only=policy.cache_only,
@@ -140,6 +149,7 @@ class BreadthCalculatorService:
                 period=history_period,
             )
             price_coverage.record_batch(batch_symbols, cache_misses)
+            usable: dict[str, pd.DataFrame] = {}
             for symbol in batch_symbols:
                 history = loaded.get(symbol)
                 if history is None or history.empty:
@@ -153,13 +163,15 @@ class BreadthCalculatorService:
                 if not self._has_usable_target_session(history, calculation_date):
                     outcomes.record_insufficient()
                     continue
-                prices_by_symbol[symbol] = history
+                usable[symbol] = history
                 outcomes.record_scanned()
+            # Reduce this batch to per-date counts before loading the next, so
+            # only one batch of price histories is alive at a time.
+            accumulator.add_prices(
+                self._prices_for_feature_window(usable, (calculation_date,))
+            )
+            del loaded, usable
 
-        prices_by_symbol = self._prices_for_feature_window(
-            prices_by_symbol,
-            (calculation_date,),
-        )
         seeds = self._load_ratio_seed_counts(calculation_date, limit=9)
         contributor_metadata_available = True
         try:
@@ -184,18 +196,9 @@ class BreadthCalculatorService:
             )
             contributor_metadata = {}
             contributor_metadata_available = False
-        batch = self.engine.calculate_with_contributors(
-            BreadthEngineRequest(
-                market=self.market,
-                dates=(calculation_date,),
-                universes_by_date={calculation_date: snapshot},
-                prices_by_symbol=prices_by_symbol,
-                market_policy=self.market_policy,
-                seed_counts=seeds,
-                contributor_metadata_by_date={
-                    calculation_date: contributor_metadata,
-                },
-            )
+        batch = accumulator.finish(
+            seed_counts=seeds,
+            contributor_metadata_by_date={calculation_date: contributor_metadata},
         )
         canonical = batch.daily_results[calculation_date]
         coverage_report = BreadthCoverageReport.from_parts(
