@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timezone
 from uuid import UUID
 
@@ -566,7 +566,7 @@ def _synthesis_scope_holds(
 
 
 def _status_guard(
-    status: CommercialStatus, quotes: list[str], product_terms
+    status: CommercialStatus, quotes: list[str], product_terms, key_tokens
 ) -> tuple[CommercialStatus, list[str], list[str]]:
     """Keep an active status only when a clause affirmatively states it.
 
@@ -590,10 +590,9 @@ def _status_guard(
         clause
         for clause in bearing
         if not _MODALITY.search(clause)
-        and (
-            not product_terms
-            or any(t.casefold() in clause.casefold() for t in product_terms)
-        )
+        # Always the claimed product: "Legacy X100 is shipping" says nothing
+        # about ET-9000, with or without surviving model product terms.
+        and _names_product(clause, product_terms, key_tokens)
     ]
     if stating:
         return status, [], stating
@@ -618,6 +617,12 @@ def _period_evidence(item: EvidenceItem) -> tuple[str, ...]:
     )
 
 
+def _primary_item(item: EvidenceItem) -> bool:
+    """Materiality, like support, rests only on original primary wording."""
+
+    return qualify_evidence(item) == EvidenceRole.ORIGINAL_PRIMARY
+
+
 def _materiality(
     spec: dict | None, evidence: dict[str, EvidenceItem], scope: AssessmentScope
 ):
@@ -630,12 +635,24 @@ def _materiality(
             quote = spec.get("quote", "")
             if item is None or not quote_in_passage(quote, item.text):
                 return unknown_materiality("qualitative_quote_not_found"), []
-            return qualitative_measure(spec["label"], quote), []
+            if not _primary_item(item):
+                return unknown_materiality("materiality_not_primary"), []
+            measure = qualitative_measure(spec["label"], quote)
+            # Keep the passage so the preview can show what the label rests on.
+            return replace(
+                measure,
+                raw_reported={
+                    **measure.raw_reported,
+                    "passage_id": str(item.passage_id),
+                },
+            ), [str(item.passage_id)]
         if kind == "disclosed":
             item = evidence.get(spec.get("ref"))
             quote = spec.get("quote", "")
             if item is None or not quote_in_passage(quote, item.text):
                 return unknown_materiality("materiality_quote_not_found"), []
+            if not _primary_item(item):
+                return unknown_materiality("materiality_not_primary"), []
             return (
                 validate_measure(
                     metric=spec["metric"],
@@ -660,6 +677,8 @@ def _materiality(
                 quote = part.get("quote", "")
                 if item is None or not quote_in_passage(quote, item.text):
                     return unknown_materiality(f"{role}_quote_not_found"), []
+                if not _primary_item(item):
+                    return unknown_materiality(f"{role}_not_primary"), []
                 operands.append(
                     Operand(
                         value=parse_decimal(part["value"]),
@@ -883,7 +902,7 @@ def validate_candidate(
             holds.append(scope_hold)
 
     status, status_holds, stating = _status_guard(
-        status, primary_quotes or [c.quote for c in cited], product_terms
+        status, primary_quotes or [c.quote for c in cited], product_terms, key_tokens
     )
     holds.extend(status_holds)
     if kind == ClaimKind.COMMERCIAL_STATUS:

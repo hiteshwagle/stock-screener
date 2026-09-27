@@ -113,6 +113,7 @@ def materiality_payload(measure: MaterialityMeasureResult | None) -> dict | None
                 "label": o.label,
                 "currency": o.currency,
                 "passage_id": o.passage_id,
+                "quote": o.quote,
             }
             for o in measure.operands
         ],

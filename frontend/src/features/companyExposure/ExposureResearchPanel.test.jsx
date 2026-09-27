@@ -22,6 +22,32 @@ describe('ExposureResearchPanel', () => {
     expect(screen.queryByText(/^verified$/i)).not.toBeInTheDocument();
   });
 
+  it('shows the passage a displayed materiality measure rests on', () => {
+    const measured = {
+      ...shadowPreview,
+      claims: [{
+        ...shadowPreview.claims[0],
+        materiality: {
+          basis: 'disclosed',
+          metric: 'revenue',
+          value: '5',
+          unit: 'USD_million',
+          period: 'FY2024',
+          hold_reasons: [],
+          evidence: [{
+            role: 'disclosed',
+            passage_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            document_revision_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            quote: 'ET-9000 revenue was USD 5 million in FY2024.',
+          }],
+        },
+      }],
+    };
+    renderWithProviders(<ExposureResearchPanel job={shadowCompletedJob} preview={measured} />);
+    expect(screen.getByText(/revenue 5 USD_million, FY2024/)).toBeVisible();
+    expect(screen.getByText('ET-9000 revenue was USD 5 million in FY2024.')).toBeVisible();
+  });
+
   it('shows the failed review condition while paused', () => {
     renderWithProviders(<ExposureResearchPanel job={reviewRequiredJob} />);
     expect(screen.getByText('review_required')).toBeVisible();

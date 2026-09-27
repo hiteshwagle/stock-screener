@@ -193,3 +193,24 @@ def test_same_date_candidates_with_different_materiality_conflict(dossier):
     assert result.conflicts == (
         {"proposition": selected.proposition_key, "reason": "same_date_disagreement"},
     )
+
+
+def test_displayed_measure_returns_the_passage_it_rests_on(dossier):
+    from app.services.company_exposure.reads import ResearchJobReader
+
+    candidate = _materiality_candidate(dossier, 20)
+    _, ref = dossier.persist(dossier.attempt(candidate))
+    (revision_id,) = ref.claim_revision_ids.values()
+    shown = ResearchJobReader(dossier.db)._materiality(revision_id)
+    passage = dossier.passages["materiality"]
+    assert shown["value"] == "20"
+    assert shown["evidence"] == [
+        {
+            "role": "disclosed",
+            "passage_id": str(passage.id),
+            "value": "20",
+            "label": "Memory test",
+            "quote": "Memory test was 20% of revenue in fiscal 2025.",
+            "document_revision_id": str(passage.document_revision_id),
+        }
+    ]

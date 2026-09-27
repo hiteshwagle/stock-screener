@@ -80,6 +80,20 @@ function ClaimCard({ claim }) {
       <Typography variant="body2" sx={{ mt: 0.5 }}>
         Materiality: {materialityText(claim.materiality)}
       </Typography>
+      {/* The wording a displayed measure rests on, shown as plain text. */}
+      {(claim.materiality?.evidence || []).map((item) => (
+        <Typography
+          key={`${item.role}-${item.passage_id}`}
+          variant="body2"
+          component="blockquote"
+          sx={{ m: 0, mt: 0.5, pl: 1, borderLeft: 2, borderColor: 'divider' }}
+        >
+          <Typography variant="caption" color="text.secondary" component="span">
+            Materiality {item.role}:{' '}
+          </Typography>
+          {item.quote}
+        </Typography>
+      ))}
       {held && (
         <Typography variant="body2" color="warning.main" sx={{ mt: 0.5 }}>
           Held from new automated use until reviewed or refreshed.

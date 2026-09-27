@@ -237,7 +237,52 @@ class ResearchJobReader:
             "scope_label": measure.scope_label,
             "denominator_definition": measure.denominator_definition,
             "hold_reasons": [],
+            "evidence": self._measure_evidence(measure),
         }
+
+    def _measure_evidence(self, measure: MaterialityMeasure) -> list[dict]:
+        """The passages and wording a displayed measure rests on."""
+
+        cited = [
+            {
+                "role": ("numerator", "denominator")[index]
+                if len(measure.operand_refs or []) == 2
+                else "disclosed",
+                "passage_id": ref.get("passage_id"),
+                "value": ref.get("value"),
+                "label": ref.get("label"),
+                "quote": ref.get("quote"),
+            }
+            for index, ref in enumerate(measure.operand_refs or [])
+        ]
+        raw = measure.raw_reported or {}
+        if not cited and raw.get("passage_id"):
+            cited = [
+                {
+                    "role": "qualitative",
+                    "passage_id": raw["passage_id"],
+                    "value": None,
+                    "label": raw.get("proposed_label"),
+                    "quote": raw.get("quote"),
+                }
+            ]
+        ids = {UUID(c["passage_id"]) for c in cited if c["passage_id"]}
+        revisions = dict(
+            self.session.execute(
+                select(ExposurePassage.id, ExposurePassage.document_revision_id).where(
+                    ExposurePassage.id.in_(ids)
+                )
+            ).all()
+            if ids
+            else []
+        )
+        for item in cited:
+            revision = (
+                revisions.get(UUID(item["passage_id"])) if item["passage_id"] else None
+            )
+            item["document_revision_id"] = _str(revision)
+            item["quote"] = (item["quote"] or "")[:MAX_EXCERPT_CHARS]
+        return cited
 
     def _evidence(self, claim_revision_id: UUID) -> list[dict]:
         rows = self.session.execute(

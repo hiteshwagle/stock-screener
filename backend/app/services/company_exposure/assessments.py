@@ -541,6 +541,11 @@ class ExposureAssessmentService:
                     operand_refs=payload["operands"],
                     supporting_passage_ids=sorted(
                         {o.passage_id for o in measure.operands if o.passage_id}
+                        | (
+                            {measure.raw_reported["passage_id"]}
+                            if measure.raw_reported.get("passage_id")
+                            else set()
+                        )
                     ),
                     raw_reported=_jsonable(measure.raw_reported),
                     hold_reasons=list(measure.hold_reasons),

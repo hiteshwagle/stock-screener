@@ -857,3 +857,47 @@ def test_materiality_must_name_the_assessed_exposure():
     assert unrelated.basis == MaterialityBasis.UNKNOWN
     assert unrelated.raw_reported["reason"] == "materiality_not_bound_to_exposure"
     assert measured(shares).value == Decimal(5)
+
+
+def test_active_status_needs_the_claimed_product_without_product_terms():
+    text = "Legacy X100 is shipping in volume."
+    result = validate_candidate(
+        claim(
+            "commercial_status",
+            commercial_status="shipping_or_operating",
+            # Filtered out: "X100" shares no token with the "et-9000" key.
+            product_terms=["X100"],
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.commercial_status == CommercialStatus.UNKNOWN
+    assert "status_not_stated" in result.hold_reasons
+
+
+def test_materiality_must_come_from_primary_passages():
+    link = "The ET-9000 supports HBM testing."
+    quote = "ET-9000 revenue was USD 5 million in FY2024."
+    result = validate_candidate(
+        claim(
+            support=[{"ref": "P1", "quote": link}],
+            materiality={
+                "type": "disclosed",
+                "metric": "revenue",
+                "value": "5",
+                "unit": "USD_million",
+                "currency": "USD",
+                "period": "FY2024",
+                "ref": "P2",
+                "quote": quote,
+            },
+        ),
+        # An analyst report, not the issuer's own wording.
+        evidence(item("P1", link), item("P2", quote, third_party=True)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.PRIMARY_EXPLICIT
+    assert result.materiality.basis == MaterialityBasis.UNKNOWN
+    assert result.materiality.raw_reported["reason"] == "materiality_not_primary"
