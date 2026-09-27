@@ -286,7 +286,7 @@ def _feature_session_with(rows, run_id=7):
     return session
 
 
-def test_feature_run_counts_match_the_grouped_pass():
+def test_feature_run_counts_match_the_grouped_pass(monkeypatch):
     """``for_feature_run`` must answer exactly what the grouped pivot answered.
 
     The feature-store path counts per state instead of grouping both keys,
@@ -295,7 +295,27 @@ def test_feature_run_counts_match_the_grouped_pass():
     reached, not what it is -- so the two shapes are compared directly rather
     than against hand-written expectations, which would only restate one of
     them.
+
+    The probe is forced to report the index as usable, because SQLite has no
+    ``pg_index`` and would otherwise put ``for_feature_run`` on the grouped
+    fallback. Both operands would then run the *same* SQL, and this test would
+    compare the grouped shape against itself -- measured, before this fixture
+    existed:
+
+        for_feature_run: ['?', '?', '?', 'GROUPED']
+        _aggregate     : ['GROUPED']
+        counted shape ran: False
+
+    A regression in the counted query's own classification could then pass here,
+    which is the failure the PR is about. The assertion at the end is not
+    decoration: it fails if ``for_feature_run`` ever silently falls back again,
+    so the test cannot go back to comparing grouped with grouped.
     """
+    monkeypatch.setattr(
+        "app.infra.db.repositories.opportunity_summary_repo._count_index_is_usable",
+        lambda _session: True,
+    )
+    statements: list[str] = []
     with _feature_session_with(
         [
             ("READY-SURV", {"correction_survivor": True, "action_state": "setup_ready"}),
@@ -309,6 +329,11 @@ def test_feature_run_counts_match_the_grouped_pass():
             ("INT-2", {"correction_survivor": 2, "action_state": "watch"}),
         ]
     ) as session:
+        event.listen(
+            session.get_bind(),
+            "before_cursor_execute",
+            lambda _c, _cur, stmt, _p, _ctx, _m: statements.append(stmt),
+        )
         repo = SqlOpportunityStateSummaryRepository(session)
         counted = repo.for_feature_run(7)
         grouped = repo._aggregate(
@@ -316,6 +341,25 @@ def test_feature_run_counts_match_the_grouped_pass():
             details=StockFeatureDaily.details_json,
             predicate=StockFeatureDaily.run_id == 7,
         )
+
+    # The comparison is only worth something if the two operands came from
+    # different queries. Both fall back to the grouped shape when the probe
+    # reports the index as unusable, and the assertion below would then be
+    # comparing one query against itself while every number still matches --
+    # measured, before the fixture above existed:
+    #
+    #     for_feature_run: ['?', '?', '?', 'GROUPED']
+    #     _aggregate     : ['GROUPED']
+    #     counted shape ran: False
+    #
+    # Pinned here rather than in a second test so the fixture cannot be dropped
+    # without this test going red.
+    aggregation = [s for s in statements if "stock_feature_daily" in s.lower()]
+    assert aggregation, "no aggregation statement was issued"
+    assert "GROUP BY" not in aggregation[0].upper(), (
+        "for_feature_run did not take the counted path, so this test compared "
+        f"the grouped shape against itself: {aggregation[0][:200]}"
+    )
 
     assert counted == grouped
     # Anchor the fixture so a broken comparison cannot pass vacuously.
