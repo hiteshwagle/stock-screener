@@ -173,6 +173,25 @@ export default function ExposureResearchPanel({ job, preview }) {
               </Typography>
             )}
           </Stack>
+          {(preview.conflicts || []).length > 0 && (
+            <Box sx={{ mt: 1.5 }} data-testid="exposure-conflicts">
+              <Typography variant="subtitle2">Same-date disagreements (held for review)</Typography>
+              {preview.conflicts.flatMap((conflict) => (conflict.evidence || []).map((item, index) => (
+                <Typography
+                  key={`${conflict.proposition}:${item.passage_id}:${index}`}
+                  variant="body2"
+                  component="blockquote"
+                  sx={{ m: 0, mt: 0.5, pl: 1, borderLeft: 2, borderColor: 'divider' }}
+                >
+                  <Typography variant="caption" color="text.secondary" component="span">
+                    Set aside ({(item.commercial_status || 'unknown').replaceAll('_', ' ')}):{' '}
+                  </Typography>
+                  {/* Original passages render as plain text, never as HTML. */}
+                  {item.quote}
+                </Typography>
+              )))}
+            </Box>
+          )}
           {gaps.length > 0 && (
             <Box sx={{ mt: 1.5 }}>
               <Typography variant="subtitle2">Coverage gaps</Typography>

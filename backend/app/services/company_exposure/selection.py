@@ -415,6 +415,24 @@ def _carried(existing: CurrentClaim, reason: str, at: datetime) -> SelectedClaim
     )
 
 
+def _conflict_evidence(candidates: list[VerifiedClaim]) -> list[dict]:
+    """Stable references to the wording of set-aside disagreeing candidates."""
+
+    return [
+        {
+            "candidate": candidate_hash(c),
+            "passage_id": str(e.passage_id),
+            "quote": e.quote,
+            "direction": e.direction,
+            "commercial_status": c.commercial_status.value,
+            "conclusion": c.conclusion.value,
+        }
+        for c in candidates
+        for e in c.evidence
+        if e.direction == "supporting"
+    ]
+
+
 def _select_one(key, existing, candidates, scope, at):
     """Selection, holds, conflicts and set-aside candidates of one proposition."""
 
@@ -433,12 +451,18 @@ def _select_one(key, existing, candidates, scope, at):
         set_aside.append(
             {"proposition": key, "reason": reason, "candidate": candidate_hash(best)}
         )
-    conflict = reason == SAME_DATE_DISAGREEMENT or any(
-        _primary(c.support_basis, c.conclusion)
+    # Candidates set aside although they disagree at the same date: their
+    # own wording is kept with the conflict so a reviewer can adjudicate it.
+    disagreeing = [
+        c
+        for c in ranked[1:]
+        if _primary(c.support_basis, c.conclusion)
         and _primary(best.support_basis, best.conclusion)
         and _candidates_disagree(c, best)
-        for c in ranked[1:]
-    )
+    ]
+    if reason == SAME_DATE_DISAGREEMENT:
+        disagreeing.insert(0, best)
+    conflict = bool(disagreeing)
     holds = []
     if conflict:
         holds.append(
@@ -462,7 +486,15 @@ def _select_one(key, existing, candidates, scope, at):
         # Holds on the claim stream survive a replacement revision.
         inherited = existing.claim_holds if existing is not None else frozenset()
     conflicts = (
-        [{"proposition": key, "reason": SAME_DATE_DISAGREEMENT}] if conflict else []
+        [
+            {
+                "proposition": key,
+                "reason": SAME_DATE_DISAGREEMENT,
+                "evidence": _conflict_evidence(disagreeing),
+            }
+        ]
+        if conflict
+        else []
     )
     return selected, holds, conflicts, set_aside, inherited
 

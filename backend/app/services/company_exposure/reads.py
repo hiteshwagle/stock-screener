@@ -9,6 +9,7 @@ Generation-bound product reads arrive with the publication slice.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from uuid import UUID
 
@@ -20,7 +21,9 @@ from app.domain.company_exposure.contracts import (
     SETTLED_JOB_STATES,
     UNKNOWN_MATERIALITY_WORDING,
     as_utc,
+    utc_now,
 )
+from app.domain.company_exposure.policy import freshness_state
 from app.models.company_exposure import (
     AssessmentClaimSelection,
     AssessmentRevision,
@@ -55,9 +58,19 @@ def _str(value) -> str | None:
     return None if value is None else str(value)
 
 
+def _live_freshness(kind, claim_revision, active_holds, at: datetime) -> str:
+    """Freshness now; an active stale/undated hold always wins."""
+
+    for hold in ("undated", "stale"):
+        if hold in active_holds:
+            return hold
+    return freshness_state(kind, as_utc(claim_revision.fresh_until), at).value
+
+
 class ResearchJobReader:
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, *, clock: Callable[[], datetime] = utc_now):
         self.session = session
+        self.clock = clock
 
     def _events(self, job_id: UUID) -> list[ResearchEvent]:
         return list(
@@ -190,7 +203,12 @@ class ResearchJobReader:
                     "commercial_status": claim_revision.commercial_status,
                     "support_basis": claim_revision.support_basis,
                     "conclusion": claim_revision.conclusion,
-                    "freshness_state": claim_revision.freshness_state,
+                    # Live, like the holds beside it: a revision sealed as
+                    # current goes stale when its deadline passes.
+                    "freshness_state": _live_freshness(
+                        claim.claim_kind, claim_revision, active, self.clock()
+                    ),
+                    "sealed_freshness_state": claim_revision.freshness_state,
                     "supported_as_of": _iso(claim_revision.supported_as_of),
                     "fresh_until": _iso(claim_revision.fresh_until),
                     "reporting_period": claim_revision.reporting_period,

@@ -77,6 +77,16 @@ class ArtifactRunResult:
     result_id: UUID | None = None
 
 
+def _accepts(accept: Callable[[dict], bool], data: dict) -> bool:
+    """The caller's contract; a contract that cannot even read the output
+    refuses it, so the settled call is still recorded and committed."""
+
+    try:
+        return bool(accept(data))
+    except Exception:  # noqa: BLE001 - malformed provider output
+        return False
+
+
 ClientFactory = Callable[[str, str], OpenCodeGoKimi]
 
 
@@ -258,7 +268,7 @@ class SubscriptionArtifactRunner:
                 ResearchProviderResult.attempt_id == ticket.attempt_id
             )
         ).scalar_one()
-        if accept is not None and not accept(output.data):
+        if accept is not None and not _accepts(accept, output.data):
             self.commit()
             return ArtifactRunResult(
                 artifact_id=None,

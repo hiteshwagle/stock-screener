@@ -235,6 +235,22 @@ def test_identical_call_in_flight_is_rechecked_then_reused(
     assert len(go_transport.requests) == 1
 
 
+def test_contract_that_cannot_read_the_output_rejects_it_and_settles(
+    subscription_runner, provider_input, go_transport, resources, db_session
+):
+    go_transport.queue_json({"claims": "not a list"}, usage={"total_tokens": 5})
+
+    def contract(_payload):
+        raise AttributeError("malformed nested value")
+
+    result = subscription_runner.run(provider_input, accept=contract)
+    assert (result.artifact_id, result.result_id is not None) == (None, True)
+    assert db_session.query(ResearchArtifact).count() == 0
+    # The call settled and was committed: nothing is left dispatched.
+    state = resources.read(result.ticket_id).state
+    assert state not in {"reserved", "dispatched", "uncertain"}
+
+
 def test_timed_out_call_is_not_resent_until_its_period_closes(
     subscription_runner, provider_input, go_transport, resources, clock
 ):

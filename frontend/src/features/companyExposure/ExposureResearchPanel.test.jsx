@@ -58,6 +58,28 @@ describe('ExposureResearchPanel', () => {
     expect(screen.getByText(/held from new automated use/i)).toBeVisible();
   });
 
+  it('shows the wording of a candidate set aside by a same-date conflict', () => {
+    const conflicted = {
+      ...shadowPreview,
+      conflicts: [{
+        proposition: 'p1',
+        reason: 'same_date_disagreement',
+        evidence: [{
+          candidate: 'c1',
+          passage_id: 'passage-9',
+          quote: 'We discontinued the ET-9000 in 2024.',
+          direction: 'supporting',
+          commercial_status: 'discontinued',
+          conclusion: 'supported',
+        }],
+      }],
+    };
+    renderWithProviders(<ExposureResearchPanel job={shadowCompletedJob} preview={conflicted} />);
+    expect(screen.getByText(/same-date disagreements/i)).toBeVisible();
+    expect(screen.getByText('We discontinued the ET-9000 in 2024.')).toBeVisible();
+    expect(screen.getByText(/set aside \(discontinued\)/i)).toBeVisible();
+  });
+
   it('shows the failed review condition while paused', () => {
     renderWithProviders(<ExposureResearchPanel job={reviewRequiredJob} />);
     expect(screen.getByText('review_required')).toBeVisible();

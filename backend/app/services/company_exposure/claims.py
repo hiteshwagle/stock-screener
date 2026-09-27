@@ -679,6 +679,32 @@ def _primary_item(item: EvidenceItem) -> bool:
     return qualify_evidence(item) == EvidenceRole.ORIGINAL_PRIMARY
 
 
+# Stored column widths for model-supplied measure fields (see
+# ``MaterialityMeasure``); a longer value is not truncated but downgraded.
+_MEASURE_WIDTHS = {"metric": 40, "unit": 40, "currency": 8, "scope_label": 200}
+_MEASURE_PERIOD_WIDTH = 64
+_MEASURE_VALUE_WIDTH = 64
+# Model output that is malformed below the top level (a number where text
+# belongs, a string where an object belongs) is rejected output, not a crash.
+_MALFORMED = (KeyError, ValueError, TypeError, AttributeError, ArithmeticError)
+
+
+def _fits_columns(measure):
+    """The measure, or unknown when a field would not fit its column."""
+
+    if measure is None:
+        return None
+    too_long = (
+        any(len(getattr(measure, f) or "") > n for f, n in _MEASURE_WIDTHS.items())
+        or len(measure.period or "") > _MEASURE_PERIOD_WIDTH
+        or any(
+            v is not None and len(format(v, "f")) > _MEASURE_VALUE_WIDTH
+            for v in (measure.value, measure.value_high)
+        )
+    )
+    return unknown_materiality("materiality_field_too_long") if too_long else measure
+
+
 def _materiality(
     spec: dict | None, evidence: dict[str, EvidenceItem], scope: AssessmentScope
 ):
@@ -759,7 +785,7 @@ def _materiality(
                 ),
                 [o.passage_id for o in operands],
             )
-    except (KeyError, ValueError, TypeError):
+    except _MALFORMED:
         return unknown_materiality("materiality_unparseable"), []
     return unknown_materiality("materiality_type_unknown"), []
 
@@ -774,6 +800,8 @@ def validate_candidate(
         raw.get("reporting_scope") or "issuer_consolidated"
     )
     scope_label = raw.get("scope_label") or None
+    if scope_label is not None and len(str(scope_label)) > 200:
+        raise ValueError("scope_label_too_long")
     if reporting_scope == ReportingScope.SEGMENT_OR_SUBSIDIARY and not scope_label:
         raise ValueError("segment_scope_requires_label")
     if reporting_scope != ReportingScope.SEGMENT_OR_SUBSIDIARY:
@@ -941,6 +969,8 @@ def validate_candidate(
     statement = _normalize(str(raw.get("statement", "")))
     grounding = [c.quote for c in cited if c.direction == "supporting"]
     role = str(raw.get("role") or "").strip() or None
+    if role is not None and len(role) > 80:
+        raise ValueError("role_too_long")
     if basis in {SupportBasis.PRIMARY_EXPLICIT, SupportBasis.PRIMARY_SYNTHESIS}:
         unsupported = _ungrounded(statement, grounding, scope)
         if unsupported:
@@ -985,6 +1015,7 @@ def validate_candidate(
         ]
 
     materiality, _ = _materiality(raw.get("materiality"), evidence, scope)
+    materiality = _fits_columns(materiality)
     spec = raw.get("materiality") or {}
     measure_texts = [
         spec.get("quote", ""),
@@ -1197,7 +1228,7 @@ class ClaimVerifier:
         for index, raw in enumerate(raw_claims):
             try:
                 claims.append(validate_candidate(raw, by_ref, scope))
-            except (KeyError, ValueError, TypeError) as exc:
+            except _MALFORMED as exc:
                 rejected.append(f"claim_{index}:{type(exc).__name__}:{exc}")
         return ClaimReviewBatch(
             claims=tuple(claims),

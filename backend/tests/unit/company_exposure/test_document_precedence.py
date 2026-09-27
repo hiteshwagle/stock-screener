@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.company_exposure import AssessmentRevision
 from app.services.company_exposure.holds import HoldRegistry
 from app.services.company_exposure.materiality import validate_measure
 from tests.fixtures.company_exposure.factory import verified_claim
@@ -101,9 +102,15 @@ def test_same_date_disagreement_holds_the_proposition(dossier):
     status = result.claim("commercial_status")
     assert status.commercial_status == "shipping_or_operating"
     assert status.hold_kinds == ("conflict",)
-    assert result.conflicts == (
-        {"proposition": status.proposition_key, "reason": "same_date_disagreement"},
+    [conflict] = result.conflicts
+    assert (conflict["proposition"], conflict["reason"]) == (
+        status.proposition_key,
+        "same_date_disagreement",
     )
+    # The set-aside candidate's own wording is kept for the reviewer.
+    assert [(e["quote"], e["commercial_status"]) for e in conflict["evidence"]] == [
+        (dossier.passages["exit"].original_text, "discontinued")
+    ]
 
 
 def test_exit_holds_only_the_same_product(dossier):
@@ -190,9 +197,12 @@ def test_same_date_candidates_with_different_materiality_conflict(dossier):
     result = dossier.service.assess(dossier.attempt(candidate(10), candidate(20)))
     selected = result.claim("materiality")
     assert "conflict" in selected.hold_kinds
-    assert result.conflicts == (
-        {"proposition": selected.proposition_key, "reason": "same_date_disagreement"},
+    [conflict] = result.conflicts
+    assert (conflict["proposition"], conflict["reason"]) == (
+        selected.proposition_key,
+        "same_date_disagreement",
     )
+    assert len(conflict["evidence"]) == 1
 
 
 def test_displayed_measure_returns_the_passage_it_rests_on(dossier):
@@ -275,11 +285,14 @@ def test_newly_detected_conflict_is_recorded_in_a_new_revision(dossier):
     latest = dossier.service.session.execute(
         select(AssessmentRevision).where(AssessmentRevision.id == ref.id)
     ).scalar_one()
-    assert latest.conflicts == [
-        {
-            "proposition": result.claim("materiality").proposition_key,
-            "reason": "same_date_disagreement",
-        }
+    [conflict] = latest.conflicts
+    assert (conflict["proposition"], conflict["reason"]) == (
+        result.claim("materiality").proposition_key,
+        "same_date_disagreement",
+    )
+    # The disagreeing 20% figure's quote is stored with the conflict.
+    assert [e["quote"] for e in conflict["evidence"]] == [
+        "Memory test was 20% of revenue in fiscal 2025."
     ]
 
 
@@ -389,3 +402,26 @@ def test_amendment_and_original_in_one_attempt_select_the_amendment(dossier):
     status = result.claim("commercial_status")
     assert status.commercial_status == "discontinued"
     assert result.conflicts == ()
+
+
+def test_preview_freshness_is_evaluated_now_not_at_sealing(dossier):
+    from datetime import timedelta
+
+    from app.services.company_exposure.reads import ResearchJobReader
+
+    status = verified_claim(
+        "commercial_status",
+        passage=dossier.passages["role"],
+        supported_as_of=dossier.clock.now() - timedelta(days=10),
+    )
+    _, ref = dossier.persist(dossier.attempt(status))
+    revision = dossier.db.get(AssessmentRevision, ref.id)
+    sealed = ResearchJobReader(dossier.db, clock=dossier.clock.now)._claims(revision)
+    assert sealed[0]["freshness_state"] == "current"
+
+    later = dossier.clock.now() + timedelta(days=400)
+    [claim] = ResearchJobReader(dossier.db, clock=lambda: later)._claims(revision)
+    assert (claim["freshness_state"], claim["sealed_freshness_state"]) == (
+        "stale",
+        "current",
+    )

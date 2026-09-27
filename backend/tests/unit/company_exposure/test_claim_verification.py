@@ -963,6 +963,69 @@ def test_materiality_must_come_from_primary_passages():
 
 
 @pytest.mark.parametrize(
+    ("metric", "basis"),
+    [
+        ("revenue", MaterialityBasis.DISCLOSED),
+        # Wider than the stored metric column (40): downgraded, not truncated.
+        ("revenue_" + "x" * 40, MaterialityBasis.UNKNOWN),
+    ],
+)
+def test_measure_fields_wider_than_their_columns_are_downgraded(metric, basis):
+    link = "The ET-9000 supports HBM testing."
+    quote = "ET-9000 revenue was USD 5 million in FY2024."
+    result = validate_candidate(
+        claim(
+            support=[{"ref": "P1", "quote": link}],
+            materiality={
+                "type": "disclosed",
+                "metric": metric,
+                "value": "5",
+                "unit": "USD_million",
+                "currency": "USD",
+                "period": "FY2024",
+                "ref": "P2",
+                "quote": quote,
+            },
+        ),
+        evidence(item("P1", link), item("P2", quote)),
+        SCOPE,
+    )
+    assert result.materiality.basis == basis
+    if basis == MaterialityBasis.UNKNOWN:
+        assert result.materiality.raw_reported["reason"] == "materiality_field_too_long"
+
+
+def test_malformed_nested_values_are_rejected_output_not_errors():
+    text = "The ET-9000 supports HBM testing."
+    batch = ClaimVerifier.validate_payload(
+        {
+            "claims": [
+                claim(support=["P1"]),  # a string where a citation belongs
+                claim(role="r" * 81, support=[{"ref": "P1", "quote": text}]),
+                claim(
+                    support=[{"ref": "P1", "quote": text}],
+                    materiality={
+                        "type": "disclosed",
+                        "metric": 7,  # a number where text belongs
+                        "value": "5",
+                        "ref": "P1",
+                        "quote": text,
+                    },
+                ),
+            ]
+        },
+        [item("P1", text)],
+        SCOPE,
+    )
+    assert [r.split(":")[1] for r in batch.rejected] == [
+        "AttributeError",
+        "ValueError",
+    ]
+    [kept] = batch.claims
+    assert kept.materiality.raw_reported["reason"] == "materiality_unparseable"
+
+
+@pytest.mark.parametrize(
     ("status", "text", "kept", "hold"),
     [
         (
