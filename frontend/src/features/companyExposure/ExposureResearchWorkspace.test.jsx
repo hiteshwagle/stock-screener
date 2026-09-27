@@ -61,4 +61,43 @@ describe('ExposureResearchWorkspace', () => {
     expect(await screen.findByText('research_disabled')).toBeVisible();
     expect(api.getResearchJob).not.toHaveBeenCalled();
   });
+
+  it('retries a failed submission with the same idempotency key', async () => {
+    api.requestExposureResearch
+      .mockRejectedValueOnce({ message: 'Network Error' })
+      .mockResolvedValueOnce({
+        job_id: shadowCompletedJob.job_id, created: false, state: 'queued', dispatch: 'queued',
+      });
+    api.getResearchJob.mockResolvedValue(shadowCompletedJob);
+    api.getResearchJobPreview.mockResolvedValue(shadowPreview);
+    renderWithProviders(<ExposureResearchWorkspace />);
+    fireEvent.change(screen.getByLabelText(/admin key/i), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: /unlock/i }));
+    fireEvent.change(screen.getByLabelText(/us symbol/i), { target: { value: 'EXMP' } });
+    fireEvent.change(screen.getByLabelText(/economic theme id/i), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: /request research/i }));
+    expect(await screen.findByText('Network Error')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: /request research/i }));
+
+    await waitFor(() => expect(api.requestExposureResearch).toHaveBeenCalledTimes(2));
+    const [first, second] = api.requestExposureResearch.mock.calls.map(([, body]) => body);
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+  });
+
+  it('uses a new idempotency key when the request changes', async () => {
+    api.requestExposureResearch.mockRejectedValue({ message: 'Network Error' });
+    renderWithProviders(<ExposureResearchWorkspace />);
+    fireEvent.change(screen.getByLabelText(/admin key/i), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: /unlock/i }));
+    fireEvent.change(screen.getByLabelText(/us symbol/i), { target: { value: 'EXMP' } });
+    fireEvent.change(screen.getByLabelText(/economic theme id/i), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: /request research/i }));
+    expect(await screen.findByText('Network Error')).toBeVisible();
+    fireEvent.change(screen.getByLabelText(/us symbol/i), { target: { value: 'OTHR' } });
+    fireEvent.click(screen.getByRole('button', { name: /request research/i }));
+
+    await waitFor(() => expect(api.requestExposureResearch).toHaveBeenCalledTimes(2));
+    const [first, second] = api.requestExposureResearch.mock.calls.map(([, body]) => body);
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+  });
 });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   Alert, Box, Button, MenuItem, Paper, Stack, TextField, Typography,
@@ -39,14 +39,32 @@ export default function ExposureResearchWorkspace() {
     staleTime: Infinity,
   });
 
+  // One idempotency key per submission: a retry after a lost response reuses
+  // it (the server returns the same job); a confirmed response or changed
+  // inputs start a new submission.
+  const pendingSubmission = useRef(null);
+  const submissionKey = (body) => {
+    const signature = JSON.stringify(body);
+    if (pendingSubmission.current?.signature !== signature) {
+      pendingSubmission.current = { signature, key: newIdempotencyKey() };
+    }
+    return pendingSubmission.current.key;
+  };
+
   const request = useMutation({
-    mutationFn: () => requestExposureResearch(adminKey, {
-      kind,
-      symbol: symbol.trim().toUpperCase(),
-      economicThemeId: themeId.trim(),
-      idempotencyKey: newIdempotencyKey(),
-    }),
+    mutationFn: () => {
+      const body = {
+        kind,
+        symbol: symbol.trim().toUpperCase(),
+        economicThemeId: themeId.trim(),
+      };
+      return requestExposureResearch(adminKey, {
+        ...body,
+        idempotencyKey: submissionKey(body),
+      });
+    },
     onSuccess: (data) => {
+      pendingSubmission.current = null;
       setJobId(data.job_id);
       setMessage({
         severity: 'success',

@@ -112,6 +112,8 @@ class DocumentAcquisitionRegistry:
         self.session = session
         # Called before each network fetch, e.g. to renew a work lease.
         self.before_io = before_io
+        # Root request the current fetch is charged to; captures record it.
+        self._capture_root: UUID | None = None
         self.transport = transport
         self.store = store
         self.rate_gate = rate_gate
@@ -176,7 +178,14 @@ class DocumentAcquisitionRegistry:
             http_status=status,
             content_hash=content_hash,
             byte_length=byte_length,
-            observed_metadata=metadata or {},
+            observed_metadata={
+                **(metadata or {}),
+                **(
+                    {"root_request_id": str(self._capture_root)}
+                    if self._capture_root is not None
+                    else {}
+                ),
+            },
             retrieved_at=self.clock(),
         )
         self.session.add(event)
@@ -235,15 +244,30 @@ class DocumentAcquisitionRegistry:
 
     # -- fetch ---------------------------------------------------------------------
 
+    def _charged_to(self, document: ExposureDocument, root: UUID) -> bool:
+        """Whether this root already spent a document slot on this document."""
+
+        captures = self.session.execute(
+            select(DocumentCaptureEvent.observed_metadata).where(
+                DocumentCaptureEvent.document_id == document.id
+            )
+        ).scalars()
+        return any((m or {}).get("root_request_id") == str(root) for m in captures)
+
     def fetch(self, target: DocumentTarget, budget: JobBudgetRef) -> CaptureResult:
         if not target.retention_permitted:
             return self._gap(target, "retention_not_permitted")
         document = self._document(target)
-        if budget.root_request_id is not None:
-            charged = self.ledger.consume_root(budget.root_request_id, ROOT_DOCUMENTS)
+        root = self._capture_root = budget.root_request_id
+        # A document costs one slot per root: retries and resumes of the same
+        # document (its captures carry the root) are not charged again.
+        newly_charged = False
+        if root is not None and not self._charged_to(document, root):
+            charged = self.ledger.consume_root(root, ROOT_DOCUMENTS)
             if not charged.allowed:
                 self.commit()
                 return self._gap(target, charged.reason or "root_budget_exhausted")
+            newly_charged = True
         bound = min(
             target.max_bytes or self.limits.download_bytes_per_document,
             self.limits.download_bytes_per_document,
@@ -252,6 +276,9 @@ class DocumentAcquisitionRegistry:
             bound, purpose="document_download", operation_key=target.identity_key
         )
         if not ticket.allowed:
+            if newly_charged:
+                # Nothing reached the network: the slot is not spent.
+                self.ledger.release_root(root, ROOT_DOCUMENTS)
             self.commit()
             return CaptureResult(
                 document.id,
@@ -436,6 +463,7 @@ class DocumentAcquisitionRegistry:
     ) -> CaptureResult:
         """Retain an administrator-supplied original (no network)."""
 
+        self._capture_root = None
         document = self._document(target)
         media_type, refusal = sniff_media_type(data, declared_content_type)
         if refusal is not None:

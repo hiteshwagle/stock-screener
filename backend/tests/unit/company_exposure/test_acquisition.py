@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import httpx
@@ -16,6 +17,7 @@ from app.models.company_exposure import (
     ExposureClaimRevision,
     ExposureDocumentRevision,
     ResearchReservation,
+    ResearchRootBudget,
 )
 from app.services.company_exposure.acquisition import (
     DocumentAcquisitionRegistry,
@@ -221,11 +223,32 @@ def test_executable_content_is_refused(
 def test_document_budget_is_cumulative_per_root(
     acquisition, document_target, root_budget, http_mock
 ):
-    for _ in range(12):
+    def target(n):
+        return replace(document_target, identity_key=f"sec:accession:doc-{n}")
+
+    for n in range(12):
         http_mock.respond()
-        acquisition.fetch(document_target, root_budget)
-    result = acquisition.fetch(document_target, root_budget)
+        acquisition.fetch(target(n), root_budget)
+    # Re-fetching a document this root already paid for costs no new slot.
+    http_mock.respond()
+    assert acquisition.fetch(target(0), root_budget).coverage.reason != (
+        "root_budget_exhausted"
+    )
+    result = acquisition.fetch(target(12), root_budget)
     assert result.coverage.reason == "root_budget_exhausted"
+
+
+def test_storage_pause_returns_the_document_slot(
+    db_session, tmp_path, clock, http_mock, rate_spy, document_target, root_budget
+):
+    full = _registry(db_session, tmp_path, clock, http_mock, rate_spy, max_bytes=10)
+    for _ in range(3):
+        result = full.fetch(document_target, root_budget)
+        assert result.coverage.reason == "paused_storage"
+    budget = db_session.execute(
+        select(ResearchRootBudget).where(ResearchRootBudget.budget_key == "documents")
+    ).scalar_one()
+    assert budget.used_amount == 0
 
 
 def test_supplied_original_is_retained_without_network(

@@ -137,13 +137,48 @@ def test_negated_premise_cannot_carry_a_synthesis_link():
 )
 def test_exposure_end_needs_explicit_exit_wording(text, basis):
     result = validate_candidate(
-        claim("exposure_end", support=[{"ref": "P1", "quote": text}]),
+        claim("exposure_end", statement=text, support=[{"ref": "P1", "quote": text}]),
         evidence(item("P1", text)),
         SCOPE,
     )
     assert result.support_basis == basis
     held = "exit_not_stated" in result.hold_reasons
     assert held is (basis == SupportBasis.INFERRED_UNVERIFIED)
+
+
+def test_product_terms_must_belong_to_the_claimed_product():
+    text = "HBM demand increased."
+    result = validate_candidate(
+        claim(
+            product_terms=["demand"],
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "cooccurrence_only" in result.hold_reasons
+
+
+def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
+    text = "The ET-9000 supports HBM testing."
+    grounded = validate_candidate(
+        claim(statement=text, support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert grounded.support_basis == SupportBasis.PRIMARY_EXPLICIT
+    embellished = validate_candidate(
+        claim(
+            statement="The ET-9000 derives 40% of revenue from Nvidia HBM sales.",
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert embellished.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "statement_not_grounded" in embellished.hold_reasons
 
 
 def test_contrasted_clauses_do_not_link_product_to_theme():

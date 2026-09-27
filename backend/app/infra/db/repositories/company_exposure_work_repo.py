@@ -640,6 +640,24 @@ class ReservationLedger:
         self.session.flush()
         return ReserveOutcome(True, requested=amount)
 
+    def release_root(
+        self, root_request_id: UUID, budget_key: str, amount: int = 1
+    ) -> None:
+        """Return a root-budget charge whose work never reached the network."""
+
+        budget = self.session.execute(
+            select(ResearchRootBudget)
+            .where(
+                ResearchRootBudget.root_request_id == root_request_id,
+                ResearchRootBudget.budget_key == budget_key,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if budget is not None:
+            budget.used_amount = max(0, int(budget.used_amount) - amount)
+            self.session.flush()
+
     def close_period(
         self, *, pool_key: str, unit: ResourceUnit | str, period: str
     ) -> list[UUID]:

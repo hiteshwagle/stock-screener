@@ -261,6 +261,37 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
     return linking
 
 
+_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*%?")
+_NAME = re.compile(r"(?<![.!?]\s)(?<!^)\b[A-Z][\w&-]*[A-Za-z0-9]")
+
+
+def _tokens(text: str) -> set[str]:
+    return {token.casefold() for token in _TOKEN.findall(text)}
+
+
+def _ungrounded(statement: str, quotes: list[str], scope: AssessmentScope) -> list[str]:
+    """Numbers and names in the statement that no citation or scope names.
+
+    The statement is model-written; a supported claim may not add figures or
+    entities ("40% of revenue from Nvidia") that its evidence never states.
+    """
+
+    known = " ".join(
+        [*quotes, *scope.issuer_names, *scope.theme_terms, scope.theme_label or ""]
+    ).casefold()
+    # Only the capitalised or numeric parts of a name must be grounded:
+    # "HBM-capable" needs "HBM", "ET-9000" needs "ET" and "9000".
+    parts = [
+        part
+        for name in _NAME.findall(statement.strip())
+        for part in re.split(r"[-&]", name)
+        if part[:1].isupper() or any(ch.isdigit() for ch in part)
+    ]
+    candidates = _NUMBER.findall(statement) + parts
+    return [c for c in dict.fromkeys(candidates) if c.casefold() not in known]
+
+
 def _affirmed(clauses: list[str]) -> bool:
     """True when some clause is not negated."""
 
@@ -371,6 +402,8 @@ def validate_candidate(
     # inside) a theme term would let a theme-only sentence pass as a
     # product-to-theme link, so such terms are ignored.
     theme_folded = [t.casefold() for t in scope.theme_terms if t]
+    product_key = str(raw.get("product_or_activity_key") or "general")
+    key_tokens = _tokens(product_key)
     product_terms = tuple(
         t
         for t in raw.get("product_terms", [])
@@ -379,6 +412,8 @@ def validate_candidate(
         and not any(
             t.casefold() in theme or theme in t.casefold() for theme in theme_folded
         )
+        # Bound to the claimed product: "demand" is not a term of "et-9000".
+        and _tokens(t) & key_tokens
     )
     holds: list[str] = []
     rejected: list[str] = []
@@ -480,6 +515,13 @@ def validate_candidate(
     elif secondary:
         basis = SupportBasis.SECONDARY_REPORTED
 
+    if basis in {SupportBasis.PRIMARY_EXPLICIT, SupportBasis.PRIMARY_SYNTHESIS}:
+        grounding = [c.quote for c in cited if c.direction == "supporting"]
+        unsupported = _ungrounded(str(raw.get("statement", "")), grounding, scope)
+        if unsupported:
+            basis = SupportBasis.INFERRED_UNVERIFIED
+            holds.append("statement_not_grounded")
+
     status, status_holds = _status_guard(
         status, primary_quotes or [c.quote for c in cited]
     )
@@ -504,9 +546,7 @@ def validate_candidate(
     publications = [item.published_at for item in dates if item.published_at]
     return VerifiedClaim(
         claim_kind=kind,
-        product_or_activity_key=str(raw.get("product_or_activity_key") or "general")[
-            :200
-        ],
+        product_or_activity_key=product_key[:200],
         statement=_normalize(str(raw.get("statement", "")))[:2000],
         reporting_scope=reporting_scope,
         scope_label=scope_label,
