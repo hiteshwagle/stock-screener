@@ -444,6 +444,9 @@ def test_whitespace_segment_label_is_no_label():
     [
         ("We do not support legacy X100 products.", False),
         ("The ET-9000 does not support HBM testing.", True),
+        # Affirmative, or about something else: no contradiction.
+        ("The ET-9000 supports HBM testing.", False),
+        ("The ET-9000 does not support PCIe 6.0 testing.", False),
     ],
 )
 def test_conflicting_citation_must_be_about_the_claimed_product(conflict, disputed):
@@ -480,6 +483,18 @@ def test_customer_direction_must_match_the_evidence(statement, supported):
         SCOPE,
     )
     assert ("customer_not_stated" not in result.hold_reasons) is supported
+
+
+def test_renamed_issuer_is_asked_again():
+    from dataclasses import replace as _replace
+
+    verifier = ClaimVerifier(runner=None)
+    items = [item("P1", "The ET-9000 supports HBM testing.")]
+    before = verifier.build_input(items, SCOPE)
+    after = verifier.build_input(
+        items, _replace(SCOPE, issuer_names=("Renamed Test Systems Corp",))
+    )
+    assert before.input_hash != after.input_hash
 
 
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():

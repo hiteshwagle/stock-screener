@@ -725,6 +725,23 @@ def _customer_direction(text: str) -> str | None:
     return "sells" if sells else "buys"
 
 
+def _contradicts(quote: str, kind, product_terms, key_tokens, scope) -> bool:
+    """A cited conflict that is about this claim and actually denies it.
+
+    It must name the claimed product, deny or end it (negated or exit
+    wording), and for a product-to-theme link also name the theme; an
+    affirmative or unrelated same-product quote disputes nothing.
+    """
+
+    if not _names_product(quote, product_terms, key_tokens):
+        return False
+    if affirmed(quote) and not EXIT.search(quote):
+        return False
+    return kind not in _LINKED_KINDS or any(
+        mentions(quote, t) for t in scope.theme_terms
+    )
+
+
 def _names_product(text: str, product_terms, key_tokens) -> bool:
     """Whether text names the claimed product: a term, or every key token.
 
@@ -1059,7 +1076,7 @@ def validate_candidate(
     conflicting_primary = any(
         c.direction == "conflicting"
         and c.role == EvidenceRole.ORIGINAL_PRIMARY
-        and _names_product(c.quote, product_terms, key_tokens)
+        and _contradicts(c.quote, kind, product_terms, key_tokens, scope)
         for c in cited
     )
 
@@ -1375,6 +1392,8 @@ class ClaimVerifier:
                     str(scope.economic_theme_id),
                     scope.theme_fingerprint,
                 ],
+                # The prompt names the issuer: a renamed listing is asked again.
+                "issuer_names": list(scope.issuer_names),
                 "passages": [
                     [item.ref, str(item.passage_id), content_hash({"t": item.text})]
                     for item in evidence

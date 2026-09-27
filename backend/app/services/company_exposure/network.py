@@ -37,6 +37,7 @@ import httpx
 
 USER_AGENT_DEFAULT = "StockScreenerExposureResearch/1.0"
 _REDIRECTS = (301, 302, 303, 307, 308)
+_MAX_RETRY_AFTER_SECONDS = 86_400
 
 
 def default_resolver(host: str) -> list[str]:
@@ -96,7 +97,10 @@ def retry_after_seconds(value: str | None, now: datetime) -> int | None:
         if retry_at.tzinfo is None:
             return None
         delay = (retry_at - now).total_seconds()
-    return max(0, math.ceil(delay)) if math.isfinite(delay) else None
+    if not math.isfinite(delay):
+        return None
+    # A day is already a long pause; longer waits cannot be scheduled.
+    return max(0, math.ceil(min(delay, _MAX_RETRY_AFTER_SECONDS)))
 
 
 def sanitize_url(url: str) -> str:

@@ -96,6 +96,7 @@ MAX_STAGE_ATTEMPTS = 4
 MAX_RETAINED_DOCUMENTS = 4
 MAX_PASSAGES = 24
 RETRY_BASE = timedelta(minutes=2)
+MAX_RETRY_AFTER = timedelta(days=1)
 
 _UNAVAILABLE_REASONS = frozenset(
     {"route_not_approved", "subscription_credentials_missing"}
@@ -427,7 +428,9 @@ class ResearchStageRunner:
         delay = RETRY_BASE * (2 ** max(0, attempts - 1))
         advertised = outcome.detail.get("retry_after_seconds")
         if advertised is not None:
-            delay = max(delay, timedelta(seconds=float(advertised)))
+            # Bounded here too: an unbounded wait cannot be scheduled.
+            waited = min(float(advertised), MAX_RETRY_AFTER.total_seconds())
+            delay = max(delay, timedelta(seconds=waited))
         return self.clock() + delay
 
     @staticmethod

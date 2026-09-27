@@ -35,7 +35,9 @@ class NetworkSpy:
     def handler(self, request):
         self.connected_hosts.append(request.headers["host"])
         self.headers.append(dict(request.headers))
-        assert request.url.host in {ip for ips in self.resolution.values() for ip in ips}
+        assert request.url.host in {
+            ip for ips in self.resolution.values() for ip in ips
+        }
         return self._responses.pop(0)
 
 
@@ -47,7 +49,8 @@ def network_spy():
 @pytest.fixture
 def public_transport(network_spy):
     return PublicDocumentTransport(
-        transport=httpx.MockTransport(network_spy.handler), resolver=network_spy.resolver
+        transport=httpx.MockTransport(network_spy.handler),
+        resolver=network_spy.resolver,
     )
 
 
@@ -140,7 +143,9 @@ def test_encoded_responses_are_refused(public_transport, public_request, network
 @pytest.mark.case("R14")
 @pytest.mark.exposure_layer("unit")
 def test_credentials_are_never_forwarded_to_a_redirect_host():
-    spy = NetworkSpy({"api.edinet-fsa.go.jp": [PUBLIC_IP], "cdn.example.jp": ["93.184.216.35"]})
+    spy = NetworkSpy(
+        {"api.edinet-fsa.go.jp": [PUBLIC_IP], "cdn.example.jp": ["93.184.216.35"]}
+    )
     spy.respond_redirect("https://cdn.example.jp/file.pdf")
     spy.respond(body=b"%PDF-1.7")
     transport = PublicDocumentTransport(
@@ -191,7 +196,9 @@ def test_http_errors_are_typed_outcomes(public_transport, public_request, networ
 
 
 def test_helpers():
-    assert sanitize_url("https://u:p@host.example/a?token=1#f") == "https://host.example/a"
+    assert (
+        sanitize_url("https://u:p@host.example/a?token=1#f") == "https://host.example/a"
+    )
     assert host_allowed("ir.example.com", ("*.example.com",))
     assert not host_allowed("example.com.evil.net", ("*.example.com",))
     assert sniff_media_type(b"%PDF-1.7 ...", "") == ("application/pdf", None)
@@ -201,3 +208,13 @@ def test_helpers():
     )
     assert sniff_media_type(b"PK\x03\x04", "")[1] == "media_archive_refused"
     assert sniff_media_type(b"<!DOCTYPE html><html>", "")[0] == "text/html"
+
+
+def test_huge_sec_retry_after_is_capped_to_a_schedulable_delay():
+    from datetime import datetime, timezone
+
+    from app.services.company_exposure.network import retry_after_seconds
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert retry_after_seconds("1e308", now) == 86_400
+    assert retry_after_seconds("5", now) == 5
