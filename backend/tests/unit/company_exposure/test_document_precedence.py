@@ -127,6 +127,42 @@ def test_exit_holds_only_the_same_product(dossier):
     assert not result.claim("role", "probe-cards").ended
 
 
+def _materiality_candidate(dossier, percent):
+    passage = dossier.passages["materiality"]
+    quote = f"Memory test was {percent}% of revenue in fiscal 2025."
+    measure = validate_measure(
+        metric="revenue_percent",
+        value=Decimal(percent),
+        unit="percent",
+        period="FY2025",
+        scope="segment_or_subsidiary",
+        scope_label="Memory test",
+        quote=quote,
+        passage_id=str(passage.id),
+    )
+    assert not measure.held
+    return verified_claim(
+        "materiality",
+        passage=passage,
+        quote=quote,
+        supported_as_of=ORIGINAL_10K,
+        materiality=measure,
+    )
+
+
+def test_same_date_candidate_differing_from_the_selected_claim_conflicts(dossier):
+    dossier.persist(dossier.attempt(_materiality_candidate(dossier, 10)))
+    result = dossier.service.assess(
+        dossier.attempt(_materiality_candidate(dossier, 20))
+    )
+    selected = result.claim("materiality")
+    assert selected.reason == "same_date_disagreement"
+    assert "conflict" in selected.hold_kinds
+    # The same figure again is a duplicate, not a disagreement.
+    same = dossier.service.assess(dossier.attempt(_materiality_candidate(dossier, 10)))
+    assert same.claim("materiality").reason == "same_substantive_date"
+
+
 def test_same_date_candidates_with_different_materiality_conflict(dossier):
     passage = dossier.passages["materiality"]
 

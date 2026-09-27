@@ -53,6 +53,7 @@ from app.services.company_exposure.selection import (
     candidate_hash,
     decimal_text,
     materiality_payload,
+    measure_signature,
     select_claims,
 )
 
@@ -163,7 +164,7 @@ class ExposureAssessmentService:
         if revision is None:
             return {}
         rows = self.session.execute(
-            select(ExposureClaim, ExposureClaimRevision, MaterialityMeasure.period)
+            select(ExposureClaim, ExposureClaimRevision, MaterialityMeasure)
             .join(
                 AssessmentClaimSelection,
                 AssessmentClaimSelection.claim_id == ExposureClaim.id,
@@ -179,7 +180,7 @@ class ExposureAssessmentService:
             .where(AssessmentClaimSelection.assessment_revision_id == revision.id)
         ).all()
         current = {}
-        for claim, claim_revision, period in rows:
+        for claim, claim_revision, measure in rows:
             claim_holds = self.holds.active_kinds_for_claim(claim.id)
             current[claim.proposition_key] = CurrentClaim(
                 proposition_key=claim.proposition_key,
@@ -195,8 +196,22 @@ class ExposureAssessmentService:
                 supported_as_of=as_utc(claim_revision.supported_as_of),
                 reporting_period=claim_revision.reporting_period,
                 fresh_until=as_utc(claim_revision.fresh_until),
-                materiality_period=period,
+                materiality_period=None if measure is None else measure.period,
                 theme_fingerprint=claim_revision.evaluated_theme_fingerprint,
+                role=claim_revision.role,
+                measure=None
+                if measure is None
+                else measure_signature(
+                    basis=measure.basis,
+                    metric=measure.metric,
+                    value=measure.value_low,
+                    unit=measure.unit,
+                    currency=measure.currency,
+                    period=measure.period,
+                    scope_label=measure.scope_label,
+                    qualitative_label=measure.qualitative_label,
+                    held=bool(measure.hold_reasons),
+                ),
                 claim_holds=claim_holds,
                 revision_holds=self.holds.active_kinds_for_claim(
                     claim.id, claim_revision.id

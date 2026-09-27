@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID
 
@@ -167,6 +168,9 @@ class CurrentClaim:
     theme_fingerprint: str
     claim_holds: frozenset[str] = frozenset()
     revision_holds: frozenset[str] = frozenset()
+    role: str | None = None
+    # ``measure_signature`` of the selected revision's usable measure.
+    measure: tuple | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,42 +235,70 @@ def _rank(candidate: VerifiedClaim) -> tuple:
     )
 
 
-def _disagree(date_a, signature_a, date_b, signature_b) -> bool:
-    return date_a is not None and date_a == date_b and signature_a != signature_b
+def measure_signature(
+    *,
+    basis,
+    metric,
+    value,
+    unit,
+    currency,
+    period,
+    scope_label,
+    qualitative_label,
+    held: bool,
+) -> tuple | None:
+    """What a usable measure says, comparable across candidates and rows."""
+
+    basis = getattr(basis, "value", basis)
+    if held or basis in (None, MaterialityBasis.UNKNOWN.value):
+        return None
+    return (
+        basis,
+        metric,
+        None if value in (None, "") else Decimal(str(value)),
+        unit,
+        (currency or "").upper() or None,
+        period,
+        scope_label,
+        getattr(qualitative_label, "value", qualitative_label),
+    )
 
 
 def _measure(candidate: VerifiedClaim) -> tuple | None:
     measure = candidate.materiality
-    if measure is None or measure.held or measure.basis == MaterialityBasis.UNKNOWN:
+    if measure is None:
         return None
-    return (
-        measure.basis,
-        measure.metric,
-        measure.value,
-        measure.unit,
-        (measure.currency or "").upper() or None,
-        measure.period,
-        measure.scope_label,
-        measure.qualitative_label,
+    return measure_signature(
+        basis=measure.basis,
+        metric=measure.metric,
+        value=measure.value,
+        unit=measure.unit,
+        currency=measure.currency,
+        period=measure.period,
+        scope_label=measure.scope_label,
+        qualitative_label=measure.qualitative_label,
+        held=measure.held,
     )
 
 
-def _candidates_disagree(a: VerifiedClaim, b: VerifiedClaim) -> bool:
-    """Same-date primary candidates that say different things.
+def _says_differently(a, b, measure_a, measure_b) -> bool:
+    """Status and conclusion, a stated role, and a usable materiality measure
+    all count; statement wording does not (paraphrase is not disagreement)."""
 
-    Status and conclusion, a stated role, and a usable materiality measure
-    all count; statement wording does not (paraphrase is not disagreement).
-    """
-
-    date = as_utc(a.supported_as_of)
-    if date is None or date != as_utc(b.supported_as_of):
-        return False
     if (a.conclusion, a.commercial_status) != (b.conclusion, b.commercial_status):
         return True
     if a.role and b.role and a.role.strip().casefold() != b.role.strip().casefold():
         return True
-    measures = _measure(a), _measure(b)
-    return None not in measures and measures[0] != measures[1]
+    return None not in (measure_a, measure_b) and measure_a != measure_b
+
+
+def _candidates_disagree(a: VerifiedClaim, b: VerifiedClaim) -> bool:
+    """Same-date primary candidates that say different things."""
+
+    date = as_utc(a.supported_as_of)
+    if date is None or date != as_utc(b.supported_as_of):
+        return False
+    return _says_differently(a, b, _measure(a), _measure(b))
 
 
 def _decide(
@@ -287,12 +319,7 @@ def _decide(
     if prior_date is not None and date < prior_date:
         return SelectionAction.CARRIED_FORWARD, "older_than_selected"
     if prior_date is not None and date == prior_date:
-        if _disagree(
-            date,
-            (best.conclusion, best.commercial_status),
-            prior_date,
-            (existing.conclusion, existing.commercial_status),
-        ):
+        if _says_differently(best, existing, _measure(best), existing.measure):
             return SelectionAction.CARRIED_FORWARD, SAME_DATE_DISAGREEMENT
         return SelectionAction.CARRIED_FORWARD, "same_substantive_date"
     return SelectionAction.REPLACED, "newer_support"

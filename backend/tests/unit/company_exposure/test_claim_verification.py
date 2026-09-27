@@ -743,3 +743,83 @@ def test_unrelated_modal_citation_does_not_veto_a_stated_status():
     )
     assert result.commercial_status == CommercialStatus.SHIPPING_OR_OPERATING
     assert "modal_commercial_status" not in result.hold_reasons
+
+
+def test_reporting_scope_is_grounded_in_the_evidence():
+    subsidiary = "Our subsidiary's ET-9000 supports HBM testing."
+    promoted = validate_candidate(
+        claim(support=[{"ref": "P1", "quote": subsidiary}]),
+        evidence(item("P1", subsidiary)),
+        SCOPE,
+    )
+    assert promoted.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "subsidiary_evidence_not_issuer_level" in promoted.hold_reasons
+    quote = "The ET-9000 supports HBM testing."
+    labelled = validate_candidate(
+        claim(
+            reporting_scope="segment_or_subsidiary",
+            scope_label="Server segment",
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert labelled.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "scope_label_not_in_evidence" in labelled.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("kind", "role", "basis", "kept"),
+    [
+        ("role", "HBM testing", SupportBasis.PRIMARY_EXPLICIT, "HBM testing"),
+        ("role", "HBM manufacturer", SupportBasis.INFERRED_UNVERIFIED, None),
+        (
+            "product_application",
+            "HBM manufacturer",
+            SupportBasis.PRIMARY_EXPLICIT,
+            None,
+        ),
+    ],
+)
+def test_claimed_role_is_grounded_in_its_wording(kind, role, basis, kept):
+    quote = "The ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim(kind, role=role, support=[{"ref": "P1", "quote": quote}]),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert result.support_basis == basis
+    assert ("role_not_stated" in result.hold_reasons) is (kind == "role" and not kept)
+    if basis == SupportBasis.PRIMARY_EXPLICIT:
+        assert result.role == kept
+
+
+def test_synthesis_freshness_follows_link_bearing_premises():
+    old = datetime(2021, 3, 1, tzinfo=timezone.utc)
+    link = "ET-9000 supports HBM testing."
+    unrelated = "ET-9000 revenue increased."
+    result = validate_candidate(
+        claim(
+            statement=link,
+            synthesis={
+                "subject": "ET-9000",
+                "application": "HBM",
+                "premises": [
+                    {"ref": "P1", "quote": link},
+                    {"ref": "P2", "quote": unrelated},
+                ],
+                "links": [
+                    {
+                        "source": "ET-9000",
+                        "target": "HBM",
+                        "relationship": "product_supports_application",
+                        "ref": "P1",
+                    }
+                ],
+            },
+        ),
+        evidence(item("P1", link, published_at=old), item("P2", unrelated)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.PRIMARY_SYNTHESIS
+    assert result.supported_as_of == old

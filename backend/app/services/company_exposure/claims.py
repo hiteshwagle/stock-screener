@@ -20,6 +20,9 @@ after that is deterministic and can only *downgrade*:
 * every name and figure in the model-written statement must be grounded in
   its citations or the scope, including a sentence-initial name, and a
   statement asserting more than its evidence is replaced by that evidence;
+* a claimed role and reporting scope must be stated by the evidence that
+  carries the claim: subsidiary or segment wording is never promoted to the
+  consolidated issuer;
 * freshness is anchored to the passages that carry the claim;
 * the substantive date comes from the document (effective/publication
   date), never from when it was downloaded.
@@ -448,6 +451,35 @@ def _unasserted_words(
     ]
 
 
+# Wording that places the evidence below the consolidated issuer.
+_SUBSIDIARY = re.compile(
+    r"\b(subsidiar(?:y|ies)|segments?|divisions?|affiliates?|joint ventures?)\b"
+    r"|子会社|子公司|事業部|部門|関連会社|合資|合资",
+    re.IGNORECASE,
+)
+
+
+def _scope_hold(
+    reporting_scope: ReportingScope, scope_label: str | None, carrying: list[str]
+) -> str | None:
+    """Reporting scope the cited wording does not support.
+
+    A segment claim's label must appear in its evidence, and evidence about a
+    subsidiary or segment cannot be promoted to the issuer level.
+    """
+
+    text = " ".join(carrying).casefold()
+    if reporting_scope == ReportingScope.SEGMENT_OR_SUBSIDIARY:
+        if any(
+            word not in text for word in _TOKEN.findall((scope_label or "").casefold())
+        ):
+            return "scope_label_not_in_evidence"
+        return None
+    if any(_SUBSIDIARY.search(clause) for clause in carrying):
+        return "subsidiary_evidence_not_issuer_level"
+    return None
+
+
 def _affirmed(clauses: list[str]) -> bool:
     """True when some clause is not negated."""
 
@@ -700,6 +732,7 @@ def validate_candidate(
     if raw.get("synthesis"):
         spec = raw["synthesis"]
         premises, links = [], []
+        primary_premises: dict[str, EvidenceItem] = {}
         for premise in spec.get("premises", []):
             item = evidence.get(premise.get("ref"))
             quote = premise.get("quote", "")
@@ -716,7 +749,7 @@ def validate_candidate(
             )
             cited.append(CitedEvidence(item.passage_id, _normalize(quote), role))
             if role == EvidenceRole.ORIGINAL_PRIMARY:
-                dates.append(item)
+                primary_premises[premise["ref"]] = item
         for link in spec.get("links", []):
             links.append(
                 Link(
@@ -726,6 +759,10 @@ def validate_candidate(
                     link.get("ref", ""),
                 )
             )
+        # Freshness follows the premises the chain's links rest on; an unused
+        # newer premise must not keep an old synthesized link current.
+        linked = {link.premise_ref for link in links}
+        dates = [item for ref, item in primary_premises.items() if ref in linked]
         synthesis = validate_synthesis(
             premises,
             links,
@@ -791,11 +828,27 @@ def validate_candidate(
 
     statement = _normalize(str(raw.get("statement", "")))
     grounding = [c.quote for c in cited if c.direction == "supporting"]
+    role = str(raw.get("role") or "").strip() or None
     if basis in {SupportBasis.PRIMARY_EXPLICIT, SupportBasis.PRIMARY_SYNTHESIS}:
         unsupported = _ungrounded(statement, grounding, scope)
         if unsupported:
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("statement_not_grounded")
+        carrying = bearing or grounding
+        if role and (
+            _ungrounded(role, carrying, scope)
+            or _unasserted_words(role.replace("_", " "), carrying, scope)
+        ):
+            # "HBM manufacturer" over "ET-9000 supports HBM testing".
+            if kind == ClaimKind.ROLE:
+                basis = SupportBasis.INFERRED_UNVERIFIED
+                holds.append("role_not_stated")
+            else:
+                role = None
+        scope_hold = _scope_hold(reporting_scope, scope_label, carrying)
+        if scope_hold:
+            basis = SupportBasis.INFERRED_UNVERIFIED
+            holds.append(scope_hold)
 
     status, status_holds, stating = _status_guard(
         status, primary_quotes or [c.quote for c in cited], product_terms
@@ -845,7 +898,7 @@ def validate_candidate(
         commercial_status=status,
         support_basis=basis,
         conclusion=conclusion,
-        role=raw.get("role") or None,
+        role=role,
         hold_reasons=tuple(dict.fromkeys(holds)),
         evidence=tuple(cited),
         synthesis=synthesis,
