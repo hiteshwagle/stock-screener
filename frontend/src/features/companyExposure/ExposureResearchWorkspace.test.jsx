@@ -79,6 +79,29 @@ describe('ExposureResearchWorkspace', () => {
     }
   });
 
+  it('asks for the admin key again after it is rejected', async () => {
+    api.requestExposureResearch.mockRejectedValue({
+      response: { status: 401, data: { detail: 'admin_key_invalid' } },
+    });
+    renderWithProviders(<ExposureResearchWorkspace />);
+    fireEvent.change(screen.getByLabelText(/admin key/i), { target: { value: 'typo' } });
+    fireEvent.click(screen.getByRole('button', { name: /unlock/i }));
+    fireEvent.change(screen.getByLabelText(/us symbol/i), { target: { value: 'EXMP' } });
+    fireEvent.change(screen.getByLabelText(/economic theme id/i), { target: { value: 't1' } });
+    fireEvent.click(screen.getByRole('button', { name: /request research/i }));
+    expect(await screen.findByText('admin_key_invalid')).toBeVisible();
+    // The key field is back, so a corrected key can be entered.
+    expect(screen.getByLabelText(/admin key/i)).toBeVisible();
+  });
+
+  it('can change the admin key without reloading', () => {
+    renderWithProviders(<ExposureResearchWorkspace />);
+    fireEvent.change(screen.getByLabelText(/admin key/i), { target: { value: 'first' } });
+    fireEvent.click(screen.getByRole('button', { name: /unlock/i }));
+    fireEvent.click(screen.getByRole('button', { name: /change key/i }));
+    expect(screen.getByLabelText(/admin key/i)).toBeVisible();
+  });
+
   it('surfaces typed request errors', async () => {
     api.requestExposureResearch.mockRejectedValue({
       response: { data: { detail: { code: 'research_disabled' } } },

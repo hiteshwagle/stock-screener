@@ -534,3 +534,27 @@ def test_year_inside_a_date_is_not_a_value():
     quote = "Revenue for the year ended 2024-12-31 was 2024 units."
     assert quote_contains_value(quote, Decimal(2024))  # the amount, not the date
     assert not quote_contains_value("As of 2024-12-31 revenue grew.", Decimal(2024))
+
+
+@pytest.mark.parametrize(
+    ("metric", "quote", "held"),
+    [
+        # Only the head was checked: "growth" is invented.
+        ("revenue_growth", "HBM revenue was USD 20 million in FY2024.", True),
+        ("revenue_growth", "HBM revenue growth was USD 20 million in FY2024.", False),
+        ("revenue", "HBM revenue was USD 20 million in FY2024.", False),
+    ],
+)
+def test_every_metric_part_must_be_stated(metric, quote, held):
+    result = validate_measure(
+        metric=metric,
+        value=Decimal(20),
+        unit="million",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote=quote,
+        passage_id="p",
+        currency="USD",
+    )
+    assert ("metric_not_in_quote" in result.hold_reasons) is held

@@ -460,6 +460,28 @@ def test_conflicting_citation_must_be_about_the_claimed_product(conflict, disput
     assert ("conflicting_primary_evidence" in result.hold_reasons) is disputed
 
 
+@pytest.mark.parametrize(
+    ("statement", "supported"),
+    [
+        ("NVIDIA is our customer for ET-9000 HBM solutions.", True),
+        # Same parties and words, reversed relationship.
+        ("We are NVIDIA's customer for ET-9000 HBM solutions.", False),
+    ],
+)
+def test_customer_direction_must_match_the_evidence(statement, supported):
+    quote = "NVIDIA is our customer for ET-9000 HBM solutions."
+    result = validate_candidate(
+        claim(
+            "customer_relationship",
+            statement=statement,
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert ("customer_not_stated" not in result.hold_reasons) is supported
+
+
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
     text = "The ET-9000 supports HBM testing."
     grounded = validate_candidate(

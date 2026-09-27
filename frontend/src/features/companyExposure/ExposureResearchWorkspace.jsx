@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   Alert, Box, Button, MenuItem, Paper, Stack, TextField, Typography,
@@ -9,6 +9,8 @@ import {
   requestExposureResearch, researchJobKey, researchPreviewKey,
 } from '../../api/companyExposures';
 import ExposureResearchPanel from './ExposureResearchPanel';
+
+const isAuthError = (error) => [401, 403].includes(error?.response?.status);
 
 const errorCode = (error) => error?.response?.data?.detail?.code
   || (typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : null)
@@ -79,8 +81,18 @@ export default function ExposureResearchWorkspace() {
           : 'Research queued.',
       });
     },
-    onError: (error) => setMessage({ severity: 'error', text: errorCode(error) }),
+    onError: (error) => {
+      setMessage({ severity: 'error', text: errorCode(error) });
+      // A rejected key is never kept: ask for it again.
+      if (isAuthError(error)) setAdminKey('');
+    },
   });
+  const changeKey = () => { setAdminKey(''); setJobId(null); setMessage(null); };
+  const jobAuthFailed = job.isError && isAuthError(job.error);
+  const previewAuthFailed = preview.isError && isAuthError(preview.error);
+  useEffect(() => {
+    if (jobAuthFailed || previewAuthFailed) setAdminKey('');
+  }, [jobAuthFailed, previewAuthFailed]);
 
   const canSubmit = Boolean(adminKey && symbol.trim() && themeId.trim()) && !request.isPending;
 
@@ -140,6 +152,9 @@ export default function ExposureResearchWorkspace() {
             </TextField>
             <Button type="submit" variant="contained" disabled={!canSubmit}>
               Request research
+            </Button>
+            <Button variant="text" onClick={changeKey}>
+              Change key
             </Button>
           </Stack>
         </Box>

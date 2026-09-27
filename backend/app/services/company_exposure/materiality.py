@@ -157,6 +157,9 @@ _METRIC_WORDS = {
     "income": ("profit", "income", "earnings", "利益", "利潤", "利润"),
     "backlog": ("backlog", "order", "受注", "訂單", "订单"),
 }
+_METRIC_FORM_WORDS = frozenset(
+    {"share", "percent", "pct", "percentage", "ratio", "of", "total"}
+)
 _PERCENT_UNITS = frozenset({"percent", "pct", "%", "percentage"})
 _PERCENT_WORDS = ("%", "％", "percent", "per cent")
 _SCALE_WORDS = {
@@ -294,9 +297,14 @@ def _grounding_holds(
 
     text = _norm(quote)
     holds = []
-    head = (metric or "").split("_")[0].casefold()
-    if head and not any(
-        mentions(text, word) for word in _METRIC_WORDS.get(head, (head,))
+    # Every semantic part of the metric must be stated, not only its head:
+    # "revenue_growth" over a revenue figure invents growth. Parts naming the
+    # measure's form (share, percent, ratio) are checked by the unit rules.
+    parts = [p for p in (metric or "").casefold().split("_") if p]
+    if any(
+        not any(mentions(text, word) for word in _METRIC_WORDS.get(part, (part,)))
+        for part in parts
+        if part not in _METRIC_FORM_WORDS
     ):
         holds.append("metric_not_in_quote")
     unit_folded = (unit or "").casefold()

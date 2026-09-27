@@ -684,13 +684,45 @@ def _customer_clauses(
 
     own = " ".join([*scope.issuer_names, *scope.theme_terms, *product_terms]).casefold()
     counterparty = [p for p in _name_parts(statement) if p.casefold() not in own]
+    # A statement that says who buys must match a clause saying the same.
+    direction = _customer_direction(statement)
     return [
         clause
         for clause in clauses(quotes)
         if CUSTOMER.search(clause)
         and _names_product(clause, product_terms, key_tokens)
         and (not counterparty or any(mentions(clause, p) for p in counterparty))
+        and (direction is None or _customer_direction(clause) == direction)
     ]
+
+
+# Who buys from whom. "NVIDIA is our customer" (the issuer sells) and "We are
+# NVIDIA's customer" (the issuer buys) name the same parties and words.
+_ISSUER_SELLS = re.compile(
+    r"\b(?:is|are|was|were|became|becomes|remains?)\s+(?:(?:one|a|an)\s+of\s+)?"
+    r"our\s+(?:\w+\s+){0,2}?customers?\b|\bour\s+(?:\w+\s+)?customers?\b"
+    r"|\bwe\s+(?:sell|sold|supply|supplied|ship|shipped|deliver|delivered)\b"
+    r"|\b(?:sales|shipments|deliveries)\s+to\b"
+    r"|\b(?:buys?|bought|purchases?|purchased|orders?|ordered)\b.{0,60}?\bfrom\s+us\b",
+    re.IGNORECASE,
+)
+_ISSUER_BUYS = re.compile(
+    r"\bwe\s+(?:are|were|became|remain)\b.{0,40}?\bcustomers?\b"
+    r"|\bour\s+(?:\w+\s+)?(?:suppliers?|vendors?)\b"
+    r"|\bwe\s+(?:buy|bought|purchase|purchased|source|sourced|order|ordered)\b"
+    r"|\b(?:supplies|supplied|sells|sold|ships|shipped|delivers|delivered)\b"
+    r".{0,60}?\bto\s+us\b|\bpurchases\s+from\b",
+    re.IGNORECASE,
+)
+
+
+def _customer_direction(text: str) -> str | None:
+    """ "sells" or "buys" from the issuer's side, or None if unstated/mixed."""
+
+    sells, buys = bool(_ISSUER_SELLS.search(text)), bool(_ISSUER_BUYS.search(text))
+    if sells == buys:
+        return None
+    return "sells" if sells else "buys"
 
 
 def _names_product(text: str, product_terms, key_tokens) -> bool:
