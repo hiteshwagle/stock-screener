@@ -269,6 +269,16 @@ def test_held_ratio_is_persisted_as_unknown(dossier):
     assert (row.basis, row.value_low) == ("unknown", None)
     assert "unit_mismatch" in row.hold_reasons
 
+    # The preview shows no value, but keeps both operand quotes for review.
+    from app.services.company_exposure.reads import ResearchJobReader
+
+    shown = ResearchJobReader(dossier.db)._materiality(revision_id)
+    assert shown["display"] and "value" not in shown
+    assert [(e["role"], e["quote"]) for e in shown["evidence"]] == [
+        ("numerator", "Memory test revenue was USD 20 million in FY2025"),
+        ("denominator", "Memory test revenue was USD 1 billion in FY2025"),
+    ]
+
 
 def test_newly_detected_conflict_is_recorded_in_a_new_revision(dossier):
     from sqlalchemy import select

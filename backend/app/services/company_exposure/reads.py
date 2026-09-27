@@ -237,10 +237,13 @@ class ResearchJobReader:
             )
         ).scalar_one_or_none()
         if measure is None or measure.basis == "unknown" or measure.hold_reasons:
+            # A held measure shows no value, but keeps the cited operands and
+            # quotes that a reviewer needs to adjudicate it.
             return {
                 "basis": "unknown" if measure is None else measure.basis,
                 "display": UNKNOWN_MATERIALITY_WORDING,
                 "hold_reasons": [] if measure is None else measure.hold_reasons,
+                "evidence": [] if measure is None else self._measure_evidence(measure),
             }
         return {
             "basis": measure.basis,

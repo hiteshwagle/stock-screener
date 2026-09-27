@@ -233,6 +233,13 @@ def test_segment_label_must_be_a_whole_word_of_the_evidence():
         # A bare theme mention, or someone else producing it, does not.
         ("hbm-manufacturing", "HBM demand increased.", False),
         ("hbm-manufacturing", "Customers manufacture HBM using our tools.", False),
+        # The theme must be what the issuer makes, not a later object.
+        (
+            "hbm-manufacturing",
+            "We make tools that customers use to manufacture HBM.",
+            False,
+        ),
+        ("hbm-manufacturing", "We make equipment used for HBM production.", False),
         # The direct path is only for a key that names the theme.
         ("et-9000", "We manufacture HBM products.", False),
     ],
@@ -268,6 +275,33 @@ def test_negated_direct_production_is_not_support():
         SCOPE,
     )
     assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+
+
+def test_materiality_claim_is_dated_by_the_passage_its_measure_rests_on():
+    link = "The ET-9000 supports HBM testing."
+    quote = "ET-9000 revenue was USD 5 million in FY2022."
+    old_filing = datetime(2023, 3, 1, tzinfo=timezone.utc)
+    result = validate_candidate(
+        claim(
+            "materiality",
+            support=[{"ref": "P1", "quote": link}],
+            materiality={
+                "type": "disclosed",
+                "metric": "revenue",
+                "value": "5",
+                "unit": "USD_million",
+                "currency": "USD",
+                "period": "FY2022",
+                "ref": "P2",
+                "quote": quote,
+            },
+        ),
+        # The link comes from a newer filing than the FY2022 figure.
+        evidence(item("P1", link), item("P2", quote, published_at=old_filing)),
+        SCOPE,
+    )
+    assert result.materiality.basis == MaterialityBasis.DISCLOSED
+    assert result.supported_as_of == old_filing
 
 
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():

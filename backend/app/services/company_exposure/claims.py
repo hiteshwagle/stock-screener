@@ -317,6 +317,15 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
     return linking
 
 
+# Where a verb's subject or object phrase ends: a relative or subordinate
+# clause, an infinitive or a preposition introduces someone else's action.
+_BOUNDARY = re.compile(
+    r"\b(?:that|which|who|whom|whose|where|when|while|to|for|used|using|"
+    r"with|by|so|because|customers?)\b|[,;:()]",
+    re.IGNORECASE,
+)
+
+
 def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
     """Clauses in which the issuer itself produces or sells the theme.
 
@@ -336,11 +345,14 @@ def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
             found.append(clause)
             continue
         for verb in PRODUCES.finditer(clause):
-            subject, rest = clause[: verb.start()], clause[verb.end() :]
+            # The verb's own subject and object: "We make tools that customers
+            # use to manufacture HBM" has no issuer producing HBM.
+            subject = _BOUNDARY.split(clause[: verb.start()])[-1]
+            obj = _BOUNDARY.split(clause[verb.end() :])[0]
             if (
                 ISSUER_SUBJECT.search(subject)
                 or any(mentions(subject, n) for n in issuer_names)
-            ) and any(mentions(rest, t) for t in theme_terms):
+            ) and any(mentions(obj, t) for t in theme_terms):
                 found.append(clause)
                 break
     return found
@@ -1056,7 +1068,9 @@ def validate_candidate(
             if any(_normalize(c) in _normalize(quote) for c in bearing)
         ]
 
-    materiality, _ = _materiality(raw.get("materiality"), evidence, scope)
+    materiality, measure_passages = _materiality(
+        raw.get("materiality"), evidence, scope
+    )
     materiality = _fits_columns(materiality)
     spec = raw.get("materiality") or {}
     measure_texts = [
@@ -1083,6 +1097,14 @@ def validate_candidate(
     if conflicting_primary:
         holds.append("conflicting_primary_evidence")
 
+    if kind == ClaimKind.MATERIALITY and measure_passages:
+        # A measure is as of the passages it was read from: a newer unrelated
+        # citation must not make an FY2023 figure look current.
+        dates = [
+            item
+            for item in evidence.values()
+            if str(item.passage_id) in measure_passages
+        ]
     anchors = [item.substantive_at for item in dates if item.substantive_at is not None]
     supported_as_of = max(anchors) if anchors else None
     periods = [item.reporting_period for item in dates if item.reporting_period]
