@@ -713,11 +713,15 @@ def test_backfill_range_fallback_uses_market_calendar(monkeypatch):
 
     result = service.backfill_range(date(2026, 3, 12), date(2026, 3, 14))
 
+    # The HK universe has no rows, so the calendar-selected date has no
+    # point-in-time membership: unavailable, not a failed calculation.
     assert result == {
         "total_dates": 1,
         "processed": 0,
-        "errors": 1,
-        "error_dates": ["2026-03-13"],
+        "errors": 0,
+        "error_dates": [],
+        "unavailable": 1,
+        "unavailable_dates": ["2026-03-13"],
     }
     price_cache.get_many_cached_only_fresh.assert_not_called()
     price_cache.get_many_cached_only.assert_not_called()
@@ -1610,3 +1614,92 @@ def test_calculate_daily_breadth_reduces_each_price_batch_before_the_next(
     assert streamed.to_metrics_dict() == whole.to_metrics_dict()
     assert streamed.daily_result == whole.daily_result
     assert streamed.to_metrics_dict()["total_stocks_scanned"] == 3
+
+
+def test_find_missing_dates_skips_dates_before_the_universe_existed(monkeypatch):
+    from datetime import UTC, datetime
+
+    class _WeekdayCalendar:
+        def is_trading_day(self, market, current_date):
+            return current_date.weekday() < 5
+
+    monkeypatch.setattr(
+        "app.wiring.bootstrap.get_market_calendar_service",
+        lambda: _WeekdayCalendar(),
+    )
+    db = _make_db_session()
+    service = BreadthCalculatorService(db, MagicMock())
+
+    assert service.find_missing_dates(14, end_date=date(2026, 3, 20)) == []
+
+    db.add(
+        StockUniverse(
+            symbol="AAA",
+            market="US",
+            is_active=True,
+            status=UNIVERSE_STATUS_ACTIVE,
+            first_seen_at=datetime(2026, 3, 16, 15, tzinfo=UTC),
+        )
+    )
+    db.commit()
+
+    assert service.find_missing_dates(14, end_date=date(2026, 3, 20)) == [
+        date(2026, 3, 16),
+        date(2026, 3, 17),
+        date(2026, 3, 18),
+        date(2026, 3, 19),
+    ]
+
+
+def test_backfill_reports_unreconstructable_dates_unavailable_not_failed(
+    monkeypatch,
+):
+    from app.services.point_in_time_universe_service import (
+        PointInTimeUniverseUnavailable,
+    )
+
+    db = _make_db_session()
+    good_date = date(2026, 3, 20)
+    broken_date = date(2026, 3, 19)
+    empty_date = date(2026, 3, 18)
+
+    def snapshots(_db, _market, dates):
+        dates = tuple(dates)
+        if broken_date in dates:
+            raise PointInTimeUniverseUnavailable("missing lifecycle events")
+        return {
+            value: BreadthUniverseSnapshot(
+                calculation_date=value,
+                members=(
+                    ()
+                    if value == empty_date
+                    else (BreadthUniverseMember("AAA", "USD"),)
+                ),
+                broad_signature="sig",
+            )
+            for value in dates
+        }
+
+    monkeypatch.setattr(
+        breadth_backfill_module, "build_breadth_universe_snapshots", snapshots
+    )
+    price_cache = MagicMock()
+    price_cache.get_many_cached_only_fresh.return_value = {
+        "AAA": _make_price_df(good_date)
+    }
+
+    result = BreadthCalculatorService(db, price_cache).backfill_range(
+        empty_date,
+        good_date,
+        trading_dates=[empty_date, broken_date, good_date],
+    )
+
+    assert result == {
+        "total_dates": 3,
+        "processed": 1,
+        "errors": 0,
+        "error_dates": [],
+        "unavailable": 2,
+        "unavailable_dates": [empty_date.isoformat(), broken_date.isoformat()],
+    }
+    assert [row.date for row in db.query(MarketBreadth).all()] == [good_date]

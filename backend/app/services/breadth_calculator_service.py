@@ -49,6 +49,7 @@ from .derived_data_execution_policy import (
     DerivedDataExecutionPolicy,
     DerivedDataTargetKind,
 )
+from .point_in_time_universe_service import PointInTimeUniverseService
 from .price_cache_service import PriceCacheService
 
 logger = logging.getLogger(__name__)
@@ -500,6 +501,27 @@ class BreadthCalculatorService:
         )
 
         existing_date_set = {d[0] for d in existing_dates}
+
+        # Dates before any symbol was first seen resolve to an empty
+        # point-in-time universe. They are unavailable rather than missing:
+        # requesting them again every run can never produce a row.
+        membership_floor = PointInTimeUniverseService().earliest_membership_date(
+            self.db,
+            market=self.market,
+        )
+        if membership_floor is None:
+            logger.info(
+                "No %s universe history exists; no breadth gaps to fill",
+                self.market,
+            )
+            return []
+        if membership_floor > start_date:
+            logger.info(
+                "Skipping %s breadth dates before %s: no point-in-time universe",
+                self.market,
+                membership_floor,
+            )
+            start_date = membership_floor
 
         # Generate all trading days in range using the per-market calendar
         missing_dates = []

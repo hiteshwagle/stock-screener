@@ -22,6 +22,7 @@ from .breadth_coverage import (
     BreadthPriceCoverageAccumulator,
 )
 from .derived_data_execution_policy import DerivedDataExecutionPolicy
+from .point_in_time_universe_service import PointInTimeUniverseUnavailable
 from .static_breadth_eligibility import static_breadth_eligibility_signature
 
 if TYPE_CHECKING:
@@ -166,14 +167,44 @@ class BreadthBackfillExecutor:
             else None
         )
 
+        unavailable_dates: list[date] = []
         if explicit_symbols is None:
-            universes_by_date = dict(
-                build_breadth_universe_snapshots(
-                    calculator.db,
-                    calculator.market,
-                    ordered_dates,
+            # Membership is never fabricated: a date whose historical universe
+            # cannot be reproduced, or had no members yet, is reported
+            # unavailable instead of failing the range or counting as an error.
+            try:
+                resolved = dict(
+                    build_breadth_universe_snapshots(
+                        calculator.db,
+                        calculator.market,
+                        ordered_dates,
+                    )
                 )
-            )
+            except PointInTimeUniverseUnavailable:
+                resolved = {}
+                for calculation_date in ordered_dates:
+                    try:
+                        resolved.update(
+                            build_breadth_universe_snapshots(
+                                calculator.db,
+                                calculator.market,
+                                (calculation_date,),
+                            )
+                        )
+                    except PointInTimeUniverseUnavailable as exc:
+                        logger.info("Breadth universe unavailable: %s", exc)
+            universes_by_date = {}
+            for calculation_date in ordered_dates:
+                snapshot = resolved.get(calculation_date)
+                if snapshot is None or not snapshot.members:
+                    unavailable_dates.append(calculation_date)
+                else:
+                    universes_by_date[calculation_date] = snapshot
+            ordered_dates = [
+                calculation_date
+                for calculation_date in ordered_dates
+                if calculation_date in universes_by_date
+            ]
             symbols_by_date = {
                 calculation_date: tuple(
                     member.symbol
@@ -436,11 +467,16 @@ class BreadthBackfillExecutor:
                 )
 
         result: dict[str, Any] = {
-            "total_dates": len(ordered_dates),
+            "total_dates": len(plan.dates),
             "processed": len(processed_dates),
             "errors": len(error_dates),
             "error_dates": error_dates,
         }
+        if unavailable_dates:
+            result["unavailable"] = len(unavailable_dates)
+            result["unavailable_dates"] = [
+                value.isoformat() for value in unavailable_dates
+            ]
         if explicit_symbols is not None:
             result.update(
                 {
