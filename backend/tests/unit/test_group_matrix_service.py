@@ -204,3 +204,64 @@ def test_metadata_timestamp_tracks_the_read_not_export_start(db, monkeypatch):
     result = service.build(db, market="US", generated_at="2026-09-13T00:00:00Z")
     assert result["generated_at"] == "2026-09-13T00:00:00Z"
     assert result["metadata_read_at"] == "2026-09-13T02:00:00+00:00"
+
+
+def test_detail_values_keep_json_types_and_documentless_rows_are_listed(db):
+    from app.services.group_matrix_repository import GroupMatrixRepository
+
+    add_run(db, 1, "US", ["A", "B", "C"])
+    rows = {row.symbol: row for row in db.query(StockFeatureDaily)}
+    rows["B"].details_json = None
+    rows["C"].details_json = {"gics_sector": "", "rs_rating": "81", "perf_week": 1}
+    db.add(StockUniverse(symbol="C", market="US", sector="Fallback"))
+    db.commit()
+
+    loaded = {
+        row["symbol"]: row
+        for row in GroupMatrixRepository().load_rows(db, run_id=1, market="US")
+    }
+
+    assert loaded["A"]["price_change_1d"] == 2
+    assert isinstance(loaded["A"]["price_change_1d"], int)
+    assert loaded["A"]["sector"] == "Tech"
+    assert {
+        key: loaded["B"][key]
+        for key in (
+            "sector",
+            "price_change_1d",
+            "price_change_1w",
+            "price_change_1m",
+            "rs_rating",
+        )
+    } == dict.fromkeys(
+        ("sector", "price_change_1d", "price_change_1w", "price_change_1m", "rs_rating")
+    )
+    # Values arrive exactly as stored; the payload builder does the rejecting.
+    assert loaded["C"]["rs_rating"] == "81"
+    assert loaded["C"]["sector"] == "Fallback"
+    assert loaded["C"]["price_change_1d"] is None
+    assert loaded["C"]["price_change_1w"] == 1
+
+
+@pytest.mark.parametrize("postgres", [True, False])
+def test_matrix_query_never_selects_whole_details_documents(postgres):
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from app.services.group_matrix_repository import matrix_rows_statement
+
+    statement = matrix_rows_statement(run_id=1, market="US", postgres=postgres)
+    sql = str(
+        statement.compile(dialect=postgresql.dialect() if postgres else sqlite.dialect())
+    )
+
+    details_column = StockFeatureDaily.__table__.c.details_json
+    assert all(
+        selected is not details_column for selected in statement.selected_columns
+    )
+    assert "stock_feature_daily.details_json AS" not in sql
+    if postgres:
+        # json, not jsonb: each -> would re-parse the whole document, so the
+        # five values come from one json_to_record parse per row.
+        assert sql.count("json_to_record(") == 1
+        assert "->" not in sql
+        assert "LEFT OUTER JOIN json_to_record(CASE WHEN" in sql
