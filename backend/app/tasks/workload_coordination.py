@@ -21,6 +21,7 @@ from .lease_renewal import (
     LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
     LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
     RENEW_LEASE_LUA,
+    LeaseNotHeld,
     keep_leases_alive,
     lease_ttl_seconds,
 )
@@ -174,6 +175,23 @@ def _coordination_retry(task: Any, message: str) -> None:
     )
 
 
+def _wait_for_market_workload(task: Any, coordination: Any, market: Optional[str]):
+    """Retry (or report waiting) while another task holds the market lease."""
+    holder = coordination.get_market_workload_holder(market) or {}
+    wait_reason = f"waiting_for_market_workload:{normalize_market(market)}"
+    if task is not None and hasattr(task, "retry"):
+        _coordination_retry(
+            task,
+            f"{wait_reason} ({holder.get('task_name', 'unknown')})",
+        )
+    return {
+        "status": "waiting",
+        "wait_reason": wait_reason,
+        "running_task_name": holder.get("task_name"),
+        "running_task_id": holder.get("task_id"),
+    }
+
+
 def serialized_market_workload(task_name: str):
     """Serialize compute/write work per market without the global fetch lease."""
 
@@ -196,19 +214,7 @@ def serialized_market_workload(task_name: str):
                 market=market_value,
             )
             if not acquired:
-                holder = coordination.get_market_workload_holder(market_value) or {}
-                wait_reason = f"waiting_for_market_workload:{normalize_market(market_value)}"
-                if task is not None and hasattr(task, "retry"):
-                    _coordination_retry(
-                        task,
-                        f"{wait_reason} ({holder.get('task_name', 'unknown')})",
-                    )
-                return {
-                    "status": "waiting",
-                    "wait_reason": wait_reason,
-                    "running_task_name": holder.get("task_name"),
-                    "running_task_id": holder.get("task_id"),
-                }
+                return _wait_for_market_workload(task, coordination, market_value)
 
             # Renew on the reentrant path too: a Celery retry or redelivery
             # reuses the task id, so the "reentrant" lease may be a leftover
@@ -227,6 +233,10 @@ def serialized_market_workload(task_name: str):
                     return func(*args, **kwargs)
             except Retry:
                 raise
+            except LeaseNotHeld:
+                # A leftover same-id lease expired and was taken before the
+                # body started: wait for the new holder like any busy lease.
+                return _wait_for_market_workload(task, coordination, market_value)
             except Exception as exc:
                 retry_transient_database_error(
                     task,

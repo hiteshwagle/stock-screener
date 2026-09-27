@@ -23,6 +23,7 @@ from .lease_renewal import (
     LEASE_REDIS_CONNECT_TIMEOUT_SECONDS,
     LEASE_REDIS_SOCKET_TIMEOUT_SECONDS,
     RENEW_LEASE_LUA,
+    LeaseNotHeld,
     keep_leases_alive,
     lease_ttl_seconds,
 )
@@ -567,6 +568,17 @@ def _serialized_data_fetch(task_name: str):
                     task_name, market_label, e,
                 )
                 raise
+            except LeaseNotHeld as e:
+                # A leftover same-id lease expired and was taken before the
+                # body started: wait for the new holder like any busy lease.
+                message = f"lease_lost_before_start ({e})"
+                if task_instance is not None and hasattr(task_instance, "retry"):
+                    _coordination_retry(task_instance, message)
+                return {
+                    "status": "waiting",
+                    "wait_reason": "lease_lost_before_start",
+                    "lost_leases": str(e),
+                }
             except Exception as e:
                 retry_transient_database_error(
                     task_instance,

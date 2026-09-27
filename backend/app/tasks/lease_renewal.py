@@ -52,6 +52,14 @@ def lease_renew_interval_seconds() -> float:
     return lease_ttl_seconds() / 3
 
 
+class LeaseNotHeld(RuntimeError):
+    """A lease the task was about to rely on is already gone on entry.
+
+    Raised before the task body starts, so the body never runs unserialized.
+    Callers treat it like a busy lease and wait/retry.
+    """
+
+
 @contextmanager
 def keep_leases_alive(
     renewals: Sequence[tuple[str, Callable[[], bool]]],
@@ -60,10 +68,12 @@ def keep_leases_alive(
 ) -> Iterator[None]:
     """Run each ``(name, renew)`` every interval until the block exits.
 
-    ``renew`` returns whether the lease is still held. A lease that is no
-    longer held is dropped and logged; the task is not interrupted, since
-    aborting mid-write would be worse than finishing unserialized. Redis
-    errors are logged and retried on the next beat.
+    ``renew`` returns whether the lease is still held. Every lease is renewed
+    once before the block runs; if one is already gone then, ``LeaseNotHeld``
+    is raised and the block never starts. Once running, a lease that is lost
+    is dropped and logged; the task is not interrupted, since aborting
+    mid-write would be worse than finishing unserialized. Redis errors are
+    logged and retried on the next beat.
     """
     if not renewals:
         yield
@@ -75,7 +85,8 @@ def keep_leases_alive(
     stop = threading.Event()
     active = list(renewals)
 
-    def renew_all() -> None:
+    def renew_all() -> list[str]:
+        lost: list[str] = []
         for entry in tuple(active):
             name, renew = entry
             try:
@@ -89,6 +100,8 @@ def keep_leases_alive(
                     name,
                 )
                 active.remove(entry)
+                lost.append(name)
+        return lost
 
     def beat() -> None:
         while active and not stop.wait(interval):
@@ -96,8 +109,11 @@ def keep_leases_alive(
 
     # Renew once before the body starts: a lease reused by a retried task
     # (same id) may have less than one interval left and would otherwise
-    # expire before the first beat.
-    renew_all()
+    # expire before the first beat. If it already expired and was taken by
+    # another task, the body must not start at all.
+    lost = renew_all()
+    if lost:
+        raise LeaseNotHeld(", ".join(lost))
     thread = threading.Thread(target=beat, name="lease-renewal", daemon=True)
     thread.start()
     try:

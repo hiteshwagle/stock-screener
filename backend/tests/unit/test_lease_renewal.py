@@ -57,8 +57,8 @@ def test_leases_are_renewed_once_before_the_body_starts():
         assert renew.call_count == 1
 
 
-def test_a_lost_lease_stops_renewing_while_others_continue():
-    lost = MagicMock(return_value=False)
+def test_a_lease_lost_while_running_stops_renewing_while_others_continue():
+    lost = MagicMock(side_effect=[True, False])
     held = MagicMock(return_value=True)
 
     with keep_leases_alive(
@@ -66,7 +66,99 @@ def test_a_lost_lease_stops_renewing_while_others_continue():
     ):
         assert _wait_for(lambda: held.call_count >= 4)
 
-    assert lost.call_count == 1
+    assert lost.call_count == 2
+
+
+def test_a_lease_already_lost_on_entry_prevents_the_body_from_starting():
+    from app.tasks.lease_renewal import LeaseNotHeld
+
+    body_ran = False
+    with pytest.raises(LeaseNotHeld, match="market_workload:us"):
+        with keep_leases_alive(
+            [
+                ("market_workload:us", MagicMock(return_value=False)),
+                ("external_fetch_global", MagicMock(return_value=True)),
+            ],
+            interval_seconds=60,
+        ):
+            body_ran = True
+
+    assert body_ran is False
+
+
+@patch("app.wiring.bootstrap.get_workload_coordination")
+def test_market_workload_retries_instead_of_running_when_lease_lost_on_entry(
+    mock_get_coordination,
+):
+    from celery.exceptions import Retry
+
+    from app.tasks.workload_coordination import serialized_market_workload
+
+    coordination = MagicMock()
+    # The same-id lease looked reentrant, but expired and was taken before
+    # the first renewal.
+    coordination.acquire_market_workload.return_value = (True, True)
+    coordination.renew_market_workload.return_value = False
+    coordination.get_market_workload_holder.return_value = {
+        "task_name": "calculate_daily_group_rankings_with_gapfill",
+        "task_id": "other-task",
+    }
+    mock_get_coordination.return_value = coordination
+    retries = []
+
+    def _retry(*, exc=None, countdown=None, max_retries=None):
+        retries.append(str(exc))
+        raise Retry(message=str(exc))
+
+    task = SimpleNamespace(request=SimpleNamespace(id="task-1", retries=0), retry=_retry)
+    body = MagicMock()
+
+    @serialized_market_workload("calculate_daily_breadth_with_gapfill")
+    def run(self, market=None):
+        body()
+
+    with pytest.raises(Retry):
+        run(task, market="US")
+
+    body.assert_not_called()
+    assert "waiting_for_market_workload:US" in retries[0]
+
+
+@patch("app.wiring.bootstrap.get_workload_coordination")
+@patch("app.wiring.bootstrap.get_data_fetch_lock")
+def test_data_fetch_retries_instead_of_running_when_lease_lost_on_entry(
+    mock_get_lock, mock_get_coordination
+):
+    from celery.exceptions import Retry
+
+    from app.tasks.data_fetch_lock import _serialized_data_fetch
+
+    lock = MagicMock()
+    lock.acquire.return_value = (True, True)
+    lock.renew.return_value = False
+    coordination = MagicMock()
+    coordination.acquire_market_workload.return_value = (True, True)
+    coordination.acquire_external_fetch.return_value = (True, True)
+    mock_get_lock.return_value = lock
+    mock_get_coordination.return_value = coordination
+    retries = []
+
+    def _retry(*, exc=None, countdown=None, max_retries=None):
+        retries.append(str(exc))
+        raise Retry(message=str(exc))
+
+    task = SimpleNamespace(request=SimpleNamespace(id="task-9", retries=0), retry=_retry)
+    body = MagicMock()
+
+    @_serialized_data_fetch("refresh_cot")
+    def run(self, market=None):
+        body()
+
+    with pytest.raises(Retry):
+        run(task, market="US")
+
+    body.assert_not_called()
+    assert "lease_lost_before_start" in retries[0]
 
 
 def test_renewal_errors_are_retried_on_the_next_beat():

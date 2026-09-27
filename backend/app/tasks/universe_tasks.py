@@ -27,7 +27,7 @@ from ..services.official_universe_dispatch import (
 )
 from ..wiring.bootstrap import get_provider_snapshot_service, get_stock_universe_service
 from .data_fetch_lock import _lock_key_for_market, serialized_data_fetch_task
-from .lease_renewal import keep_leases_alive
+from .lease_renewal import LeaseNotHeld, keep_leases_alive
 from .transient_database import raise_if_transient_database_error
 
 logger = logging.getLogger(__name__)
@@ -386,14 +386,25 @@ def refresh_official_market_universe(
     # its short lease renewed here for as long as this refresh runs (also when
     # reentrant: a retry reuses the task id and may find its own old lease).
     lease_renewal = ExitStack()
-    lease_renewal.enter_context(
-        keep_leases_alive(
-            [(
-                _lock_key_for_market(_market),
-                lambda: lock.renew(task_id, market=_market),
-            )]
+    try:
+        lease_renewal.enter_context(
+            keep_leases_alive(
+                [(
+                    _lock_key_for_market(_market),
+                    lambda: lock.renew(task_id, market=_market),
+                )]
+            )
         )
-    )
+    except LeaseNotHeld:
+        # A leftover same-id lease expired and was taken before we started.
+        raise self.retry(
+            countdown=_official_lock_retry_delay(getattr(self.request, "retries", 0)),
+            max_retries=_OFFICIAL_UNIVERSE_LOCK_MAX_RETRIES,
+            exc=RuntimeError(
+                f"Market data fetch lock for {_market} was lost before the "
+                "official universe refresh started; retrying"
+            ),
+        )
     try:
         activity_db = SessionLocal()
         try:
