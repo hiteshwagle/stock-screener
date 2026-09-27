@@ -901,3 +901,42 @@ def test_materiality_must_come_from_primary_passages():
     assert result.support_basis == SupportBasis.PRIMARY_EXPLICIT
     assert result.materiality.basis == MaterialityBasis.UNKNOWN
     assert result.materiality.raw_reported["reason"] == "materiality_not_primary"
+
+
+@pytest.mark.parametrize(
+    ("status", "text", "kept", "hold"),
+    [
+        (
+            "discontinued",
+            "The ET-9000 supports HBM testing.",
+            False,
+            "status_not_stated",
+        ),
+        ("discontinued", "We discontinued the ET-9000 in 2025.", True, None),
+        (
+            "discontinued",
+            "The ET-9000 has not been discontinued.",
+            False,
+            "negated_commercial_status",
+        ),
+        ("announced", "The ET-9000 supports HBM testing.", False, "status_not_stated"),
+        ("announced", "We announced the ET-9000 HBM tester.", True, None),
+        ("qualification", "The ET-9000 is in customer qualification.", True, None),
+        ("research", "Legacy X100 development continues.", False, "status_not_stated"),
+    ],
+)
+def test_every_asserted_status_needs_product_bound_wording(status, text, kept, hold):
+    result = validate_candidate(
+        claim(
+            "commercial_status",
+            commercial_status=status,
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    expected = CommercialStatus(status) if kept else CommercialStatus.UNKNOWN
+    assert result.commercial_status == expected
+    if hold:
+        assert hold in result.hold_reasons

@@ -274,3 +274,59 @@ def test_ratio_operands_must_each_state_their_metadata():
         "denominator_scope_not_in_quote",
     } <= set(result.hold_reasons)
     assert not any(h.startswith("numerator_") for h in result.hold_reasons)
+
+
+def test_percent_share_is_checked_as_reported_and_stored_as_a_ratio():
+    result = validate_measure(
+        metric="revenue_share",
+        value=Decimal(30),
+        unit="percent",
+        period="FY2025",
+        scope="segment_or_subsidiary",
+        scope_label="HBM",
+        quote="HBM was 30 percent of revenue in FY2025.",
+        passage_id="p",
+        theme_terms=THEME,
+    )
+    assert not result.held
+    assert (result.value, result.unit) == (Decimal("0.3"), "ratio")
+    assert result.raw_reported["value"] == "30"
+    too_big = validate_measure(
+        metric="revenue_share",
+        value=Decimal(130),
+        unit="percent",
+        period="FY2025",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote="Revenue grew 130 percent in FY2025.",
+        passage_id="p",
+    )
+    assert "share_out_of_range" in too_big.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("label", "quote", "held"),
+    [
+        ("HBM Labs", "HBM Labs revenue was USD 20 million in FY2025", True),
+        (
+            "Memory test",
+            "Memory test segment revenue was USD 20 million in FY2025",
+            False,
+        ),
+    ],
+)
+def test_subsidiary_share_of_parent_needs_consolidation_wording(label, quote, held):
+    result = calculate_materiality(
+        metric="revenue_share",
+        numerator=operand(
+            "20", scope="segment_or_subsidiary", label=label, quote=quote
+        ),
+        denominator=operand(
+            "100",
+            label="Total revenue",
+            quote="Total revenue was USD 100 million in FY2025",
+        ),
+    )
+    hold = "subsidiary_share_of_parent_requires_consolidation_evidence"
+    assert (hold in result.hold_reasons) is held
+    assert (result.value is None) is held

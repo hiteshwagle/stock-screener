@@ -118,9 +118,29 @@ _STAGE = re.compile(
     r"|認定|サンプル|認證|认证|送樣|送样",
     re.IGNORECASE,
 )
+_ANNOUNCED = re.compile(
+    r"\b(announc(?:e|ed|es|ing|ement)|unveil(?:s|ed)?|introduc(?:e|es|ed)|"
+    r"preview(?:s|ed)?)\b|発表|發表|发布|發佈",
+    re.IGNORECASE,
+)
+_RESEARCH = re.compile(
+    r"\b(research|develop(?:s|ed|ing|ment)?|prototypes?|R&D|early[- ]stage)\b"
+    r"|研究|開発|研發|研发",
+    re.IGNORECASE,
+)
+# A plain denial; unlike NEGATION it leaves exit wording ("no longer") alone.
+_DENIAL = re.compile(r"\b(not|never|yet to)\b|していない|尚未|並未|并未", re.IGNORECASE)
 _ACTIVE_STATUSES = {
     CommercialStatus.SHIPPING_OR_OPERATING,
     CommercialStatus.COMMERCIALLY_AVAILABLE,
+}
+_STATUS_WORDING = {
+    CommercialStatus.SHIPPING_OR_OPERATING: (SHIPPING,),
+    CommercialStatus.COMMERCIALLY_AVAILABLE: (AVAILABLE, SHIPPING),
+    CommercialStatus.ANNOUNCED: (_ANNOUNCED,),
+    CommercialStatus.QUALIFICATION: (_STAGE,),
+    CommercialStatus.RESEARCH: (_RESEARCH,),
+    CommercialStatus.DISCONTINUED: (EXIT,),
 }
 _LINKED_KINDS = {
     ClaimKind.PARTICIPATION,
@@ -568,36 +588,39 @@ def _synthesis_scope_holds(
 def _status_guard(
     status: CommercialStatus, quotes: list[str], product_terms, key_tokens
 ) -> tuple[CommercialStatus, list[str], list[str]]:
-    """Keep an active status only when a clause affirmatively states it.
+    """Keep an asserted status only when a clause affirmatively states it.
 
-    Returns the status, holds, and the clauses that state it.
+    Every status but ``unknown`` needs status-specific wording in a clause
+    naming the claimed product. Returns the status, holds, and the clauses
+    that state it.
     """
 
-    if status not in _ACTIVE_STATUSES:
+    if status == CommercialStatus.UNKNOWN:
         return status, [], []
-    wording = (
-        (SHIPPING,)
-        if status == CommercialStatus.SHIPPING_OR_OPERATING
-        else (AVAILABLE, SHIPPING)
-    )
+    wording = _STATUS_WORDING[status]
+    # Active and ended statuses must be stated as fact, not as a plan.
+    factual = status in _ACTIVE_STATUSES or status == CommercialStatus.DISCONTINUED
     every = clauses(quotes)
     # Negation and modality count only in clauses about the status: an
     # unrelated "we may expand capacity" does not veto "ET-9000 is shipping".
     bearing = [c for c in every if any(pattern.search(c) for pattern in wording)]
-    if any(NEGATION.search(c) for c in bearing):
+    # "no longer" is exit wording, not a denial of the discontinuation.
+    denial = _DENIAL if status == CommercialStatus.DISCONTINUED else NEGATION
+    if any(denial.search(c) for c in bearing):
         return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []
     stating = [
         clause
         for clause in bearing
-        if not _MODALITY.search(clause)
+        if not (factual and _MODALITY.search(clause))
         # Always the claimed product: "Legacy X100 is shipping" says nothing
         # about ET-9000, with or without surviving model product terms.
         and _names_product(clause, product_terms, key_tokens)
     ]
     if stating:
         return status, [], stating
-    if any(_MODALITY.search(c) for c in bearing) or any(
-        _STAGE.search(c) for c in every
+    if factual and (
+        any(_MODALITY.search(c) for c in bearing)
+        or any(_STAGE.search(c) for c in every)
     ):
         return CommercialStatus.UNKNOWN, ["modal_commercial_status"], []
     return CommercialStatus.UNKNOWN, ["status_not_stated"], []

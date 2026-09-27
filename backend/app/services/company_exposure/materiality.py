@@ -143,6 +143,11 @@ _CURRENCY_WORDS = {
     "KRW": ("krw", "₩", "won"),
     "GBP": ("gbp", "£", "pound"),
 }
+# Wording that places a figure inside the consolidated reporting entity.
+_CONSOLIDATED = re.compile(
+    r"\b(segments?|consolidated)\b|セグメント|連結|分部|合併|合并",
+    re.IGNORECASE,
+)
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
@@ -230,16 +235,25 @@ def validate_measure(
             period_evidence=period_evidence,
         )
     )
-    if metric.endswith("_share") and not (Decimal(0) <= value <= Decimal(1)):
-        holds.append("share_out_of_range")
+    # A share quoted as a percentage ("30 percent of revenue") is checked as
+    # reported, then stored as a ratio; the original number stays in the
+    # operand and raw_reported.
+    percent = (unit or "").casefold() in _PERCENT_UNITS
+    stored_value, stored_unit = value, unit
+    if metric.endswith("_share"):
+        bound = Decimal(100) if percent else Decimal(1)
+        if not (Decimal(0) <= value <= bound):
+            holds.append("share_out_of_range")
+        elif percent:
+            stored_value, stored_unit = value / Decimal(100), "ratio"
     theme_specific = bool(scope_label) and any(
         term.casefold() in scope_label.casefold() for term in theme_terms
     )
     return MaterialityMeasureResult(
         basis=MaterialityBasis.DISCLOSED,
         metric=metric,
-        value=value,
-        unit=unit,
+        value=stored_value,
+        unit=stored_unit,
         currency=currency,
         period=period,
         reporting_scope=scope,
@@ -355,10 +369,13 @@ def calculate_materiality(
         and denominator.scope != "issuer_consolidated"
     ):
         holds.append("scope_mismatch")
+    # A segment or subsidiary figure over the consolidated parent needs the
+    # numerator's own wording to show it is a consolidated segment; the
+    # model-chosen label ("HBM Labs") says nothing about consolidation.
     if (
         numerator.scope == "segment_or_subsidiary"
         and denominator.scope == "issuer_consolidated"
-        and ("subsidiary" in _norm(numerator.label))
+        and not _CONSOLIDATED.search(numerator.quote or "")
     ):
         holds.append("subsidiary_share_of_parent_requires_consolidation_evidence")
     result = compatible_ratio(
