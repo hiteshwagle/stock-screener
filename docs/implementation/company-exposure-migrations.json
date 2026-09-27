@@ -15,7 +15,7 @@
       "filename": "20260925_0059_exposure_research_resources.py",
       "revision": "20260925_0059",
       "parent": "20260925_0058",
-      "sha256": "8c750436b5721ee786853fe05d74feae93abc5e881c48fc18532388f6cd85d76",
+      "sha256": "d407ea48e0a16fd1ff02fa822a8bfa5901554b788f1e757364e80edb65d67ea5",
       "note": "Also adds fk_cx_derivative_attempt from passage derivatives to provider attempts."
     },
     {

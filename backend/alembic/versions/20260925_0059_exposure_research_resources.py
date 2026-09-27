@@ -136,6 +136,7 @@ def upgrade():
         sa.Column("economic_theme_id", sa.Uuid(), nullable=False),
         sa.Column("market", sa.String(length=8), nullable=True),
         sa.Column("supplied_links", sa.JSON(), nullable=False),
+        sa.Column("supplied_cik", sa.String(10), nullable=True),
         sa.Column("requested_limits", sa.JSON(), nullable=False),
         sa.Column("policy_revision_ids", sa.JSON(), nullable=False),
         sa.Column("trigger_origin", sa.String(length=80), nullable=False),

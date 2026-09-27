@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -10,6 +11,7 @@ from app.domain.company_exposure.contracts import (
     CommercialStatus,
     Conclusion,
     EvidenceRole,
+    MaterialityBasis,
     SupportBasis,
 )
 from app.services.company_exposure.claims import (
@@ -129,10 +131,12 @@ def test_negated_premise_cannot_carry_a_synthesis_link():
     ("text", "basis"),
     [
         (
-            "We exited the HBM test equipment business in June 2025.",
+            "We exited the ET-9000 HBM test equipment business in June 2025.",
             SupportBasis.PRIMARY_EXPLICIT,
         ),
         ("The ET-9000 supports HBM testing.", SupportBasis.INFERRED_UNVERIFIED),
+        # An exit of another product does not end ET-9000 exposure.
+        ("We discontinued the legacy X100 product.", SupportBasis.INFERRED_UNVERIFIED),
     ],
 )
 def test_exposure_end_needs_explicit_exit_wording(text, basis):
@@ -823,3 +827,33 @@ def test_synthesis_freshness_follows_link_bearing_premises():
     )
     assert result.support_basis == SupportBasis.PRIMARY_SYNTHESIS
     assert result.supported_as_of == old
+
+
+def test_materiality_must_name_the_assessed_exposure():
+    link = "The ET-9000 supports HBM testing."
+    total = "Total revenue was USD 20 million in FY2024."
+    shares = "ET-9000 revenue was USD 5 million in FY2024."
+
+    def measured(quote):
+        return validate_candidate(
+            claim(
+                support=[{"ref": "P1", "quote": link}],
+                materiality={
+                    "type": "disclosed",
+                    "metric": "revenue",
+                    "value": "20" if quote == total else "5",
+                    "unit": "USD_million",
+                    "currency": "USD",
+                    "period": "FY2024",
+                    "ref": "P2",
+                    "quote": quote,
+                },
+            ),
+            evidence(item("P1", link), item("P2", quote)),
+            SCOPE,
+        ).materiality
+
+    unrelated = measured(total)
+    assert unrelated.basis == MaterialityBasis.UNKNOWN
+    assert unrelated.raw_reported["reason"] == "materiality_not_bound_to_exposure"
+    assert measured(shares).value == Decimal(5)

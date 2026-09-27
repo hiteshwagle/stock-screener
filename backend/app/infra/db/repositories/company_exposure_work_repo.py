@@ -117,6 +117,7 @@ class CompanyExposureWorkRepository:
         issuer_id: UUID | None = None,
         market: str | None = None,
         supplied_links: list | None = None,
+        supplied_cik: str | None = None,
         limits: ResearchLimits | None = None,
         policy_revision_ids: list | None = None,
         trigger_origin: str = "requested",
@@ -136,6 +137,7 @@ class CompanyExposureWorkRepository:
             "economic_theme_id": economic_theme_id,
             "market": market,
             "supplied_links": list(supplied_links or []),
+            "supplied_cik": supplied_cik,
             "parent_request_id": None if parent is None else parent.id,
         }
         key = (
@@ -166,6 +168,7 @@ class CompanyExposureWorkRepository:
                     economic_theme_id=economic_theme_id,
                     market=market,
                     supplied_links=list(supplied_links or []),
+                    supplied_cik=supplied_cik,
                     requested_limits=default_root_budgets(limits),
                     policy_revision_ids=[str(v) for v in (policy_revision_ids or [])],
                     trigger_origin=trigger_origin,

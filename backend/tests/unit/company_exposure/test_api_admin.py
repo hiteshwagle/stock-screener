@@ -129,6 +129,24 @@ async def test_reused_idempotency_key_for_another_theme_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_reused_idempotency_key_with_a_corrected_cik_conflicts(
+    api, db_session, subject
+):
+    body = _body(subject, supplied_cik="1234567")
+    first = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=body)
+    padded = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**body, "supplied_cik": "0001234567"}
+    )
+    assert (first.status_code, padded.status_code) == (202, 200)
+    corrected = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**body, "supplied_cik": "7654321"}
+    )
+    assert corrected.status_code == 409
+    assert corrected.json()["detail"]["code"] == "idempotency_key_reused"
+    assert _requests(db_session) == 1
+
+
+@pytest.mark.asyncio
 async def test_admin_request_is_queued_once_and_recorded_with_trusted_identity(
     api, db_session, subject
 ):

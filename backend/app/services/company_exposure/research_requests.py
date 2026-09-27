@@ -20,6 +20,7 @@ from app.domain.company_exposure.contracts import (
     RESEARCH_STAGES,
     ResearchMode,
     content_hash,
+    normalized_identifier,
     utc_now,
 )
 from app.infra.db.repositories.company_exposure_work_repo import (
@@ -132,6 +133,10 @@ class ResearchRequests:
                 security_id=security.id,
                 market=security.market,
                 supplied_links=list(request.supplied_links),
+                # A corrected CIK under a reused key is a different request.
+                supplied_cik=normalized_identifier("US", "cik", request.supplied_cik)[2]
+                if request.supplied_cik
+                else None,
                 limits=self.config.limits,
             )
         except IdempotencyKeyReused as exc:

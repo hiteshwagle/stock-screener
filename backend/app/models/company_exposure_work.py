@@ -119,6 +119,8 @@ class ExposureResearchRequest(Base):
     )
     market = Column(String(8), nullable=True)
     supplied_links = Column(JSON, nullable=False)
+    # Normalized administrator-supplied CIK; part of the idempotent payload.
+    supplied_cik = Column(String(10), nullable=True)
     requested_limits = Column(JSON, nullable=False)
     policy_revision_ids = Column(JSON, nullable=False)
     trigger_origin = Column(String(80), nullable=False)

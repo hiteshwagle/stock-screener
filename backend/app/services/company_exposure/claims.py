@@ -508,13 +508,41 @@ def _customer_clauses(
     ]
 
 
+def _names_product(text: str, product_terms, key_tokens) -> bool:
+    """Whether text names the claimed product (a term or a key token)."""
+
+    return bool(_tokens(text) & key_tokens) or any(
+        t.casefold() in text.casefold() for t in product_terms if t
+    )
+
+
+def _bound_measure(measure, texts: list[str], product_terms, key_tokens, scope):
+    """A usable measure only when its own wording names the exposure.
+
+    "Total revenue was USD 20 million" beside an HBM claim is not a measure
+    of that exposure, however well it is grounded.
+    """
+
+    if (
+        measure is None
+        or measure.held
+        or measure.value is None
+        and not (measure.qualitative_label)
+    ):
+        return measure
+    joined = " ".join(t for t in texts if t)
+    if measure.theme_specific or _names_product(joined, product_terms, key_tokens):
+        return measure
+    if any(t and t.casefold() in joined.casefold() for t in scope.theme_terms):
+        return measure
+    return unknown_materiality("materiality_not_bound_to_exposure")
+
+
 def _synthesis_scope_holds(
     spec: dict, links, scope: AssessmentScope, product_terms, key_tokens
 ) -> list[str]:
     def names_product(text: str) -> bool:
-        return bool(_tokens(text) & key_tokens) or any(
-            t.casefold() in text.casefold() for t in product_terms
-        )
+        return _names_product(text, product_terms, key_tokens)
 
     def names_issuer(text: str) -> bool:
         folded = text.casefold().strip()
@@ -803,7 +831,13 @@ def validate_candidate(
         if kind in _AFFIRMATIVE_KINDS:
             bearing = [c for c in relationship if affirmed(c)]
         elif kind == ClaimKind.EXPOSURE_END:
-            bearing = [q for q in primary_quotes if EXIT.search(q)]
+            # The exit must be of the claimed product: "We discontinued the
+            # legacy X100" does not end ET-9000 exposure.
+            bearing = [
+                c
+                for c in clauses(primary_quotes)
+                if EXIT.search(c) and _names_product(c, product_terms, key_tokens)
+            ]
         if kind in _LINKED_KINDS and not relationship:
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("cooccurrence_only")
@@ -816,9 +850,7 @@ def validate_candidate(
             # support must not become a supported exposure.
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("negated_support")
-        elif kind == ClaimKind.EXPOSURE_END and not any(
-            EXIT.search(q) for q in primary_quotes
-        ):
+        elif kind == ClaimKind.EXPOSURE_END and not bearing:
             # A verified exit holds every related claim, so it needs explicit
             # exit, disposal or discontinuation wording, not any citation.
             basis = SupportBasis.INFERRED_UNVERIFIED
@@ -873,6 +905,19 @@ def validate_candidate(
         ]
 
     materiality, _ = _materiality(raw.get("materiality"), evidence, scope)
+    spec = raw.get("materiality") or {}
+    measure_texts = [
+        spec.get("quote", ""),
+        spec.get("scope_label") or "",
+        *(
+            (spec.get(role) or {}).get(field) or ""
+            for role in ("numerator",)
+            for field in ("quote", "label")
+        ),
+    ]
+    materiality = _bound_measure(
+        materiality, measure_texts, product_terms, key_tokens, scope
+    )
     if kind == ClaimKind.MATERIALITY and materiality is None:
         materiality = unknown_materiality("no_materiality_disclosed")
 
