@@ -101,3 +101,34 @@ AVAILABLE = re.compile(
     r"|販売|発売|提供|上市|推出|銷售|销售|供貨|供货",
     re.IGNORECASE,
 )
+
+
+# A product or activity serving an application ("supports HBM testing",
+# "designed for AI servers", "HBM向け"). Co-occurrence alone ("ET-9000 revenue
+# and HBM demand both increased") asserts no relationship.
+SERVES = re.compile(
+    r"\b(support(?:s|ed|ing)?|test(?:s|ed|ing|er|ers)?|(?:designed|built|optimi[sz]ed|"
+    r"qualified|certified|intended|used)\s+(?:for|in|with|by)|uses?|enabl(?:e|es|ed|ing)|"
+    r"serv(?:e|es|ed|ing)|target(?:s|ed|ing)?|power(?:s|ed|ing)?|deploy(?:s|ed|ing)?|"
+    r"appl(?:y|ies|ied)\s+to|compatible\s+with|address(?:es|ed|ing)?|inspect(?:s|ed|ing|ion)?|"
+    r"measur(?:e|es|ed|ing)|packag(?:e|es|ed|ing)|assembl(?:e|es|ed|y|ing))\b"
+    r"|向け|対応|用途|用於|用于|適用|适用|支持|支援|測試|测试|テスト|検査|檢測|检测",
+    re.IGNORECASE,
+)
+
+# The issuer offering a product ("We sell the ET-9000", "our ET-9000 line").
+OFFERS = re.compile(
+    r"\b(offer(?:s|ed|ing)?|sell(?:s|ing)?|sold|ship(?:s|ped|ping)?|provid(?:e|es|ed|ing)|"
+    r"suppl(?:y|ies|ied|ying)|market(?:s|ed|ing)?|launch(?:es|ed|ing)?|introduc(?:e|es|ed|ing)|"
+    r"manufactur(?:e|es|ed|ing)|produc(?:e|es|ed|ing|t|ts)|mak(?:e|es|ing)|made|"
+    r"develop(?:s|ed|ing)?|deliver(?:s|ed|ing)?|portfolio|our)\b"
+    r"|販売|提供|製造|生産|出荷|製品|銷售|销售|製造|生產|生产|產品|产品",
+    re.IGNORECASE,
+)
+
+# A segment or subsidiary belonging to the issuer.
+PART_OF = re.compile(
+    r"\b(segments?|subsidiar(?:y|ies)|divisions?|business\s+units?|units?\s+of|part\s+of|"
+    r"wholly[- ]owned|owned\s+by)\b|セグメント|子会社|事業部|部門|分部|子公司",
+    re.IGNORECASE,
+)

@@ -992,3 +992,45 @@ def test_customer_clause_must_name_the_claimed_product():
     )
     assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
     assert "customer_not_stated" in result.hold_reasons
+
+
+def test_cooccurring_product_and_theme_are_not_a_relationship():
+    text = "ET-9000 revenue and HBM demand both increased."
+    result = validate_candidate(
+        claim(statement=text, support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "cooccurrence_only" in result.hold_reasons
+
+
+def test_synthesis_link_needs_wording_for_its_relationship():
+    result = _synthesis("ET-9000", "HBM", "ET-9000 and HBM demand increased.")
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "link_relationship_not_stated" in result.hold_reasons
+
+
+def test_unknown_measure_scope_is_unparseable_not_stored():
+    link = "The ET-9000 supports HBM testing."
+    quote = "ET-9000 revenue was USD 5 million in FY2024."
+    result = validate_candidate(
+        claim(
+            support=[{"ref": "P1", "quote": link}],
+            materiality={
+                "type": "disclosed",
+                "metric": "revenue",
+                "value": "5",
+                "unit": "USD_million",
+                "currency": "USD",
+                "period": "FY2024",
+                "scope": "global",
+                "ref": "P2",
+                "quote": quote,
+            },
+        ),
+        evidence(item("P1", link), item("P2", quote)),
+        SCOPE,
+    )
+    assert result.materiality.basis == MaterialityBasis.UNKNOWN
+    assert result.materiality.raw_reported["reason"] == "materiality_unparseable"

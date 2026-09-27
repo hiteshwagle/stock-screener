@@ -24,12 +24,25 @@ from app.domain.company_exposure.policy import (
     MAX_SYNTHESIS_PRIMARY_PREMISES,
     within_synthesis_bound,
 )
-from app.services.company_exposure.wording import affirmed, clauses, mentions
+from app.services.company_exposure.wording import (
+    OFFERS,
+    PART_OF,
+    SERVES,
+    affirmed,
+    clauses,
+    mentions,
+)
 
 APPLICATION_LINKS = frozenset(
     {"issuer_offers_product", "product_supports_application", "segment_of_issuer"}
 )
 CROSS_COMPANY_LINKS = frozenset({"supplies_to", "customer_of", "manufactures"})
+# Wording each carrying relationship must state, not just two co-occurring ends.
+_RELATIONSHIP_WORDING = {
+    "issuer_offers_product": OFFERS,
+    "product_supports_application": SERVES,
+    "segment_of_issuer": PART_OF,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,11 +104,18 @@ def validate_synthesis(
             for clause in clauses([premise.quote])
             if _mentions(clause, link.source) and _mentions(clause, link.target)
         ]
+        wording = _RELATIONSHIP_WORDING.get(link.relationship)
         if not linking:
             reasons.append("link_not_stated_in_premise")
         elif not any(affirmed(clause) for clause in linking):
             # "ET-9000 does not support HBM" names both ends but denies the link.
             reasons.append("link_negated_in_premise")
+        elif wording is not None and not any(
+            wording.search(clause) and affirmed(clause) for clause in linking
+        ):
+            # "ET-9000 and HBM demand increased" names both ends but states no
+            # support, offer or ownership relationship between them.
+            reasons.append("link_relationship_not_stated")
         if link.relationship in CROSS_COMPANY_LINKS:
             reasons.append("cross_company_link_cannot_carry_application")
         elif link.relationship not in APPLICATION_LINKS:

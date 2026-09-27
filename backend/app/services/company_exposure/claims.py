@@ -74,6 +74,7 @@ from app.services.company_exposure.wording import (
     CUSTOMER,
     EXIT,
     NEGATION,
+    SERVES,
     SHIPPING,
     affirmed,
     clauses,
@@ -294,8 +295,12 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
 
     linking = []
     for clause in clauses(quotes):
-        if any(mentions(clause, t) for t in product_terms) and any(
-            mentions(clause, t) for t in theme_terms
+        # Both ends and a predicate joining them: "ET-9000 revenue and HBM
+        # demand both increased" names both but asserts no relationship.
+        if (
+            any(mentions(clause, t) for t in product_terms)
+            and any(mentions(clause, t) for t in theme_terms)
+            and SERVES.search(clause)
         ):
             linking.append(clause)
     return linking
@@ -631,6 +636,16 @@ def _status_guard(
     return CommercialStatus.UNKNOWN, ["status_not_stated"], []
 
 
+def _measure_scope(value) -> str:
+    """A model-supplied measure scope, validated like the claim's own.
+
+    Anything but a known reporting scope raises ValueError, which makes the
+    measure unparseable (unknown) instead of failing the stored row's check.
+    """
+
+    return ReportingScope(value or ReportingScope.ISSUER_CONSOLIDATED).value
+
+
 def _period_evidence(item: EvidenceItem) -> tuple[str, ...]:
     """The cited document's own period and dates."""
 
@@ -687,7 +702,7 @@ def _materiality(
                     value=parse_decimal(spec["value"]),
                     unit=spec.get("unit", ""),
                     period=spec.get("period", ""),
-                    scope=spec.get("scope", "issuer_consolidated"),
+                    scope=_measure_scope(spec.get("scope")),
                     scope_label=spec.get("scope_label"),
                     quote=quote,
                     passage_id=str(item.passage_id),
@@ -712,7 +727,7 @@ def _materiality(
                         value=parse_decimal(part["value"]),
                         unit=part.get("unit", ""),
                         period=part.get("period", ""),
-                        scope=part.get("scope", "issuer_consolidated"),
+                        scope=_measure_scope(part.get("scope")),
                         label=part.get("label", ""),
                         currency=part.get("currency"),
                         accounting_basis=part.get("accounting_basis"),
