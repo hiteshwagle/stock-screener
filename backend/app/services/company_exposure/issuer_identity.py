@@ -382,6 +382,7 @@ class IssuerIdentityAdapter:
                 raise IssuerIdentityError("stale_proposal")
             for key in proposal.evidence.get("proposed_identifiers", []):
                 key = normalized_identifier(*key)
+                _identifier_lock(self.session, key)
                 owner = self._identifier_owner(key)
                 if owner is not None and owner != proposal.issuer_id:
                     raise IssuerIdentityError("identifier_owned_by_other_issuer")
@@ -446,6 +447,10 @@ class IssuerIdentityAdapter:
             if match.value is None
             else normalized_identifier(match.market, match.scheme, match.value)
         )
+        if key is not None:
+            # Decide ownership only while holding the identifier: a concurrent
+            # resolution of another listing to it waits, then sees its owner.
+            _identifier_lock(self.session, key)
         if reason is None:
             owner = self._identifier_owner(key)
             current = self.current_link(security.id)

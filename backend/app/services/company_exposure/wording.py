@@ -76,6 +76,19 @@ def affirmed(clause: str) -> bool:
     return not NEGATION.search(clause)
 
 
+_NO_LONGER = re.compile(r"\bno longer\b", re.IGNORECASE)
+
+
+def affirmed_exit(clause: str) -> bool:
+    """An exit the clause asserts rather than denies.
+
+    "no longer offers" is exit wording, not a negation of it; "has not
+    discontinued" denies the exit.
+    """
+
+    return not NEGATION.search(_NO_LONGER.sub(" ", clause))
+
+
 # Wording that asserts a commercial relationship with a counterparty.
 CUSTOMER = re.compile(
     r"\b(customers?|clients?|suppl(?:y|ies|ied|ier|iers|ying)|sell(?:s|ing)?|sold|"
@@ -139,6 +152,13 @@ ISSUER_SUBJECT = re.compile(r"\b(we|our\s+company|the\s+company)\b", re.IGNORECA
 # CJK wording is verb-final ("当社はHBMを製造"): subject and verb anywhere.
 PRODUCES_CJK = re.compile(r"製造|生産|生產|生产|販売|銷售|销售|出荷")
 ISSUER_SUBJECT_CJK = re.compile(r"当社|弊社|本公司|我们|我們|本集團|本集团")
+# CJK clauses are split into comma-delimited segments; a segment naming
+# another party or an application ("customers use ... to produce HBM",
+# "equipment for HBM production") is someone else's production.
+CJK_SEGMENT = re.compile(r"[，、,;；：:]")
+CJK_OTHER_ACTOR = re.compile(
+    r"客户|客戶|顧客|お客様|用户|用戶|使用|用于|用於|用来|用來|向け|のための|用の"
+)
 
 # A segment or subsidiary belonging to the issuer.
 PART_OF = re.compile(

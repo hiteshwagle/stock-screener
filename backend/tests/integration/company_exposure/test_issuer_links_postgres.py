@@ -116,3 +116,53 @@ def test_concurrent_revisions_of_one_identifier_get_distinct_numbers():
         == 2
     )
     check.close()
+
+
+def test_two_listings_resolved_to_one_new_identifier_are_not_both_accepted():
+    from time import sleep
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = factory()
+    securities = [make_security(session, symbol) for symbol in ("TWINA", "TWINB")]
+    session.commit()
+    session.close()
+    barrier = Barrier(2)
+
+    def accept(security):
+        worker = factory()
+        try:
+            flush = worker.flush
+
+            def slow_flush(*args, **kwargs):
+                # Widen the window between the ownership read and the writes.
+                sleep(0.3)
+                return flush(*args, **kwargs)
+
+            worker.flush = slow_flush
+            match = RegistryMatch(
+                security_id=security.id,
+                market="US",
+                scheme="cik",
+                value="4242",
+                candidate_count=1,
+                ticker_confirmed=True,
+                matched_ticker=security.symbol,
+                registry_capture_revision_id=None,
+                official_record_capture_revision_id=None,
+            )
+            barrier.wait(timeout=10)
+            ref = IssuerIdentityAdapter(worker).accept_registry_match(
+                match, SERVICE_PRINCIPAL
+            )
+            worker.commit()
+            return ref
+        finally:
+            worker.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        refs = list(executor.map(accept, securities))
+
+    # The second decision sees the first owner: a cross-listing to review.
+    assert sorted(ref.state for ref in refs) == ["accepted", "review_required"]
+    held = next(ref for ref in refs if ref.state == "review_required")
+    assert held.reason == "cik_linked_to_other_issuer"

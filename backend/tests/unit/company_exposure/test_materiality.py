@@ -446,3 +446,21 @@ def test_scope_label_words_must_be_whole_words_in_the_quote():
         passage_id="p",
     )
     assert "scope_not_in_quote" in result.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("unit", "held"),
+    [("USD", False), ("customers", True), ("USD_million", True)],
+)
+def test_every_unit_word_must_be_stated_by_the_quote(unit, held):
+    result = validate_measure(
+        metric="revenue",
+        value=Decimal(20),
+        unit=unit,
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote="ET-9000 revenue was 20 USD in FY2024.",
+        passage_id="p",
+    )
+    assert ("unit_not_in_quote" in result.hold_reasons) is held

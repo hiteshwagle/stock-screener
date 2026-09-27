@@ -240,6 +240,10 @@ def test_segment_label_must_be_a_whole_word_of_the_evidence():
             False,
         ),
         ("hbm-manufacturing", "We make equipment used for HBM production.", False),
+        # CJK: the issuer's own segment must produce the theme.
+        ("hbm-manufacturing", "本公司生产HBM产品。", True),
+        ("hbm-manufacturing", "本公司销售设备，客户使用这些设备生产HBM。", False),
+        ("hbm-manufacturing", "本公司销售用于生产HBM的设备。", False),
         # The direct path is only for a key that names the theme.
         ("et-9000", "We manufacture HBM products.", False),
     ],
@@ -302,6 +306,29 @@ def test_materiality_claim_is_dated_by_the_passage_its_measure_rests_on():
     )
     assert result.materiality.basis == MaterialityBasis.DISCLOSED
     assert result.supported_as_of == old_filing
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ("We no longer offer the ET-9000.", True),
+        # A denied exit must not end the exposure.
+        ("We have not discontinued the ET-9000.", False),
+    ],
+)
+def test_exit_wording_must_assert_the_exit(text, kept):
+    result = validate_candidate(
+        claim(
+            "exposure_end",
+            commercial_status="discontinued",
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.verified is kept
+    assert ("exit_not_stated" in result.hold_reasons) is not kept
 
 
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():

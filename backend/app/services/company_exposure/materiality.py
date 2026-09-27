@@ -150,6 +150,11 @@ _CONSOLIDATED = re.compile(
     re.IGNORECASE,
 )
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
+# Unit words checked by the percent and scale rules above, or unitless.
+_UNIT_HANDLED = frozenset(
+    {"ratio", "percent", "pct", "percentage", "per", "cent", "mn", "mm", "bn", "k"}
+    | set(_SCALE_WORDS)
+)
 # Wording that marks a figure as adjusted rather than as reported under the
 # filing's accounting standard.
 _ADJUSTED = re.compile(
@@ -258,6 +263,17 @@ def _grounding_holds(
         holds.append("unit_not_in_quote")
     for scale, patterns in _SCALE_WORDS.items():
         if scale in unit_folded and not any(re.search(p, text) for p in patterns):
+            holds.append("unit_not_in_quote")
+    # Every other unit word must be stated too: "20 USD" is not 20 customers.
+    for word in _WORD.findall(unit_folded):
+        if word in _UNIT_HANDLED:
+            continue
+        currency_words = _CURRENCY_WORDS.get(word.upper())
+        if currency_words is not None:
+            grounded = any(w in text for w in currency_words)
+        else:
+            grounded = mentions(text, word)
+        if not grounded:
             holds.append("unit_not_in_quote")
     if currency:
         words = _CURRENCY_WORDS.get(currency.upper(), (currency.casefold(),))

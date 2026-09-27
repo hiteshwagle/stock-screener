@@ -71,6 +71,8 @@ from app.services.company_exposure.synthesis import (
 )
 from app.services.company_exposure.wording import (
     AVAILABLE,
+    CJK_OTHER_ACTOR,
+    CJK_SEGMENT,
     CUSTOMER,
     EXIT,
     ISSUER_SUBJECT,
@@ -81,6 +83,7 @@ from app.services.company_exposure.wording import (
     SERVES,
     SHIPPING,
     affirmed,
+    affirmed_exit,
     clauses,
     mentions,
 )
@@ -337,10 +340,14 @@ def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
 
     found = []
     for clause in clauses(quotes):
-        if (
-            PRODUCES_CJK.search(clause)
-            and ISSUER_SUBJECT_CJK.search(clause)
-            and any(mentions(clause, t) for t in theme_terms)
+        # Verb-final CJK wording ("当社はHBMを製造"): the issuer, the verb
+        # and the theme share one segment that names no other party or use.
+        if any(
+            PRODUCES_CJK.search(segment)
+            and ISSUER_SUBJECT_CJK.search(segment)
+            and not CJK_OTHER_ACTOR.search(segment)
+            and any(mentions(segment, t) for t in theme_terms)
+            for segment in CJK_SEGMENT.split(clause)
         ):
             found.append(clause)
             continue
@@ -998,7 +1005,9 @@ def validate_candidate(
             bearing = [
                 c
                 for c in clauses(primary_quotes)
-                if EXIT.search(c) and _names_product(c, product_terms, key_tokens)
+                if EXIT.search(c)
+                and affirmed_exit(c)
+                and _names_product(c, product_terms, key_tokens)
             ]
         if kind in _LINKED_KINDS and not relationship:
             basis = SupportBasis.INFERRED_UNVERIFIED
