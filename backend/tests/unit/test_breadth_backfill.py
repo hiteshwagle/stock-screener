@@ -998,24 +998,60 @@ def test_backfill_streams_prices_one_batch_at_a_time(monkeypatch):
     assert sizes == [2, 2, 1]
 
 
-def test_backfill_reevaluates_when_leading_dates_are_not_processed(monkeypatch):
-    # No cached session exists on the Saturday, so it cannot be processed and
-    # the feature warm-up must be re-anchored at the first processed date.
+def test_unprocessed_leading_date_does_not_reload_prices(monkeypatch):
+    # No cached session exists on the Saturday, so it cannot be processed.
+    # Prices are still loaded exactly once: a second load could re-fetch
+    # from providers or see different cached data than the first pass.
     saturday = date(2026, 3, 7)
     processed = [date(2026, 3, 12), date(2026, 3, 13)]
 
     result, rows, accumulators = _run_streaming_backfill(
         monkeypatch, [saturday, *processed], batch_size=2
     )
-    direct, direct_rows, direct_accumulators = _run_streaming_backfill(
+    _, direct_rows, _ = _run_streaming_backfill(
         monkeypatch, processed, batch_size=2
     )
 
     assert result["error_dates"] == [saturday.isoformat()]
-    assert [dates for dates, _ in accumulators] == [
-        (saturday, *processed),
-        tuple(processed),
-    ]
-    assert [dates for dates, _ in direct_accumulators] == [tuple(processed)]
+    [(dates, sizes)] = accumulators
+    assert dates == (saturday, *processed)
+    assert sizes == [2, 2, 1]
     assert rows == direct_rows
     assert set(rows) == set(processed)
+
+
+def test_contributor_backfill_refuses_dates_without_a_universe(monkeypatch):
+    db = _make_db_session()
+    empty_date, good_date = date(2026, 3, 12), date(2026, 3, 13)
+
+    def snapshots(_db, _market, dates):
+        return {
+            value: BreadthUniverseSnapshot(
+                calculation_date=value,
+                members=(
+                    () if value == empty_date else (BreadthUniverseMember("AAA", "USD"),)
+                ),
+                broad_signature="sig",
+            )
+            for value in dates
+        }
+
+    monkeypatch.setattr(
+        breadth_backfill_module, "build_breadth_universe_snapshots", snapshots
+    )
+    price_cache = MagicMock()
+    calculator = BreadthCalculatorService(db, price_cache)
+
+    with pytest.raises(BreadthContributorBackfillIncomplete, match="2026-03-12"):
+        BreadthBackfillExecutor(calculator).execute(
+            BreadthBackfillPlan(dates=(empty_date, good_date)),
+            policy=DerivedDataExecutionPolicy(
+                mode=DerivedDataExecutionMode.STRICT_CACHE_ONLY,
+                target_kind=DerivedDataTargetKind.HISTORICAL,
+            ),
+            require_complete_cache_coverage=True,
+            contributor_only=True,
+        )
+
+    price_cache.get_many_cached_only_fresh.assert_not_called()
+    assert db.query(MarketBreadthContributorSnapshot).count() == 0

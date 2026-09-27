@@ -526,24 +526,24 @@ def _serialized_data_fetch(task_name: str):
                 )
                 start_time = datetime.now()
 
-                renewals = []
-                if not is_reentrant:
-                    renewals.append((
+                # Renewed even when reentrant: a retried or redelivered task
+                # reuses its id and may hold a leftover lease nobody renews.
+                renewals = [
+                    (
                         _lock_key_for_market(market_value),
                         lambda: lock.renew(task_id, market=market_value),
-                    ))
-                if not workload_reentrant:
-                    renewals.append((
+                    ),
+                    (
                         _market_workload_key(market_value),
                         lambda: coordination.renew_market_workload(
                             task_id, market=market_value
                         ),
-                    ))
-                if not external_reentrant:
-                    renewals.append((
+                    ),
+                    (
                         EXTERNAL_FETCH_GLOBAL_KEY,
                         lambda: coordination.renew_external_fetch(task_id),
-                    ))
+                    ),
+                ]
                 with keep_leases_alive(renewals):
                     result = func(*args, **kwargs)
 

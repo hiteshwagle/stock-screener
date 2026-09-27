@@ -19,6 +19,15 @@ def _wait_for(predicate, timeout=2.0):
     return predicate()
 
 
+def test_renewal_interval_stays_ahead_of_even_a_one_second_lease(monkeypatch):
+    from app.tasks import lease_renewal
+
+    monkeypatch.setattr(lease_renewal.settings, "data_fetch_lock_timeout", 1)
+    assert lease_renewal.lease_renew_interval_seconds() < 1
+    monkeypatch.setattr(lease_renewal.settings, "data_fetch_lock_timeout", 300)
+    assert lease_renewal.lease_renew_interval_seconds() == 100
+
+
 def test_lease_ttl_falls_back_for_missing_or_invalid_settings():
     assert lease_ttl_seconds(120) == 120
     assert lease_ttl_seconds(0) == 300
@@ -97,23 +106,27 @@ def test_serialized_market_workload_renews_its_lease_while_the_body_runs(
 
 @patch("app.tasks.lease_renewal.lease_renew_interval_seconds", return_value=0.01)
 @patch("app.wiring.bootstrap.get_workload_coordination")
-def test_reentrant_market_workload_leaves_renewal_to_the_outer_holder(
+def test_reentrant_market_workload_lease_is_still_renewed(
     mock_get_coordination, _interval
 ):
+    # A Celery retry or redelivery reuses the task id, so a "reentrant" lease
+    # can be a leftover from an earlier attempt that nothing else renews.
     from app.tasks.workload_coordination import serialized_market_workload
 
     coordination = MagicMock()
     coordination.acquire_market_workload.return_value = (True, True)
+    coordination.renew_market_workload.return_value = True
     mock_get_coordination.return_value = coordination
     task = SimpleNamespace(request=SimpleNamespace(id="task-1", retries=0))
 
     @serialized_market_workload("calculate_market_exposure")
     def body(self, market=None):
-        time.sleep(0.05)
+        assert _wait_for(lambda: coordination.renew_market_workload.call_count >= 2)
         return "done"
 
     assert body(task, market="US") == "done"
-    coordination.renew_market_workload.assert_not_called()
+    coordination.renew_market_workload.assert_called_with("task-1", market="US")
+    coordination.release_market_workload.assert_not_called()
 
 
 @patch("app.tasks.lease_renewal.lease_renew_interval_seconds", return_value=0.01)

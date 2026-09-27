@@ -200,6 +200,13 @@ class BreadthBackfillExecutor:
                     unavailable_dates.append(calculation_date)
                 else:
                     universes_by_date[calculation_date] = snapshot
+            if contributor_only and unavailable_dates:
+                # Contributor backfills must cover every requested date or
+                # write nothing; an unavailable date is incomplete coverage.
+                raise BreadthContributorBackfillIncomplete(
+                    "Contributor backfill has no point-in-time universe for: "
+                    + ",".join(value.isoformat() for value in unavailable_dates)
+                )
             ordered_dates = [
                 calculation_date
                 for calculation_date in ordered_dates
@@ -329,22 +336,22 @@ class BreadthBackfillExecutor:
                     valid[symbol] = history
                 yield batch_symbols, cache_misses, valid, invalid
 
-        def new_accumulator(dates: tuple[date, ...]):
-            return calculator.engine.accumulator(
-                market=calculator.market,
-                dates=dates,
-                universes_by_date=universes_by_date,
-                market_policy=calculator.market_policy,
-            )
-
         # One streaming pass records coverage outcomes and evaluates every
         # planned date. Only one batch of price histories is alive at a time.
+        # The feature warm-up is anchored at the first planned date, so a date
+        # that later proves unprocessable never forces a second load (which
+        # could re-fetch from providers or see different cached data).
         outcomes_by_date = {
             calculation_date: BreadthOutcomeCounter()
             for calculation_date in ordered_dates
         }
         incomplete_target_session_dates: set[date] = set()
-        accumulator = new_accumulator(tuple(ordered_dates))
+        accumulator = calculator.engine.accumulator(
+            market=calculator.market,
+            dates=tuple(ordered_dates),
+            universes_by_date=universes_by_date,
+            market_policy=calculator.market_policy,
+        )
         for batch_symbols, cache_misses, valid, invalid in price_batches():
             price_coverage.record_batch(batch_symbols, cache_misses)
             for symbol in batch_symbols:
@@ -388,18 +395,6 @@ class BreadthBackfillExecutor:
                 )
             )
         ]
-        if processed_dates and processed_dates[0] != ordered_dates[0]:
-            # Feature warm-up is anchored at the first processed date, and the
-            # recursive ATR depends on where its window starts. When leading
-            # dates dropped out, evaluate again over the processed window so
-            # results match a request for exactly those dates.
-            accumulator = new_accumulator(tuple(processed_dates))
-            for _, _, valid, _ in price_batches():
-                accumulator.add_prices(
-                    calculator._prices_for_feature_window(
-                        valid, tuple(processed_dates)
-                    )
-                )
         contributor_metadata_available = True
         try:
             contributor_metadata_by_date = BreadthContributorMetadataLoader.historical(

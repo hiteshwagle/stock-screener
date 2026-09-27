@@ -40,8 +40,11 @@ def lease_ttl_seconds(value: object = None) -> int:
 
 
 def lease_renew_interval_seconds() -> float:
-    """Renew three times per TTL so one missed beat never drops the lease."""
-    return max(1.0, lease_ttl_seconds() / 3)
+    """Renew three times per TTL so one missed beat never drops the lease.
+
+    No lower bound: even a one-second TTL must be renewed before it expires.
+    """
+    return lease_ttl_seconds() / 3
 
 
 @contextmanager
@@ -77,7 +80,7 @@ def keep_leases_alive(
                     logger.warning("Lease renewal failed for %s", name, exc_info=True)
                     continue
                 if not held:
-                    logger.warning(
+                    logger.error(
                         "Lease %s is no longer held by this task; stopped renewing",
                         name,
                     )

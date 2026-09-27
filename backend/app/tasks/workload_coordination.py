@@ -202,18 +202,18 @@ def serialized_market_workload(task_name: str):
                     "running_task_id": holder.get("task_id"),
                 }
 
-            renewals = (
-                []
-                if is_reentrant
-                else [
-                    (
-                        _market_workload_key(market_value),
-                        lambda: coordination.renew_market_workload(
-                            task_id, market=market_value
-                        ),
-                    )
-                ]
-            )
+            # Renew on the reentrant path too: a Celery retry or redelivery
+            # reuses the task id, so the "reentrant" lease may be a leftover
+            # from a previous attempt with no renewer of its own. Renewing an
+            # already-renewed lease is idempotent.
+            renewals = [
+                (
+                    _market_workload_key(market_value),
+                    lambda: coordination.renew_market_workload(
+                        task_id, market=market_value
+                    ),
+                )
+            ]
             try:
                 with keep_leases_alive(renewals):
                     return func(*args, **kwargs)

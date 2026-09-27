@@ -383,17 +383,17 @@ def refresh_official_market_universe(
         )
 
     # The lock is taken directly rather than through the decorator, so keep
-    # its short lease renewed here for as long as this refresh runs.
+    # its short lease renewed here for as long as this refresh runs (also when
+    # reentrant: a retry reuses the task id and may find its own old lease).
     lease_renewal = ExitStack()
-    if not is_reentrant:
-        lease_renewal.enter_context(
-            keep_leases_alive(
-                [(
-                    _lock_key_for_market(_market),
-                    lambda: lock.renew(task_id, market=_market),
-                )]
-            )
+    lease_renewal.enter_context(
+        keep_leases_alive(
+            [(
+                _lock_key_for_market(_market),
+                lambda: lock.renew(task_id, market=_market),
+            )]
         )
+    )
     try:
         activity_db = SessionLocal()
         try:
