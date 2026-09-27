@@ -172,6 +172,9 @@ class CurrentClaim:
     role: str | None = None
     # ``measure_signature`` of the selected revision's usable measure.
     measure: tuple | None = None
+    source_publication_time: datetime | None = None
+    # Primary support includes an amendment for its reporting period.
+    amendment: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,12 +228,35 @@ def _primary(basis, conclusion) -> bool:
     return is_primary_support(basis, conclusion, allow_disputed=True)
 
 
+def _corrects(later, earlier) -> bool:
+    """``later`` rests on an amendment filed after the support of ``earlier``
+    for the same reporting period (a 10-K/A over its original 10-K).
+
+    Both share the period's date anchor, so the date alone cannot order them.
+    """
+
+    published = as_utc(later.source_publication_time)
+    prior = as_utc(earlier.source_publication_time)
+    return bool(
+        later.amendment
+        and later.reporting_period
+        and later.reporting_period == earlier.reporting_period
+        and published is not None
+        and prior is not None
+        and published > prior
+    )
+
+
 def _rank(candidate: VerifiedClaim) -> tuple:
     date = as_utc(candidate.supported_as_of)
+    published = as_utc(candidate.source_publication_time)
     return (
         _primary(candidate.support_basis, candidate.conclusion),
         date is not None,
         date.timestamp() if date else 0,
+        # At the same date, the latest amendment outranks what it corrects.
+        candidate.amendment,
+        published.timestamp() if candidate.amendment and published else 0,
         len(candidate.evidence),
         candidate_hash(candidate),
     )
@@ -299,6 +325,8 @@ def _candidates_disagree(a: VerifiedClaim, b: VerifiedClaim) -> bool:
     date = as_utc(a.supported_as_of)
     if date is None or date != as_utc(b.supported_as_of):
         return False
+    if _corrects(a, b) or _corrects(b, a):
+        return False  # a correction, not a disagreement
     return _says_differently(a, b, _measure(a), _measure(b))
 
 
@@ -324,6 +352,10 @@ def _decide(
     if prior_date is not None and date < prior_date:
         return SelectionAction.CARRIED_FORWARD, "older_than_selected"
     if prior_date is not None and date == prior_date:
+        if _corrects(best, existing):
+            return SelectionAction.REPLACED, "amendment_supersedes"
+        if _corrects(existing, best):
+            return SelectionAction.CARRIED_FORWARD, "superseded_by_amendment"
         if _says_differently(best, existing, _measure(best), existing.measure):
             return SelectionAction.CARRIED_FORWARD, SAME_DATE_DISAGREEMENT
         return SelectionAction.CARRIED_FORWARD, "same_substantive_date"

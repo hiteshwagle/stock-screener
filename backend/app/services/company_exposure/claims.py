@@ -212,6 +212,8 @@ class EvidenceItem:
     effective_at: datetime | None = None
     reporting_period: str | None = None
     language: str | None = None
+    # The filing corrects an earlier one for the same period (e.g. a 10-K/A).
+    amends_prior: bool = False
 
     @property
     def substantive_at(self) -> datetime | None:
@@ -245,6 +247,9 @@ class VerifiedClaim:
     reporting_period: str | None = None
     source_publication_time: datetime | None = None
     rejected_citations: tuple[str, ...] = ()
+    # Its primary support for its reporting period includes an amendment of
+    # an earlier filing for that period.
+    amendment: bool = False
 
     @property
     def verified(self) -> bool:
@@ -261,6 +266,8 @@ class ClaimReviewBatch:
     retryable: bool = False
     input_hash: str | None = None
     retry_after_seconds: float | None = None
+    # Provider result of output that failed validation (never reused).
+    result_id: UUID | None = None
 
 
 def _normalize(text: str) -> str:
@@ -1022,6 +1029,11 @@ def validate_candidate(
         reporting_period=max(periods) if periods else None,
         source_publication_time=max(publications) if publications else None,
         rejected_citations=tuple(rejected),
+        amendment=bool(periods)
+        and any(
+            item.amends_prior and item.reporting_period == max(periods)
+            for item in dates
+        ),
     )
 
 
@@ -1059,6 +1071,7 @@ def evidence_item_from_rows(ref: str, passage, revision, document) -> EvidenceIt
         else effective,
         reporting_period=revision.reporting_period,
         language=passage.language,
+        amends_prior=bool((revision.correction_identity or {}).get("is_amendment")),
     )
 
 
@@ -1135,7 +1148,14 @@ class ClaimVerifier:
         provider_input = self.build_input(
             evidence, scope, root_request_id=root_request_id, request_id=request_id
         )
-        result = self.runner.run(provider_input)
+        result = self.runner.run(
+            provider_input,
+            # Output that fails validation is recorded but never cached, or
+            # one bad response would be reused for this evidence forever.
+            accept=lambda payload: (
+                not self.validate_payload(payload, evidence, scope).rejected
+            ),
+        )
         if result.payload is None:
             return ClaimReviewBatch(
                 pause_reason=result.pause_reason,
@@ -1144,13 +1164,14 @@ class ClaimVerifier:
                 input_hash=provider_input.input_hash,
                 retry_after_seconds=result.retry_after_seconds,
             )
-        return self.validate_payload(
+        batch = self.validate_payload(
             result.payload,
             evidence,
             scope,
             artifact_id=result.artifact_id,
             input_hash=provider_input.input_hash,
         )
+        return replace(batch, result_id=result.result_id)
 
     @staticmethod
     def validate_payload(

@@ -85,7 +85,9 @@ def make_document(db, identity_key: str, *, provider: str = "sec", issuer=None):
     return row
 
 
-def make_revision(db, document, content: bytes, *, published_at=None, period=None):
+def make_revision(
+    db, document, content: bytes, *, published_at=None, period=None, correction=None
+):
     import hashlib
 
     from app.models.company_exposure import ExposureDocumentRevision
@@ -100,7 +102,7 @@ def make_revision(db, document, content: bytes, *, published_at=None, period=Non
         published_at=published_at,
         reporting_period=period,
         first_available_at=FIXED_NOW,
-        correction_identity={},
+        correction_identity=correction or {},
         document_metadata={},
     )
     db.add(row)
@@ -145,6 +147,8 @@ def verified_claim(
     materiality=None,
     statement: str | None = None,
     evidence_role: str = "original_primary",
+    published=None,
+    amendment: bool = False,
 ):
     """A typed ``VerifiedClaim`` as the claim verifier would return it."""
 
@@ -178,7 +182,8 @@ def verified_claim(
         materiality=materiality,
         supported_as_of=supported_as_of,
         reporting_period=period,
-        source_publication_time=supported_as_of,
+        source_publication_time=published or supported_as_of,
+        amendment=amendment,
     )
 
 

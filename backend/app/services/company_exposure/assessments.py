@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.company_exposure.contracts import (
     CoverageItem,
+    EvidenceRole,
     as_utc,
     canonical_json,
     content_hash,
@@ -33,6 +34,8 @@ from app.models.company_exposure import (
     ClaimEvidenceLink,
     ExposureClaim,
     ExposureClaimRevision,
+    ExposureDocumentRevision,
+    ExposurePassage,
     IssuerThemeAssessment,
     MaterialityMeasure,
 )
@@ -217,8 +220,37 @@ class ExposureAssessmentService:
                     claim.id, claim_revision.id
                 )
                 - claim_holds,
+                source_publication_time=as_utc(claim_revision.source_publication_time),
+                amendment=self._rests_on_amendment(claim_revision),
             )
         return current
+
+    def _rests_on_amendment(self, claim_revision: ExposureClaimRevision) -> bool:
+        """Whether primary support for the revision's period is an amendment."""
+
+        if not claim_revision.reporting_period:
+            return False
+        rows = self.session.execute(
+            select(
+                ExposureDocumentRevision.correction_identity,
+                ExposureDocumentRevision.reporting_period,
+            )
+            .join(
+                ExposurePassage,
+                ExposurePassage.document_revision_id == ExposureDocumentRevision.id,
+            )
+            .join(ClaimEvidenceLink, ClaimEvidenceLink.passage_id == ExposurePassage.id)
+            .where(
+                ClaimEvidenceLink.claim_revision_id == claim_revision.id,
+                ClaimEvidenceLink.direction == "supporting",
+                ClaimEvidenceLink.evidence_role == EvidenceRole.ORIGINAL_PRIMARY.value,
+            )
+        ).all()
+        return any(
+            (identity or {}).get("is_amendment")
+            and period == claim_revision.reporting_period
+            for identity, period in rows
+        )
 
     # ------------------------------------------------------------ selection
     def assess(self, attempt: AssessmentAttemptInput) -> AssessmentResult:

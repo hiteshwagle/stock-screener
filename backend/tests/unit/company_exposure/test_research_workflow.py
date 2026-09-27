@@ -14,6 +14,7 @@ from app.models.company_exposure import (
     ExposureClaimRevision,
     ExposureDocument,
     ExposureDocumentRevision,
+    ResearchArtifact,
     ResearchProviderAttempt,
     ResearchWorkItem,
 )
@@ -406,6 +407,31 @@ def test_rejected_verifier_output_is_a_coverage_gap(harness, db_session):
         AssessmentRevision, UUID(verified.detail["assessment_revision_id"])
     )
     assert "verifier_output_rejected" in {c["reason"] for c in revision.coverage}
+
+
+def test_rejected_verifier_output_is_never_reused(harness, db_session):
+    harness.serve_sec()
+    harness.go.queue_json({"unexpected": "shape"})
+    harness.request()
+    rejected = harness.run_all()[-1]
+    revision = db_session.get(
+        AssessmentRevision, UUID(rejected.detail["assessment_revision_id"])
+    )
+    # Recorded for audit through its provider result, not as an artifact.
+    refs = revision.input_manifest["model_attempt_refs"]
+    assert [ref.split(":")[0] for ref in refs] == ["result"]
+    assert db_session.execute(select(func.count(ResearchArtifact.id))).scalar() == 0
+
+    # The same evidence is asked again, so one bad response can recover.
+    harness.go.queue_builder(claims_for)
+    harness.request(key="refresh-1", kind="refresh")
+    refreshed = harness.run_all()[-1]
+    assert len(harness.go.requests) == 2
+    revision = db_session.get(
+        AssessmentRevision, UUID(refreshed.detail["assessment_revision_id"])
+    )
+    assert "verifier_output_rejected" not in {c["reason"] for c in revision.coverage}
+    assert db_session.execute(select(func.count(ResearchArtifact.id))).scalar() == 1
 
 
 @pytest.mark.parametrize(

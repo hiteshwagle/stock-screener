@@ -198,6 +198,16 @@ def test_status_wording_must_name_the_whole_product_key():
     assert "status_not_stated" in result.hold_reasons
 
 
+def test_support_from_an_amended_filing_marks_the_claim_as_an_amendment():
+    text = "The ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim(support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text, amends_prior=True, reporting_period="2024-12-31")),
+        SCOPE,
+    )
+    assert result.verified and result.amendment
+
+
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
     text = "The ET-9000 supports HBM testing."
     grounded = validate_candidate(

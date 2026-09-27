@@ -73,6 +73,8 @@ class ArtifactRunResult:
     reused: bool = False
     failure_code: str | None = None
     retry_after_seconds: float | None = None
+    # The provider result behind a payload that was not stored as reusable.
+    result_id: UUID | None = None
 
 
 ClientFactory = Callable[[str, str], OpenCodeGoKimi]
@@ -182,7 +184,19 @@ class SubscriptionArtifactRunner:
             reused=True,
         )
 
-    def run(self, provider_input: ProviderInput) -> ArtifactRunResult:
+    def run(
+        self,
+        provider_input: ProviderInput,
+        *,
+        accept: Callable[[dict], bool] | None = None,
+    ) -> ArtifactRunResult:
+        """Reuse or produce one artifact.
+
+        ``accept`` is the caller's output contract: a payload it refuses is
+        returned once (its provider result stays for audit) but never stored
+        under the reusable key, so the same input is asked again next time.
+        """
+
         existing = self.cached(provider_input)
         if existing is not None:
             return self._reused(existing)
@@ -235,6 +249,16 @@ class SubscriptionArtifactRunner:
                 ResearchProviderResult.attempt_id == ticket.attempt_id
             )
         ).scalar_one()
+        if accept is not None and not accept(output.data):
+            self.commit()
+            return ArtifactRunResult(
+                artifact_id=None,
+                ticket_id=ticket.id,
+                retryable=False,
+                pause_reason=None,
+                payload=output.data,
+                result_id=result.id,
+            )
         artifact = ResearchArtifact(
             operation=provider_input.operation,
             input_hash=provider_input.input_hash,

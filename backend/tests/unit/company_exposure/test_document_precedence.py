@@ -298,3 +298,94 @@ def test_undated_candidate_does_not_displace_an_undated_primary_claim(dossier):
     selected = result.claim("commercial_status")
     assert selected.reason == "undated_candidate"
     assert selected.commercial_status == "shipping_or_operating"
+
+
+FY2024 = "2024-12-31"
+FY2024_ANCHOR = datetime(2024, 12, 31, tzinfo=timezone.utc)
+
+
+def _annual_status(passage, status, *, published, amendment=False):
+    # An original 10-K and its 10-K/A share the period's date anchor.
+    return verified_claim(
+        "commercial_status",
+        passage=passage,
+        supported_as_of=FY2024_ANCHOR,
+        period=FY2024,
+        status=status,
+        published=published,
+        amendment=amendment,
+    )
+
+
+def _amendment_passage(dossier):
+    from tests.fixtures.company_exposure.factory import (
+        make_document,
+        make_passage,
+        make_revision,
+    )
+
+    document = make_document(dossier.db, "sec:10-K/A:dossier", issuer=dossier.issuer)
+    revision = make_revision(
+        dossier.db,
+        document,
+        b"amended annual report",
+        published_at=AMENDED_10K,
+        period=FY2024,
+        correction={"form": "10-K/A", "is_amendment": True},
+    )
+    return make_passage(
+        dossier.db, revision, "We discontinued HBM test equipment in 2024."
+    )
+
+
+def test_amendment_supersedes_its_original_at_the_same_date(dossier):
+    original = _annual_status(
+        dossier.passages["role"], "shipping_or_operating", published=ORIGINAL_10K
+    )
+    dossier.persist(dossier.attempt(original))
+    amended = _annual_status(
+        dossier.passages["exit"], "discontinued", published=AMENDED_10K, amendment=True
+    )
+    result = dossier.service.assess(dossier.attempt(amended))
+    status = result.claim("commercial_status")
+    assert (status.reason, status.commercial_status) == (
+        "amendment_supersedes",
+        "discontinued",
+    )
+    assert result.conflicts == ()
+
+
+def test_original_arriving_after_its_amendment_is_set_aside_without_conflict(
+    dossier,
+):
+    amended = _annual_status(
+        _amendment_passage(dossier),
+        "discontinued",
+        published=AMENDED_10K,
+        amendment=True,
+    )
+    dossier.persist(dossier.attempt(amended))
+    original = _annual_status(
+        dossier.passages["role"], "shipping_or_operating", published=ORIGINAL_10K
+    )
+    result = dossier.service.assess(dossier.attempt(original))
+    status = result.claim("commercial_status")
+    assert (status.reason, status.commercial_status) == (
+        "superseded_by_amendment",
+        "discontinued",
+    )
+    assert result.conflicts == ()
+    assert "conflict" not in status.hold_kinds
+
+
+def test_amendment_and_original_in_one_attempt_select_the_amendment(dossier):
+    original = _annual_status(
+        dossier.passages["role"], "shipping_or_operating", published=ORIGINAL_10K
+    )
+    amended = _annual_status(
+        dossier.passages["exit"], "discontinued", published=AMENDED_10K, amendment=True
+    )
+    result = dossier.service.assess(dossier.attempt(original, amended))
+    status = result.claim("commercial_status")
+    assert status.commercial_status == "discontinued"
+    assert result.conflicts == ()

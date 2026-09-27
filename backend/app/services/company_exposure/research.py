@@ -707,7 +707,10 @@ class ResearchStageRunner:
             if blocked is not None:
                 return blocked
             claims, rejected = batch.claims, batch.rejected
-            artifacts = () if batch.artifact_id is None else (str(batch.artifact_id),)
+            if batch.artifact_id is not None:
+                artifacts = (str(batch.artifact_id),)
+            elif batch.result_id is not None:
+                artifacts = (f"result:{batch.result_id}",)
             if rejected:
                 # Verifier output that failed validation (a bad schema or a
                 # candidate that did not check out) leaves the question open.
