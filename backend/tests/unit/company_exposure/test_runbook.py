@@ -106,6 +106,12 @@ def test_review_required_job_is_resolved_and_resumed(
 
     code, resumed = _run(capsys, ["resume", str(ref.id), "--apply"], **cli_kwargs)
     assert resumed == {"state": "queued", "previous_state": "review_required"}
+    # Nothing is paused any more: a second resume must not re-announce the
+    # job as queued, which would strand it with no claimable work.
+    events = len(harness.requests.repo.events(ref.id))
+    code, again = _run(capsys, ["resume", str(ref.id), "--apply"], **cli_kwargs)
+    assert (code, again["state"]) == (2, "not_paused")
+    assert len(harness.requests.repo.events(ref.id)) == events
     # The CLI resumes on the real clock; the harness claims on its own.
     harness.clock.advance_to(max(harness.clock.now(), datetime.now(timezone.utc)))
     step = harness.step()

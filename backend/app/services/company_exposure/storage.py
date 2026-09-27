@@ -262,12 +262,16 @@ class OriginalStore:
         target = self.path_for(key)
         self.ledger.transition(ticket.reservation_id, ReservationState.DISPATCHED)
         if target.is_file():
-            # Identical content is stored once and never charged twice.
+            # Identical content is stored once and never charged twice. A
+            # file nobody paid for (its writer crashed between rename and
+            # commit) is charged now, so the pool counts the bytes on disk.
+            owed = 0 if self._uncredited_charge(key) else len(data)
             self.ledger.transition(
                 ticket.reservation_id,
                 ReservationState.RECONCILED,
                 dispatch_phase="dispatched",
-                actual_amount=0,
+                actual_amount=owed,
+                detail={"blob_key": key} if owed else None,
             )
             return BlobRef(digest, media_type, len(data), key, deduplicated=True)
         temp_dir = self.root / "tmp"
@@ -309,7 +313,12 @@ class OriginalStore:
 
         path = self.path_for(key)
         if path.is_file():
-            return path.read_bytes()
+            try:
+                return path.read_bytes()
+            except OSError:
+                # Unreadable (permissions, I/O error, GC race): a storage
+                # condition to pause on, not a crash of the stage.
+                raise StorageUnavailable("evidence_unreadable") from None
         tombstone = self.session.execute(
             select(EvidenceTombstoneEvent)
             .where(EvidenceTombstoneEvent.blob_key == key)
@@ -337,7 +346,8 @@ class OriginalStore:
 
         Each charge records its blob key; each GC tombstone records what it
         credited. Crash orphans were never charged (their ticket is
-        released), and an earlier incarnation's charge was already credited.
+        released) until a later identical put adopts them, and an earlier
+        incarnation's charge was already credited.
         """
 
         events = self.session.execute(

@@ -27,7 +27,7 @@ from app.services.company_exposure.markets.us import (
     sec_ticker,
 )
 from app.services.company_exposure.network import PublicDocumentTransport
-from app.services.company_exposure.storage import OriginalStore
+from app.services.company_exposure.storage import OriginalStore, StorageUnavailable
 from tests.fixtures.company_exposure.factory import (
     FakeRateGate,
     FixedClock,
@@ -225,6 +225,25 @@ def test_malformed_registry_json_is_a_retryable_fetch_failure(
     assert (gap.outcome, gap.reason) == (
         CoverageOutcome.FETCH_FAILED,
         "invalid_json_payload",
+    )
+
+
+def test_unreadable_registry_blob_pauses_on_storage(
+    us_resolver, us_adapter, us_security, budget, sec_mock, monkeypatch
+):
+    sec_mock.serve_company_tickers(
+        {"0": {"cik_str": 1234567, "ticker": us_security.symbol, "title": "Example"}}
+    )
+
+    def unreadable(_key):
+        raise StorageUnavailable("evidence_unreadable")
+
+    monkeypatch.setattr(us_adapter.acquisition.store, "read", unreadable)
+    gap = us_resolver.resolve_cik(us_security.id, budget)
+    assert (gap.outcome, gap.reason, gap.detail["cause"]) == (
+        CoverageOutcome.UNAVAILABLE_CAPABILITY,
+        "paused_storage",
+        "evidence_unreadable",
     )
 
 

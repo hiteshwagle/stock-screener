@@ -124,7 +124,8 @@ administrator applies it. To resolve a `review_required` job:
 ```
 
 `resume` re-runs the paused stage; it does not reset the job's cumulative
-budgets.
+budgets. With nothing paused it changes nothing and reports `not_paused`
+(exit code 2).
 
 ## 6. Holds, freshness and uncertain spend
 

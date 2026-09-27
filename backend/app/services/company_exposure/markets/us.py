@@ -43,6 +43,7 @@ from app.services.company_exposure.markets.base import (
     DiscoveryResult,
     DocumentQuery,
 )
+from app.services.company_exposure.storage import StorageUnavailable
 
 SEC_HOSTS = ("www.sec.gov", "data.sec.gov")
 TICKERS_EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
@@ -125,7 +126,8 @@ def recent_filings(submissions: dict) -> FilingRows:
         return FilingRows((), False, "mismatched_filing_arrays")
     count = lengths.pop()
     rows = tuple(
-        {name: columns[name][index] for name in _RECENT_FIELDS} for index in range(count)
+        {name: columns[name][index] for name in _RECENT_FIELDS}
+        for index in range(count)
     )
     return FilingRows(rows, True)
 
@@ -143,7 +145,9 @@ class USDocumentAdapter:
         self.session = session
         self.acquisition = acquisition
         self.user_agent = (user_agent or "").strip()
-        self._json_cache: dict[tuple[UUID | None, str], tuple[CaptureResult, dict | None]] = {}
+        self._json_cache: dict[
+            tuple[UUID | None, str], tuple[CaptureResult, dict | None]
+        ] = {}
 
     # -- plumbing -------------------------------------------------------------
 
@@ -156,7 +160,9 @@ class USDocumentAdapter:
             )
         return None
 
-    def _json_target(self, identity_key: str, url: str, source_kind: str) -> DocumentTarget:
+    def _json_target(
+        self, identity_key: str, url: str, source_kind: str
+    ) -> DocumentTarget:
         return DocumentTarget(
             adapter="us_sec",
             provider="sec",
@@ -197,6 +203,21 @@ class USDocumentAdapter:
                         detail={"identity_key": target.identity_key},
                     ),
                 )
+            except StorageUnavailable as exc:
+                # Fetched but unreadable on disk: pause on storage.
+                payload = None
+                capture = replace(
+                    capture,
+                    coverage=CoverageItem(
+                        route=target.adapter,
+                        outcome=CoverageOutcome.UNAVAILABLE_CAPABILITY,
+                        reason="paused_storage",
+                        detail={
+                            "identity_key": target.identity_key,
+                            "cause": exc.code,
+                        },
+                    ),
+                )
         self._json_cache[key] = (capture, payload)
         return capture, payload
 
@@ -209,7 +230,9 @@ class USDocumentAdapter:
         form = str(raw_metadata["form"])
         filed = raw_metadata.get("filingDate")
         published = (
-            datetime.fromisoformat(filed).replace(tzinfo=timezone.utc) if filed else None
+            datetime.fromisoformat(filed).replace(tzinfo=timezone.utc)
+            if filed
+            else None
         )
         is_amendment = form.endswith("/A")
         return DocumentTarget(
@@ -268,7 +291,9 @@ class USDocumentAdapter:
             )
         budget = budget or JobBudgetRef(root_request_id=None)
         capture, submissions = self._fetch_json(
-            self._json_target(f"sec:submissions:{cik}", sec_submission_url(cik), "filing_index"),
+            self._json_target(
+                f"sec:submissions:{cik}", sec_submission_url(cik), "filing_index"
+            ),
             budget,
         )
         if submissions is None:
@@ -284,7 +309,11 @@ class USDocumentAdapter:
                 )
             )
             return DiscoveryResult(coverage=tuple(coverage))
-        wanted = {form for kind in query.document_kinds for form in FORMS_BY_KIND.get(kind, ())}
+        wanted = {
+            form
+            for kind in query.document_kinds
+            for form in FORMS_BY_KIND.get(kind, ())
+        }
         matching = [
             row
             for row in filings.rows
@@ -334,7 +363,9 @@ class USIssuerResolver:
         self.session = session
         self.adapter = adapter
 
-    def resolve_cik(self, security_id: int, budget: JobBudgetRef) -> RegistryMatch | CoverageItem:
+    def resolve_cik(
+        self, security_id: int, budget: JobBudgetRef
+    ) -> RegistryMatch | CoverageItem:
         gap = self.adapter._unconfigured()
         if gap is not None:
             return gap
@@ -348,7 +379,9 @@ class USIssuerResolver:
         ticker = sec_ticker(security.symbol)
         registry_capture, payload = self.adapter._fetch_json(
             self.adapter._json_target(
-                "sec:company_tickers_exchange", TICKERS_EXCHANGE_URL, "identifier_registry"
+                "sec:company_tickers_exchange",
+                TICKERS_EXCHANGE_URL,
+                "identifier_registry",
             ),
             budget,
         )
@@ -362,7 +395,9 @@ class USIssuerResolver:
         if payload is None:
             return registry_capture.coverage
         rows = [row for row in parse_ticker_file(payload) if row["ticker"] == ticker]
-        candidates = sorted({row["cik"].zfill(10) for row in rows if row["cik"].isdigit()})
+        candidates = sorted(
+            {row["cik"].zfill(10) for row in rows if row["cik"].isdigit()}
+        )
         confirmed: list[tuple[str, CaptureResult]] = []
         official_capture = None
         for cik in candidates[:MAX_CIK_CANDIDATES]:
@@ -392,7 +427,9 @@ class USIssuerResolver:
             security_id=security.id,
             market="US",
             scheme="cik",
-            value=chosen if chosen is not None else (candidates[0] if len(candidates) == 1 else None),
+            value=chosen
+            if chosen is not None
+            else (candidates[0] if len(candidates) == 1 else None),
             candidate_count=len(candidates),
             ticker_confirmed=bool(confirmed) and len(candidates) == 1,
             matched_ticker=security.symbol,
@@ -405,4 +442,3 @@ class USIssuerResolver:
             resolver_policy_version=RESOLVER_POLICY,
             candidates=tuple(candidates),
         )
-

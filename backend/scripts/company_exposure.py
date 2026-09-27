@@ -141,7 +141,11 @@ def resume(session, config, *, job_id: UUID, apply: bool) -> dict:
             "current_state": job["state"],
             "condition": job["condition"],
         }
-    ResearchRequests(session, config).resume(job_id)
+    if not ResearchRequests(session, config).resume(job_id):
+        # Nothing paused: the job is still running, finished, or blocked on
+        # something resume cannot clear; queueing it would strand it.
+        session.rollback()
+        return {"state": "not_paused", "current_state": job["state"]}
     session.commit()
     return {"state": "queued", "previous_state": job["state"]}
 
@@ -275,6 +279,7 @@ def main(
     blocked = isinstance(payload, dict) and payload.get("state") in {
         "blocked",
         "not_found",
+        "not_paused",
     }
     return EXIT_BLOCKED if blocked else EXIT_OK
 

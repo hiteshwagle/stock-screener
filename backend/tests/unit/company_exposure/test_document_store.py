@@ -191,3 +191,47 @@ def test_reacquired_bytes_are_readable_and_charged_once_after_gc(
     store.collect_unreferenced_blobs(dry_run=False)
     # Only the second incarnation's charge is credited, not both.
     assert _pool(db_session).reserved_amount == 0
+
+
+def test_identical_put_adopts_an_uncharged_crash_orphan(db_session, tmp_path, clock):
+    store = _store(db_session, tmp_path, clock, max_bytes=10_000)
+    ticket = store.reserve(20, purpose="t", operation_key="crash")
+    db_session.commit()
+    # The blob reaches disk but the charging transaction never commits.
+    store.put(b"orphan!!", "text/plain", ticket)
+    db_session.rollback()
+    clock.advance_to(datetime.now(timezone.utc) + timedelta(hours=2))
+    store.release_abandoned_reservations()
+    assert _pool(db_session).reserved_amount == 0
+
+    def put(key):
+        return store.put(
+            b"orphan!!", "text/plain", store.reserve(20, purpose="t", operation_key=key)
+        )
+
+    adopted = put("adopt")
+    assert adopted.deduplicated
+    # The bytes on disk are now paid for, once.
+    assert _pool(db_session).reserved_amount == 8
+    put("again")
+    assert _pool(db_session).reserved_amount == 8
+    _age(store.path_for(adopted.key), 40)
+    clock.advance_to(datetime.now(timezone.utc))
+    store.collect_unreferenced_blobs(dry_run=False)
+    assert _pool(db_session).reserved_amount == 0
+
+
+def test_unreadable_blob_is_a_storage_condition(
+    db_session, tmp_path, clock, monkeypatch
+):
+    store = _store(db_session, tmp_path, clock)
+    blob = store.put(
+        b"hello", "text/plain", store.reserve(10, purpose="t", operation_key="a")
+    )
+
+    def fail(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(type(store.path_for(blob.key)), "read_bytes", fail)
+    with pytest.raises(StorageUnavailable, match="evidence_unreadable"):
+        store.read(blob.key)

@@ -64,7 +64,9 @@ def rate_spy():
     return FakeRateGate()
 
 
-def _registry(db_session, tmp_path, clock, http_mock, rate_gate, *, max_bytes=100 * 1024**2):
+def _registry(
+    db_session, tmp_path, clock, http_mock, rate_gate, *, max_bytes=100 * 1024**2
+):
     store = OriginalStore(
         db_session,
         tmp_path / "store",
@@ -136,7 +138,10 @@ def test_identical_bytes_add_a_capture_not_a_revision(
     assert first.changed is True and second.changed is False
     assert first.revision_id == second.revision_id
     assert db_session.query(ExposureDocumentRevision).count() == 1
-    assert db_session.query(DocumentCaptureEvent).count() == 2
+    fetches = db_session.query(DocumentCaptureEvent).filter(
+        DocumentCaptureEvent.outcome != "budget_charged"
+    )
+    assert fetches.count() == 2
     revision = db_session.get(ExposureDocumentRevision, first.revision_id)
     # Business evidence date comes from the filing, not the download time.
     assert revision.published_at.replace(tzinfo=timezone.utc) == FILED
@@ -236,6 +241,26 @@ def test_document_budget_is_cumulative_per_root(
     )
     result = acquisition.fetch(target(12), root_budget)
     assert result.coverage.reason == "root_budget_exhausted"
+
+
+def test_document_slot_survives_a_worker_dying_mid_fetch(
+    acquisition, document_target, root_budget, http_mock, db_session, monkeypatch
+):
+    def die(*_args, **_kwargs):
+        raise RuntimeError("worker killed during download")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(acquisition.transport, "fetch_once", die)
+        with pytest.raises(RuntimeError):
+            acquisition.fetch(document_target, root_budget)
+    # The step's transaction is lost; the pre-network commit is not.
+    db_session.rollback()
+    http_mock.respond()
+    assert acquisition.fetch(document_target, root_budget).revision_id is not None
+    budget = db_session.execute(
+        select(ResearchRootBudget).where(ResearchRootBudget.budget_key == "documents")
+    ).scalar_one()
+    assert budget.used_amount == 1
 
 
 def test_storage_pause_returns_the_document_slot(

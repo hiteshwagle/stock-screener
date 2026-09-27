@@ -54,6 +54,9 @@ from app.services.company_exposure.storage import (
     storage_lock,
 )
 
+# Capture outcome recording a root's document slot before any network I/O.
+BUDGET_CHARGED = "budget_charged"
+
 _GAP_OUTCOMES = {
     "http_status_404": CoverageOutcome.NO_MATCHING_DOCUMENT,
     "http_status_410": CoverageOutcome.NO_MATCHING_DOCUMENT,
@@ -293,6 +296,10 @@ class DocumentAcquisitionRegistry:
                     detail={"required": bound, "available": ticket.available},
                 ),
             )
+        if newly_charged:
+            # Commits with the charge, so a worker that dies during the fetch
+            # leaves the slot recorded against this document and root.
+            self._capture(document, outcome=BUDGET_CHARGED, url=target.url)
         if self.before_io is not None:
             self.before_io()
         # No database locks are held across pacing waits or network I/O.

@@ -164,8 +164,8 @@ class ResearchRequests:
             )
         )
 
-    def resume(self, request_id: UUID) -> None:
-        self.repo.resume(request_id)
+    def resume(self, request_id: UUID) -> int:
+        return self.repo.resume(request_id)
 
 
 __all__ = (

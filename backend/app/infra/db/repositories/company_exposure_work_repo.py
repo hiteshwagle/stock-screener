@@ -316,24 +316,36 @@ class CompanyExposureWorkRepository:
         self.session.flush()
         return item
 
-    def resume(self, request_id: UUID) -> None:
-        paused = self.session.execute(
-            select(ResearchWorkItem)
-            .where(
-                or_(
-                    ResearchWorkItem.request_id == request_id,
-                    ResearchWorkItem.root_request_id == request_id,
-                ),
-                ResearchWorkItem.status == "paused",
+    def resume(self, request_id: UUID) -> int:
+        """Re-queue paused items; returns how many.
+
+        With nothing paused there is nothing to run, so no ``queued`` event
+        is written: that would advertise work no worker will ever claim.
+        """
+
+        paused = (
+            self.session.execute(
+                select(ResearchWorkItem)
+                .where(
+                    or_(
+                        ResearchWorkItem.request_id == request_id,
+                        ResearchWorkItem.root_request_id == request_id,
+                    ),
+                    ResearchWorkItem.status == "paused",
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        ).scalars()
+            .scalars()
+            .all()
+        )
         for item in paused:
             item.status = "pending"
             item.pause_reason = None
             item.available_at = self.clock()
-        self.append_event(request_id, ResearchJobState.QUEUED, {"resumed": True})
+        if paused:
+            self.append_event(request_id, ResearchJobState.QUEUED, {"resumed": True})
+        return len(paused)
 
 
 @dataclass(frozen=True, slots=True)
