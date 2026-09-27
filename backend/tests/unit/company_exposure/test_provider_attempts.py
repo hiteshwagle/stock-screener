@@ -251,6 +251,22 @@ def test_contract_that_cannot_read_the_output_rejects_it_and_settles(
     assert state not in {"reserved", "dispatched", "uncertain"}
 
 
+def test_provider_floats_are_stored_as_exact_decimal_strings(
+    subscription_runner, provider_input, go_transport, resources, db_session
+):
+    # A plain JSON decimal must not break the content-hashed artifact after
+    # the call was dispatched.
+    go_transport.queue_json(
+        {"claims": [{"materiality": {"value": 20.5, "ratio": float("nan")}}]},
+        usage={"total_tokens": 5},
+    )
+    result = subscription_runner.run(provider_input)
+    assert result.artifact_id is not None
+    stored = db_session.get(ResearchArtifact, result.artifact_id).payload
+    assert stored["claims"][0]["materiality"] == {"value": "20.5", "ratio": None}
+    assert resources.read(result.ticket_id).state not in {"dispatched", "uncertain"}
+
+
 def test_timed_out_call_is_not_resent_until_its_period_closes(
     subscription_runner, provider_input, go_transport, resources, clock
 ):

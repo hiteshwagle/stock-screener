@@ -9,6 +9,7 @@ inside the transport: each permitted retry is a new accounted attempt.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -149,8 +150,25 @@ class SubscriptionProvider:
                 reported_usage=response.reported_usage,
                 response_hash=response.response_hash,
             ),
-            data=response.data,
+            data=_canonical_numbers(response.data),
         )
+
+
+def _canonical_numbers(value):
+    """Provider JSON with its floats as exact decimal strings.
+
+    Artifacts are content-hashed, and hashing rejects floats; "20.5" is what
+    the model wrote and what ``parse_decimal`` reads. A non-finite number
+    (JSON NaN/Infinity) carries no value and becomes null.
+    """
+
+    if isinstance(value, float):
+        return repr(value) if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _canonical_numbers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_canonical_numbers(v) for v in value]
+    return value
 
 
 class SubscriptionArtifactRunner:
