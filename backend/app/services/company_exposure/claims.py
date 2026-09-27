@@ -85,6 +85,7 @@ from app.services.company_exposure.wording import (
     affirmed,
     affirmed_exit,
     clauses,
+    mention_spans,
     mentions,
 )
 
@@ -300,7 +301,48 @@ def qualify_evidence(item: EvidenceItem) -> EvidenceRole:
     return EvidenceRole.ORIGINAL_SECONDARY
 
 
-def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]:
+# Another party's product: "our supplier Acme's ET-9000", "a competitor's".
+_THIRD_PARTY = re.compile(
+    r"\b(?:suppliers?|vendors?|partners?|competitors?|rivals?|licensors?|"
+    r"customers?|peers?)\b",
+    re.IGNORECASE,
+)
+_POSSESSOR = re.compile(r"([A-Za-z][\w&.-]*)['’]s\s*$")
+# Possessors inside the issuer's own group ("our subsidiary's ET-9000"); the
+# reporting-scope check decides whether such evidence is issuer-level.
+_GROUP_POSSESSORS = frozenset(
+    {"company", "group", "subsidiary", "segment", "division", "unit", "business"}
+)
+
+
+def _issuers_own(clause: str, term: str, issuer_names) -> bool:
+    """Whether some mention of the product is not attributed to another party.
+
+    An issuer filing may discuss a supplier's or competitor's product; that
+    product linking to the theme is not the issuer's exposure.
+    """
+
+    names = [n for n in issuer_names if n]
+    for start, _ in mention_spans(clause, term):
+        before = clause[:start].rstrip()
+        words = before.split()
+        last = words[-1].casefold() if words else ""
+        if last in {"our", "we"} or any(
+            words and mentions(n, words[-1].rstrip("'’s")) for n in names
+        ):
+            return True
+        possessor = _POSSESSOR.search(before + " ")
+        if possessor and possessor.group(1).casefold() not in _GROUP_POSSESSORS:
+            continue
+        if _THIRD_PARTY.search(" ".join(words[-3:])):
+            continue
+        return True
+    return False
+
+
+def _linking_clauses(
+    quotes: list[str], product_terms, theme_terms, issuer_names=()
+) -> list[str]:
     """Clauses naming both the product/activity and the theme.
 
     Contrastive joins ("while", "but", "whereas") split a sentence, so
@@ -312,7 +354,7 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
         # Both ends and a predicate joining them: "ET-9000 revenue and HBM
         # demand both increased" names both but asserts no relationship.
         if (
-            any(mentions(clause, t) for t in product_terms)
+            any(_issuers_own(clause, t, issuer_names) for t in product_terms)
             and any(mentions(clause, t) for t in theme_terms)
             and SERVES.search(clause)
         ):
@@ -744,6 +786,13 @@ def _status_guard(
     return CommercialStatus.UNKNOWN, ["status_not_stated"], []
 
 
+def canonical_product_key(value) -> str:
+    """Casefolded words joined by hyphens; "general" when there are none."""
+
+    key = re.sub(r"[\W_]+", "-", str(value or "").casefold()).strip("-")
+    return key[:200] or "general"
+
+
 def _measure_scope(value) -> str:
     """A model-supplied measure scope, validated like the claim's own.
 
@@ -830,6 +879,10 @@ def _materiality(
                 return unknown_materiality("materiality_quote_not_found"), []
             if not _primary_item(item):
                 return unknown_materiality("materiality_not_primary"), []
+            if _measure_scope(spec.get("scope")) == (
+                ReportingScope.SEGMENT_OR_SUBSIDIARY.value
+            ) and not spec.get("scope_label"):
+                return unknown_materiality("segment_scope_requires_label"), []
             return (
                 validate_measure(
                     metric=spec["metric"],
@@ -856,6 +909,10 @@ def _materiality(
                     return unknown_materiality(f"{role}_quote_not_found"), []
                 if not _primary_item(item):
                     return unknown_materiality(f"{role}_not_primary"), []
+                if _measure_scope(part.get("scope")) == (
+                    ReportingScope.SEGMENT_OR_SUBSIDIARY.value
+                ) and not part.get("label"):
+                    return unknown_materiality("segment_scope_requires_label"), []
                 operands.append(
                     Operand(
                         value=parse_decimal(part["value"]),
@@ -908,7 +965,9 @@ def validate_candidate(
     # inside) a theme term would let a theme-only sentence pass as a
     # product-to-theme link, so such terms are ignored.
     theme_folded = [t.casefold() for t in scope.theme_terms if t]
-    product_key = str(raw.get("product_or_activity_key") or "general")
+    # One spelling per product: "ET-9000" and "et 9000" are one proposition,
+    # and an exit under either spelling ends the same exposure.
+    product_key = canonical_product_key(raw.get("product_or_activity_key"))
     key_tokens = _tokens(product_key)
     product_terms = tuple(
         t
@@ -1021,7 +1080,7 @@ def validate_candidate(
         # an unrelated positive citation cannot rescue "does not support HBM".
         if kind in _LINKED_KINDS:
             relationship = _linking_clauses(
-                primary_quotes, product_terms, scope.theme_terms
+                primary_quotes, product_terms, scope.theme_terms, scope.issuer_names
             )
             # A claimed activity that is the theme itself (an "HBM
             # manufacturing" key) has no product term left to link: it

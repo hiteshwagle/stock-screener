@@ -32,9 +32,16 @@ classifier grounding are later stages, and no setting enables them.
 3. Build and start the dedicated worker (Docker):
 
    ```bash
-   docker-compose -f docker-compose.yml -f docker-compose.prod.yml \
+   docker-compose --env-file .env.docker \
+     -f docker-compose.yml -f docker-compose.prod.yml \
      -f docker-compose.exposure.yml --profile exposure-research up -d --build
    ```
+
+   `--env-file .env.docker` is required: the overlay interpolates the
+   `EXPOSURE_*` settings (and the worker's provider key) from the file
+   Compose reads for `${...}`, which is `.env` unless told otherwise. Without
+   it both the backend and the worker fall back to `disabled` and blank
+   limits, whatever `.env.docker` says.
 
    Locally: `EXPOSURE_WORKER_ENABLED=true ./start_celery.sh`. The worker
    consumes only the `exposure_research` queue; no other worker consumes it.

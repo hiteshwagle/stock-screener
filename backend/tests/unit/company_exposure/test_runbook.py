@@ -34,6 +34,15 @@ def test_runbook_covers_required_operations():
         assert required in text, required
 
 
+def test_documented_compose_commands_interpolate_from_the_production_env_file():
+    # The overlay's ${EXPOSURE_*} values come from Compose's --env-file, not
+    # from env_file: without it production would silently run "disabled".
+    overlay = (REPO_ROOT / "docker-compose.exposure.yml").read_text("utf-8")
+    for text in (RUNBOOK.read_text("utf-8"), overlay):
+        command = text[text.index("docker-compose ") :].split("up -d")[0]
+        assert "--env-file .env.docker" in command
+
+
 def _run(capsys, argv, **kwargs):
     code = cli.main(argv, **kwargs)
     out = capsys.readouterr().out

@@ -62,14 +62,21 @@ def mentions(text: str, term: str) -> bool:
 def occurrences(text: str, term: str) -> int:
     """How often ``text`` names ``term`` as a word (see ``mentions``)."""
 
+    return len(mention_spans(text, term))
+
+
+def mention_spans(text: str, term: str) -> list[tuple[int, int]]:
+    """Where ``text`` names ``term`` as a word (see ``mentions``)."""
+
     if not term or not text:
-        return 0
+        return []
     if not term.isascii():
-        return text.casefold().count(term.casefold())
-    before = r"(?<![0-9])" if term[0].isdigit() else r"(?<![A-Za-z])"
-    after = r"(?![0-9])" if term[-1].isdigit() else r"(?:e?s)?(?![A-Za-z])"
-    pattern = before + re.escape(term) + after
-    return len(re.findall(pattern, text, re.IGNORECASE))
+        pattern = re.escape(term)
+    else:
+        before = r"(?<![0-9])" if term[0].isdigit() else r"(?<![A-Za-z])"
+        after = r"(?![0-9])" if term[-1].isdigit() else r"(?:e?s)?(?![A-Za-z])"
+        pattern = before + re.escape(term) + after
+    return [m.span() for m in re.finditer(pattern, text, re.IGNORECASE)]
 
 
 def affirmed(clause: str) -> bool:

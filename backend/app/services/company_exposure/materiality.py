@@ -265,7 +265,9 @@ def _grounding_holds(
     text = _norm(quote)
     holds = []
     head = (metric or "").split("_")[0].casefold()
-    if head and not any(word in text for word in _METRIC_WORDS.get(head, (head,))):
+    if head and not any(
+        mentions(text, word) for word in _METRIC_WORDS.get(head, (head,))
+    ):
         holds.append("metric_not_in_quote")
     unit_folded = (unit or "").casefold()
     if unit_folded in _PERCENT_UNITS and not any(w in text for w in _PERCENT_WORDS):

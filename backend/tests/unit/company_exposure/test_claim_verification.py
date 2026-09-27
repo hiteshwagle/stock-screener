@@ -354,6 +354,69 @@ def test_non_text_scope_label_is_rejected_output():
     assert batch.rejected and "scope_label_not_text" in batch.rejected[0]
 
 
+@pytest.mark.parametrize(
+    ("text", "linked"),
+    [
+        ("Our ET-9000 supports HBM testing.", True),
+        ("Customers use our ET-9000 for HBM testing.", True),
+        # Another company's product is not the issuer's exposure.
+        ("Our supplier Acme's ET-9000 supports HBM testing.", False),
+        ("A competitor's ET-9000 supports HBM testing.", False),
+    ],
+)
+def test_linked_product_must_be_the_issuers_own(text, linked):
+    result = validate_candidate(
+        claim(statement=text, support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert ("cooccurrence_only" not in result.hold_reasons) is linked
+
+
+def test_product_keys_are_canonical_so_exits_match():
+    from app.services.company_exposure.claims import canonical_product_key
+
+    text = "The ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim(
+            product_or_activity_key="ET 9000", support=[{"ref": "P1", "quote": text}]
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.product_or_activity_key == "et-9000"
+    assert canonical_product_key("ET_9000!") == canonical_product_key("et-9000")
+    assert canonical_product_key(None) == "general"
+
+
+@pytest.mark.parametrize("label", [None, "Memory test"])
+def test_segment_measure_needs_its_label(label):
+    link = "The ET-9000 supports HBM testing."
+    quote = "The Memory test segment was 20% of ET-9000 revenue in FY2024."
+    result = validate_candidate(
+        claim(
+            support=[{"ref": "P1", "quote": link}],
+            materiality={
+                "type": "disclosed",
+                "metric": "revenue_percent",
+                "value": "20",
+                "unit": "percent",
+                "period": "FY2024",
+                "scope": "segment_or_subsidiary",
+                "scope_label": label,
+                "ref": "P2",
+                "quote": quote,
+            },
+        ),
+        evidence(item("P1", link), item("P2", quote)),
+        SCOPE,
+    )
+    held = result.materiality.raw_reported.get("reason") == (
+        "segment_scope_requires_label"
+    )
+    assert held is (label is None)
+
+
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
     text = "The ET-9000 supports HBM testing."
     grounded = validate_candidate(

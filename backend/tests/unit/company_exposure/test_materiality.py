@@ -488,3 +488,22 @@ def test_currency_words_must_be_whole_words(quote, held):
         currency="EUR",
     )
     assert ("currency_not_in_quote" in result.hold_reasons) is held
+
+
+@pytest.mark.parametrize(
+    ("metric", "held"),
+    [("net_share", True), ("revenue_share", False)],
+)
+def test_metric_words_must_be_whole_words(metric, held):
+    # "net" occurs only inside "Internet".
+    result = validate_measure(
+        metric=metric,
+        value=Decimal(20),
+        unit="percent",
+        period="FY2024",
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote="Internet HBM revenue was 20% in FY2024.",
+        passage_id="p",
+    )
+    assert ("metric_not_in_quote" in result.hold_reasons) is held

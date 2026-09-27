@@ -1,8 +1,13 @@
 # Company exposure research — opt-in overlay.
 #
 # Merge explicitly after the base (and prod) files, e.g.:
-#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml \
+#   docker-compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.prod.yml \
 #     -f docker-compose.exposure.yml --profile exposure-research up -d
+#
+# The EXPOSURE_* values below are interpolated from the file Compose reads for
+# ${...} (".env" by default), not from a service's env_file: pass
+# --env-file .env.docker in production, or both services stay "disabled".
 #
 # Before first start (see docs/runbooks/company-exposure-map.md):
 #   mkdir -p ./data/exposure-evidence && sudo chown -R 1000:1000 ./data/exposure-evidence
