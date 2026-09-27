@@ -126,6 +126,20 @@ OFFERS = re.compile(
     re.IGNORECASE,
 )
 
+# The issuer itself producing or selling something ("We manufacture HBM
+# products"): the subject must be the issuer, the object follows the verb.
+PRODUCES = re.compile(
+    r"\b(manufactur(?:e|es|ed|ing)|produc(?:e|es|ed|ing)|mak(?:e|es|ing)|made|"
+    r"fabricat(?:e|es|ed|ing)|develop(?:s|ed|ing)?|design(?:s|ed|ing)?|"
+    r"suppl(?:y|ies|ied|ying)|sell(?:s|ing)?|sold|ship(?:s|ped|ping)?|"
+    r"offer(?:s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+ISSUER_SUBJECT = re.compile(r"\b(we|our\s+company|the\s+company)\b", re.IGNORECASE)
+# CJK wording is verb-final ("当社はHBMを製造"): subject and verb anywhere.
+PRODUCES_CJK = re.compile(r"製造|生産|生產|生产|販売|銷售|销售|出荷")
+ISSUER_SUBJECT_CJK = re.compile(r"当社|弊社|本公司|我们|我們|本集團|本集团")
+
 # A segment or subsidiary belonging to the issuer.
 PART_OF = re.compile(
     r"\b(segments?|subsidiar(?:y|ies)|divisions?|business\s+units?|units?\s+of|part\s+of|"

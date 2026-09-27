@@ -200,10 +200,7 @@ def _parse_response(
     envelope_id = envelope.get("id")
     return KimiJSONResponse(
         data=result,
-        provider_request_id=(
-            envelope_id if isinstance(envelope_id, str) and envelope_id else None
-        )
-        or header_request_id,
+        provider_request_id=_bounded_request_id(envelope_id) or header_request_id,
         reported_usage=_reported_usage(envelope),
         response_hash=hashlib.sha256(raw).hexdigest(),
         finish_reason=str(choice.get("finish_reason")),
@@ -236,10 +233,21 @@ def _transport_phase(exc: httpx.HTTPError) -> str:
     return "pre_dispatch" if isinstance(exc, _PRE_DISPATCH_ERRORS) else "uncertain"
 
 
+# ``ResearchProviderResult.provider_request_id`` column width: a longer id
+# would fail the result insert after the call was already dispatched.
+_MAX_REQUEST_ID = 200
+
+
+def _bounded_request_id(value) -> str | None:
+    if isinstance(value, str) and 0 < len(value) <= _MAX_REQUEST_ID:
+        return value
+    return None
+
+
 def _header_request_id(headers) -> str | None:
     for name in ("x-request-id", "x-opencode-request-id", "request-id"):
-        value = headers.get(name)
-        if value and len(value) <= 200:
+        value = _bounded_request_id(headers.get(name))
+        if value:
             return value
     return None
 

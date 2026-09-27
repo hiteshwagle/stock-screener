@@ -224,6 +224,52 @@ def test_segment_label_must_be_a_whole_word_of_the_evidence():
     assert not result.verified
 
 
+@pytest.mark.parametrize(
+    ("key", "text", "linked"),
+    [
+        # The activity is the theme itself: the issuer producing it links.
+        ("hbm-manufacturing", "We manufacture HBM products.", True),
+        ("hbm-manufacturing", "Example Test Systems Corp sells HBM stacks.", True),
+        # A bare theme mention, or someone else producing it, does not.
+        ("hbm-manufacturing", "HBM demand increased.", False),
+        ("hbm-manufacturing", "Customers manufacture HBM using our tools.", False),
+        # The direct path is only for a key that names the theme.
+        ("et-9000", "We manufacture HBM products.", False),
+    ],
+)
+def test_direct_theme_producer_links_without_a_separate_product_term(key, text, linked):
+    result = validate_candidate(
+        claim(
+            "participation",
+            product_or_activity_key=key,
+            product_terms=["HBM manufacturing"],
+            commercial_status="unknown",
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert ("cooccurrence_only" not in result.hold_reasons) is linked
+    assert (result.support_basis == SupportBasis.PRIMARY_EXPLICIT) is linked
+
+
+def test_negated_direct_production_is_not_support():
+    text = "We do not manufacture HBM products."
+    result = validate_candidate(
+        claim(
+            "participation",
+            product_or_activity_key="hbm-manufacturing",
+            commercial_status="unknown",
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+
+
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
     text = "The ET-9000 supports HBM testing."
     grounded = validate_candidate(

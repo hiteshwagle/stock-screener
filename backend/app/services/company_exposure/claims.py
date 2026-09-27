@@ -73,7 +73,11 @@ from app.services.company_exposure.wording import (
     AVAILABLE,
     CUSTOMER,
     EXIT,
+    ISSUER_SUBJECT,
+    ISSUER_SUBJECT_CJK,
     NEGATION,
+    PRODUCES,
+    PRODUCES_CJK,
     SERVES,
     SHIPPING,
     affirmed,
@@ -311,6 +315,35 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
         ):
             linking.append(clause)
     return linking
+
+
+def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
+    """Clauses in which the issuer itself produces or sells the theme.
+
+    For a direct producer ("We manufacture HBM products") the theme is the
+    product, so there is no separate product term to link. A bare theme
+    mention ("HBM demand increased") or someone else producing it
+    ("Customers make HBM using our tools") is not enough.
+    """
+
+    found = []
+    for clause in clauses(quotes):
+        if (
+            PRODUCES_CJK.search(clause)
+            and ISSUER_SUBJECT_CJK.search(clause)
+            and any(mentions(clause, t) for t in theme_terms)
+        ):
+            found.append(clause)
+            continue
+        for verb in PRODUCES.finditer(clause):
+            subject, rest = clause[: verb.start()], clause[verb.end() :]
+            if (
+                ISSUER_SUBJECT.search(subject)
+                or any(mentions(subject, n) for n in issuer_names)
+            ) and any(mentions(rest, t) for t in theme_terms):
+                found.append(clause)
+                break
+    return found
 
 
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
@@ -926,6 +959,15 @@ def validate_candidate(
             relationship = _linking_clauses(
                 primary_quotes, product_terms, scope.theme_terms
             )
+            # A claimed activity that is the theme itself (an "HBM
+            # manufacturing" key) has no product term left to link: it
+            # rests on the issuer directly producing or selling the theme.
+            if not relationship and any(
+                mentions(product_key.replace("-", " "), t) for t in scope.theme_terms
+            ):
+                relationship = _direct_clauses(
+                    primary_quotes, scope.theme_terms, scope.issuer_names
+                )
         elif kind == ClaimKind.CUSTOMER_RELATIONSHIP:
             relationship = _customer_clauses(
                 primary_quotes,

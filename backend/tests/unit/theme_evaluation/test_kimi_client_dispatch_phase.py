@@ -115,6 +115,19 @@ def test_response_metadata_is_returned_and_complete_json_is_unchanged():
     }
 
 
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [({}, None), ({"x-request-id": "hdr-1"}, "hdr-1")],
+)
+def test_overlong_envelope_id_is_not_stored(headers, expected):
+    # Wider than the stored request id column: fall back, never overflow.
+    client = _client(_ok({**GOOD, "id": "r" * 201}, headers=headers))
+    response = client.complete_json_response(
+        [{"role": "user", "content": "x"}], max_tokens=10
+    )
+    assert response.provider_request_id == expected
+
+
 def test_missing_usage_is_unknown_not_zero():
     body = dict(GOOD)
     body.pop("usage")
