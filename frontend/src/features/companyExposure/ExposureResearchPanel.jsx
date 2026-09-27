@@ -49,7 +49,12 @@ function materialityText(materiality) {
 }
 
 function ClaimCard({ claim }) {
-  const held = claim.active_holds?.length > 0 || claim.freshness_state !== 'current';
+  // Verifier reasons (e.g. status_not_stated) are warnings too, not just
+  // registry holds and staleness.
+  const reasons = claim.hold_reasons || [];
+  const held = claim.active_holds?.length > 0
+    || reasons.length > 0
+    || claim.freshness_state !== 'current';
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }} data-testid="exposure-claim">
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 0.75 }}>
@@ -57,7 +62,7 @@ function ClaimCard({ claim }) {
         <Chip
           size="small"
           variant="outlined"
-          color={claim.support_basis?.startsWith('primary') ? 'success' : 'default'}
+          color={claim.support_basis?.startsWith('primary') && reasons.length === 0 ? 'success' : 'default'}
           label={SUPPORT_LABELS[claim.support_basis] || claim.support_basis}
         />
         <Chip size="small" variant="outlined" label={STATUS_LABELS[claim.commercial_status] || claim.commercial_status} />
@@ -67,6 +72,9 @@ function ClaimCard({ claim }) {
         {claim.carried_forward && <Chip size="small" variant="outlined" label="Carried forward" />}
         {(claim.active_holds || []).map((hold) => (
           <Chip key={hold} size="small" color="warning" label={`Hold: ${hold}`} />
+        ))}
+        {reasons.map((reason) => (
+          <Chip key={`check-${reason}`} size="small" color="warning" variant="outlined" label={`Check: ${reason}`} />
         ))}
       </Stack>
       <Typography>{claim.statement}</Typography>

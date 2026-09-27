@@ -48,6 +48,16 @@ describe('ExposureResearchPanel', () => {
     expect(screen.getByText('ET-9000 revenue was USD 5 million in FY2024.')).toBeVisible();
   });
 
+  it('surfaces verifier hold reasons on a current claim', () => {
+    const flagged = {
+      ...shadowPreview,
+      claims: [{ ...shadowPreview.claims[0], hold_reasons: ['status_not_stated'], active_holds: [] }],
+    };
+    renderWithProviders(<ExposureResearchPanel job={shadowCompletedJob} preview={flagged} />);
+    expect(screen.getByText('Check: status_not_stated')).toBeVisible();
+    expect(screen.getByText(/held from new automated use/i)).toBeVisible();
+  });
+
   it('shows the failed review condition while paused', () => {
     renderWithProviders(<ExposureResearchPanel job={reviewRequiredJob} />);
     expect(screen.getByText('review_required')).toBeVisible();

@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.company_exposure.contracts import content_hash
 from app.models.company_exposure import ExposureDocumentRevision, ExposurePassage
+from app.services.company_exposure.wording import mentions, occurrences
 from app.services.theme_evaluation.multilingual_v2 import assess_language
 
 PREPARATION_POLICY = "structure-v1"
@@ -550,16 +551,18 @@ def select_passages(
 ) -> PassageSelection:
     """Deterministic lexical selection; tables keep their full context."""
 
-    terms = [term.casefold() for term in questions.terms if term.strip()]
-    required = [term.casefold() for term in questions.required_any if term.strip()]
+    # Word-bounded, as in claim validation: for a short theme such as "AI",
+    # "available" or "said" must not fill the passage limit.
+    terms = [term.strip() for term in questions.terms if term.strip()]
+    required = [term.strip() for term in questions.required_any if term.strip()]
     scored = []
     for block in prepared.blocks:
         if block.kind == "heading":
             continue
-        haystack = " ".join([*block.section_path, block.text]).casefold()
-        if required and not any(term in haystack for term in required):
+        haystack = " ".join([*block.section_path, block.text])
+        if required and not any(mentions(haystack, term) for term in required):
             continue
-        score = sum(haystack.count(term) for term in terms)
+        score = sum(occurrences(haystack, term) for term in terms)
         if score == 0:
             continue
         if block.kind == "table":

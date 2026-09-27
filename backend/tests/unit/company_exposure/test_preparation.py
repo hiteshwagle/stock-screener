@@ -241,3 +241,18 @@ def test_non_english_text_keeps_original_script(evidence_preparer, db_session, s
     stored = persist_passages(db_session, prepared, selection)
     assert stored[0].original_text == "当社はHBM向けテスターを量産出荷していない。"
     assert stored[0].language == "ja"
+
+
+def test_short_theme_terms_select_whole_words_only(
+    evidence_preparer, db_session, store
+):
+    filler = "".join(
+        f"<p>Product {n} is available and was said to be in development.</p>"
+        for n in range(30)
+    )
+    html = f"<html><body>{filler}<p>Our AI accelerator ships.</p></body></html>"
+    revision = _revision(db_session, store, html.encode(), "text/html", "html:ai")
+    prepared = evidence_preparer.prepare(revision)
+    selection = select_passages(prepared, QuestionSet(terms=("AI",)), limit=24)
+    assert [b.text for b in selection.blocks] == ["Our AI accelerator ships."]
+    assert selection.omitted_matches == 0

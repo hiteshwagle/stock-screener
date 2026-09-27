@@ -109,6 +109,15 @@ class PeriodCloseReport:
     expired_reservation_ids: tuple[UUID, ...]
 
 
+_UNSETTLED = frozenset(
+    {
+        ReservationState.RESERVED,
+        ReservationState.DISPATCHED,
+        ReservationState.UNCERTAIN,
+    }
+)
+
+
 class ResearchResources:
     def __init__(
         self,
@@ -293,24 +302,23 @@ class ResearchResources:
         )
 
     def _dispatch_unresolved(self, logical_operation_key: str) -> bool:
-        """An attempt for this call was reserved or sent and has no result."""
+        """An identical call may still have run and is not yet settled.
 
-        open_attempts = self.session.execute(
-            select(ResearchProviderAttempt.reservation_id)
-            .outerjoin(
-                ResearchProviderResult,
-                ResearchProviderResult.attempt_id == ResearchProviderAttempt.id,
-            )
-            .where(
+        That covers a call reserved or sent without a result (a worker died
+        mid-call) and one that timed out after sending (``uncertain``): either
+        may have succeeded remotely, so it blocks re-sending until it expires
+        with its allocation period.
+        """
+
+        attempts = self.session.execute(
+            select(ResearchProviderAttempt.reservation_id).where(
                 ResearchProviderAttempt.logical_operation_key == logical_operation_key,
-                ResearchProviderResult.id.is_(None),
                 ResearchProviderAttempt.reservation_id.is_not(None),
             )
         ).scalars()
         return any(
-            self.ledger.state(reservation_id)
-            in {ReservationState.RESERVED, ReservationState.DISPATCHED}
-            for reservation_id in open_attempts
+            self.ledger.state(reservation_id) in _UNSETTLED
+            for reservation_id in attempts
         )
 
     def _ids(self, ticket: ReservationTicket) -> list[UUID]:

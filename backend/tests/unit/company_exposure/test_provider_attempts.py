@@ -198,3 +198,22 @@ def test_unresolved_dispatch_is_never_sent_twice(
     go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
     assert subscription_runner.run(provider_input).artifact_id is not None
     assert len(go_transport.requests) == 1
+
+
+def test_timed_out_call_is_not_resent_until_its_period_closes(
+    subscription_runner, provider_input, go_transport, resources, clock
+):
+    go_transport.queue_exception(httpx.ReadTimeout("read"))
+    first = subscription_runner.run(provider_input)
+    assert resources.read(first.ticket_id).state == "uncertain"
+
+    # It may have succeeded remotely: the retry pauses instead of re-sending.
+    blocked = subscription_runner.run(provider_input)
+    assert blocked.pause_reason == "provider_dispatch_unresolved"
+    assert len(go_transport.requests) == 1
+
+    clock.advance_to(CONFIG.allocation_period(clock.now())[1])
+    resources.close_ended_periods()
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    assert subscription_runner.run(provider_input).artifact_id is not None
+    assert len(go_transport.requests) == 2

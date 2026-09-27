@@ -56,14 +56,20 @@ def mentions(text: str, term: str) -> bool:
     (CJK) fall back to substring matching.
     """
 
+    return occurrences(text, term) > 0
+
+
+def occurrences(text: str, term: str) -> int:
+    """How often ``text`` names ``term`` as a word (see ``mentions``)."""
+
     if not term or not text:
-        return False
+        return 0
     if not term.isascii():
-        return term.casefold() in text.casefold()
+        return text.casefold().count(term.casefold())
     before = r"(?<![0-9])" if term[0].isdigit() else r"(?<![A-Za-z])"
     after = r"(?![0-9])" if term[-1].isdigit() else r"(?:e?s)?(?![A-Za-z])"
     pattern = before + re.escape(term) + after
-    return re.search(pattern, text, re.IGNORECASE) is not None
+    return len(re.findall(pattern, text, re.IGNORECASE))
 
 
 def affirmed(clause: str) -> bool:
