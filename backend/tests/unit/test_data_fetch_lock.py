@@ -58,7 +58,12 @@ def _make_lock(lock_value=None, ttl=3600):
             # register_script returns a callable script object
             mock_release_script = MagicMock()
             mock_extend_script = MagicMock()
-            mock_redis.register_script.side_effect = [mock_release_script, mock_extend_script]
+            mock_renew_script = MagicMock()
+            mock_redis.register_script.side_effect = [
+                mock_release_script,
+                mock_extend_script,
+                mock_renew_script,
+            ]
 
             lock = DataFetchLock()
 

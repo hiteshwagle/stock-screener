@@ -6,6 +6,7 @@ Provides scheduled tasks for:
 - S&P 500 membership refresh
 """
 import logging
+from contextlib import ExitStack
 from datetime import datetime
 from typing import Any, Optional
 
@@ -25,7 +26,8 @@ from ..services.official_universe_dispatch import (
     ingest_official_market_snapshot,
 )
 from ..wiring.bootstrap import get_provider_snapshot_service, get_stock_universe_service
-from .data_fetch_lock import serialized_data_fetch_task
+from .data_fetch_lock import _lock_key_for_market, serialized_data_fetch_task
+from .lease_renewal import keep_leases_alive
 from .transient_database import raise_if_transient_database_error
 
 logger = logging.getLogger(__name__)
@@ -380,6 +382,18 @@ def refresh_official_market_universe(
             ),
         )
 
+    # The lock is taken directly rather than through the decorator, so keep
+    # its short lease renewed here for as long as this refresh runs.
+    lease_renewal = ExitStack()
+    if not is_reentrant:
+        lease_renewal.enter_context(
+            keep_leases_alive(
+                [(
+                    _lock_key_for_market(_market),
+                    lambda: lock.renew(task_id, market=_market),
+                )]
+            )
+        )
     try:
         activity_db = SessionLocal()
         try:
@@ -571,6 +585,7 @@ def refresh_official_market_universe(
         logger.exception("Error refreshing official universe for %s", _market)
         raise
     finally:
+        lease_renewal.close()
         if acquired and not is_reentrant:
             lock.release(task_id, market=_market)
 

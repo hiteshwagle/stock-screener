@@ -522,7 +522,9 @@ class Settings(BaseSettings):
 
     # Data Fetch Queue Configuration (prevents API rate limiting)
     data_fetch_queue_name: str = "data_fetch"  # Queue name for serialized data fetching
-    data_fetch_lock_timeout: int = 7200  # 2 hours max lock time for long-running tasks
+    # Workload lease TTL in seconds. Holders renew it every TTL/3 while they run,
+    # so a killed worker's lease expires within one TTL (not hours).
+    data_fetch_lock_timeout: int = 300
     data_fetch_startup_delay: int = 5  # Seconds to wait before startup task
 
     # Redis Bulk Pipeline Configuration (for large multi-symbol fetches)

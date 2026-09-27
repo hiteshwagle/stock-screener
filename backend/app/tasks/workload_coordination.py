@@ -17,6 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover
     redis = None
 
 from ..config import settings
+from .lease_renewal import RENEW_LEASE_LUA, keep_leases_alive, lease_ttl_seconds
 from .market_queues import SUPPORTED_MARKETS, market_suffix, normalize_market
 from .transient_database import retry_transient_database_error
 
@@ -73,8 +74,12 @@ class WorkloadCoordination:
             port=settings.redis_port,
             db=settings.redis_db,
         )
-        self.lock_timeout = getattr(settings, "data_fetch_lock_timeout", 7200)
+        # Short lease, renewed by the holder's heartbeat (see lease_renewal).
+        self.lock_timeout = lease_ttl_seconds(
+            getattr(settings, "data_fetch_lock_timeout", None)
+        )
         self._release_script = self.redis.register_script(_RELEASE_LUA)
+        self._renew_script = self.redis.register_script(RENEW_LEASE_LUA)
 
     def _acquire(self, key: str, task_name: str, task_id: str) -> Tuple[bool, bool]:
         if task_id != "unknown":
@@ -90,6 +95,11 @@ class WorkloadCoordination:
 
     def _release(self, key: str, task_id: str) -> bool:
         return bool(self._release_script(keys=[key], args=[f":{task_id}:"]))
+
+    def _renew(self, key: str, task_id: str) -> bool:
+        return bool(
+            self._renew_script(keys=[key], args=[f":{task_id}:", self.lock_timeout])
+        )
 
     def _holder(self, key: str) -> Optional[Dict[str, Any]]:
         current = self.redis.get(key)
@@ -115,6 +125,9 @@ class WorkloadCoordination:
     def release_external_fetch(self, task_id: str) -> bool:
         return self._release(EXTERNAL_FETCH_GLOBAL_KEY, task_id)
 
+    def renew_external_fetch(self, task_id: str) -> bool:
+        return self._renew(EXTERNAL_FETCH_GLOBAL_KEY, task_id)
+
     def get_external_fetch_holder(self) -> Optional[Dict[str, Any]]:
         return self._holder(EXTERNAL_FETCH_GLOBAL_KEY)
 
@@ -129,6 +142,9 @@ class WorkloadCoordination:
 
     def release_market_workload(self, task_id: str, *, market: Optional[str]) -> bool:
         return self._release(_market_workload_key(market), task_id)
+
+    def renew_market_workload(self, task_id: str, *, market: Optional[str]) -> bool:
+        return self._renew(_market_workload_key(market), task_id)
 
     def get_market_workload_holder(self, market: Optional[str]) -> Optional[Dict[str, Any]]:
         return self._holder(_market_workload_key(market))
@@ -186,8 +202,21 @@ def serialized_market_workload(task_name: str):
                     "running_task_id": holder.get("task_id"),
                 }
 
+            renewals = (
+                []
+                if is_reentrant
+                else [
+                    (
+                        _market_workload_key(market_value),
+                        lambda: coordination.renew_market_workload(
+                            task_id, market=market_value
+                        ),
+                    )
+                ]
+            )
             try:
-                return func(*args, **kwargs)
+                with keep_leases_alive(renewals):
+                    return func(*args, **kwargs)
             except Retry:
                 raise
             except Exception as exc:
