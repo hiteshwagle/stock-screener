@@ -201,6 +201,20 @@ class ResearchResources:
             else None
         )
         # Canonical lock order: request pool, token pool, then root budget.
+        # Holding the request pool first also serialises identical calls, so
+        # a dispatch committed by another worker is visible below.
+        self.session.execute(
+            select(ResearchResourcePool.id)
+            .where(ResearchResourcePool.id == request_pool.id)
+            .with_for_update()
+        )
+        if self._dispatch_unresolved(dispatch.logical_operation_key):
+            # The same call is running, or its worker died mid-call: it may
+            # still succeed, so never send it twice. Its reservation settles
+            # as uncertain spend when the period closes; resume then retries.
+            return ReservationTicket(
+                False, "paused_allowance", "provider_dispatch_unresolved"
+            )
         outcome = self.ledger.reserve(
             pool_id=request_pool.id,
             amount=1,
@@ -276,6 +290,27 @@ class ResearchResources:
             allocation_id=REQUEST_POOL,
             period=period,
             period_end=period_end,
+        )
+
+    def _dispatch_unresolved(self, logical_operation_key: str) -> bool:
+        """An attempt for this call was reserved or sent and has no result."""
+
+        open_attempts = self.session.execute(
+            select(ResearchProviderAttempt.reservation_id)
+            .outerjoin(
+                ResearchProviderResult,
+                ResearchProviderResult.attempt_id == ResearchProviderAttempt.id,
+            )
+            .where(
+                ResearchProviderAttempt.logical_operation_key == logical_operation_key,
+                ResearchProviderResult.id.is_(None),
+                ResearchProviderAttempt.reservation_id.is_not(None),
+            )
+        ).scalars()
+        return any(
+            self.ledger.state(reservation_id)
+            in {ReservationState.RESERVED, ReservationState.DISPATCHED}
+            for reservation_id in open_attempts
         )
 
     def _ids(self, ticket: ReservationTicket) -> list[UUID]:

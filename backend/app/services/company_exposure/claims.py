@@ -11,9 +11,14 @@ after that is deterministic and can only *downgrade*:
 * co-occurrence is not a relationship — a theme-application claim needs one
   sentence naming both the product/activity and the theme application, or a
   valid bounded synthesis;
-* negated or modal language ("has not begun shipping", "plans to",
-  "qualification") cannot support a shipping/available status, and a
-  relationship claim needs at least one non-negated clause of support;
+* a shipping/available status needs an affirmed clause stating it, and
+  negated or modal language ("has not begun shipping", "plans to",
+  "qualification") cannot support one; a relationship claim needs at least
+  one non-negated clause of support, and a customer relationship a clause
+  asserting it with the counterparty the statement names;
+* every name and figure in the model-written statement must be grounded in
+  its citations or the scope, including a sentence-initial name;
+* freshness is anchored to the passages that carry the claim;
 * the substantive date comes from the document (effective/publication
   date), never from when it was downloaded.
 
@@ -60,8 +65,12 @@ from app.services.company_exposure.synthesis import (
     validate_synthesis,
 )
 from app.services.company_exposure.wording import (
+    AVAILABLE,
+    CUSTOMER,
     EXIT,
     NEGATION,
+    SHIPPING,
+    affirmed,
     clauses,
 )
 
@@ -263,11 +272,66 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
 
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*%?")
-_NAME = re.compile(r"(?<![.!?]\s)(?<!^)\b[A-Z][\w&-]*[A-Za-z0-9]")
+_NAME = re.compile(r"\b[A-Z][\w&-]*[A-Za-z0-9]")
+# Words capitalised only because they open a sentence. Any other capitalised
+# word, including a sentence-initial "Nvidia", is a name to be grounded.
+_FUNCTION_WORDS = frozenset(
+    [
+        "the",
+        "an",
+        "this",
+        "that",
+        "these",
+        "those",
+        "its",
+        "it",
+        "our",
+        "their",
+        "we",
+        "in",
+        "on",
+        "at",
+        "for",
+        "from",
+        "by",
+        "with",
+        "as",
+        "during",
+        "since",
+        "after",
+        "before",
+        "through",
+        "and",
+        "or",
+        "also",
+        "both",
+        "each",
+        "all",
+        "most",
+        "some",
+        "such",
+    ]
+)
 
 
 def _tokens(text: str) -> set[str]:
     return {token.casefold() for token in _TOKEN.findall(text)}
+
+
+def _name_parts(statement: str) -> list[str]:
+    """Capitalised or numeric parts of the names a statement uses.
+
+    Only these must be grounded: "HBM-capable" needs "HBM", "ET-9000" needs
+    "ET" and "9000".
+    """
+
+    return [
+        part
+        for name in _NAME.findall(statement.strip())
+        if name.casefold() not in _FUNCTION_WORDS
+        for part in re.split(r"[-&]", name)
+        if part[:1].isupper() or any(ch.isdigit() for ch in part)
+    ]
 
 
 def _ungrounded(statement: str, quotes: list[str], scope: AssessmentScope) -> list[str]:
@@ -280,15 +344,7 @@ def _ungrounded(statement: str, quotes: list[str], scope: AssessmentScope) -> li
     known = " ".join(
         [*quotes, *scope.issuer_names, *scope.theme_terms, scope.theme_label or ""]
     ).casefold()
-    # Only the capitalised or numeric parts of a name must be grounded:
-    # "HBM-capable" needs "HBM", "ET-9000" needs "ET" and "9000".
-    parts = [
-        part
-        for name in _NAME.findall(statement.strip())
-        for part in re.split(r"[-&]", name)
-        if part[:1].isupper() or any(ch.isdigit() for ch in part)
-    ]
-    candidates = _NUMBER.findall(statement) + parts
+    candidates = _NUMBER.findall(statement) + _name_parts(statement)
     return [c for c in dict.fromkeys(candidates) if c.casefold() not in known]
 
 
@@ -298,20 +354,61 @@ def _affirmed(clauses: list[str]) -> bool:
     return any(not NEGATION.search(clause) for clause in clauses)
 
 
+def _customer_clauses(
+    quotes: list[str], statement: str, scope: AssessmentScope, product_terms
+) -> list[str]:
+    """Clauses asserting a commercial relationship with the named counterparty.
+
+    Names in the statement that are not the issuer, theme or product are the
+    counterparty; when there is one, the clause must name it.
+    """
+
+    own = " ".join([*scope.issuer_names, *scope.theme_terms, *product_terms]).casefold()
+    counterparty = [p for p in _name_parts(statement) if p.casefold() not in own]
+    return [
+        clause
+        for clause in clauses(quotes)
+        if CUSTOMER.search(clause)
+        and (
+            not counterparty
+            or any(p.casefold() in clause.casefold() for p in counterparty)
+        )
+    ]
+
+
 def _status_guard(
-    status: CommercialStatus, quotes: list[str]
-) -> tuple[CommercialStatus, list[str]]:
+    status: CommercialStatus, quotes: list[str], product_terms
+) -> tuple[CommercialStatus, list[str], list[str]]:
+    """Keep an active status only when a clause affirmatively states it.
+
+    Returns the status, holds, and the clauses that state it.
+    """
+
     if status not in _ACTIVE_STATUSES:
-        return status, []
-    holds = []
+        return status, [], []
     joined = " ".join(quotes)
     if NEGATION.search(joined):
-        holds.append("negated_commercial_status")
-    elif _MODALITY.search(joined):
-        holds.append("modal_commercial_status")
-    if holds:
-        return CommercialStatus.UNKNOWN, holds
-    return status, []
+        return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []
+    if _MODALITY.search(joined):
+        return CommercialStatus.UNKNOWN, ["modal_commercial_status"], []
+    wording = (
+        (SHIPPING,)
+        if status == CommercialStatus.SHIPPING_OR_OPERATING
+        else (AVAILABLE, SHIPPING)
+    )
+    stating = [
+        clause
+        for clause in clauses(quotes)
+        if any(pattern.search(clause) for pattern in wording)
+        and affirmed(clause)
+        and (
+            not product_terms
+            or any(t.casefold() in clause.casefold() for t in product_terms)
+        )
+    ]
+    if not stating:
+        return CommercialStatus.UNKNOWN, ["status_not_stated"], []
+    return status, [], stating
 
 
 def _materiality(
@@ -419,6 +516,7 @@ def validate_candidate(
     rejected: list[str] = []
     cited: list[CitedEvidence] = []
     primary_quotes: list[str] = []
+    primary: list[tuple[str, EvidenceItem]] = []
     secondary = False
     dates: list[EvidenceItem] = []
 
@@ -436,6 +534,7 @@ def validate_candidate(
             if direction == "supporting":
                 if role == EvidenceRole.ORIGINAL_PRIMARY:
                     primary_quotes.append(quote)
+                    primary.append((quote, item))
                     dates.append(item)
                 elif role == EvidenceRole.ORIGINAL_SECONDARY:
                     secondary = True
@@ -447,6 +546,8 @@ def validate_candidate(
 
     synthesis = None
     basis = SupportBasis.UNRESOLVED
+    # Clauses that carry the claim; its date comes only from their passages.
+    bearing: list[str] = []
     if raw.get("synthesis"):
         spec = raw["synthesis"]
         premises, links = [], []
@@ -492,14 +593,27 @@ def validate_candidate(
         basis = SupportBasis.PRIMARY_EXPLICIT
         # The clause that carries the relationship must itself be affirmed:
         # an unrelated positive citation cannot rescue "does not support HBM".
-        relationship = (
-            _linking_clauses(primary_quotes, product_terms, scope.theme_terms)
-            if kind in _LINKED_KINDS
-            else clauses(primary_quotes)
-        )
+        if kind in _LINKED_KINDS:
+            relationship = _linking_clauses(
+                primary_quotes, product_terms, scope.theme_terms
+            )
+        elif kind == ClaimKind.CUSTOMER_RELATIONSHIP:
+            relationship = _customer_clauses(
+                primary_quotes, str(raw.get("statement", "")), scope, product_terms
+            )
+        else:
+            relationship = clauses(primary_quotes)
+        if kind in _AFFIRMATIVE_KINDS:
+            bearing = [c for c in relationship if affirmed(c)]
+        elif kind == ClaimKind.EXPOSURE_END:
+            bearing = [q for q in primary_quotes if EXIT.search(q)]
         if kind in _LINKED_KINDS and not relationship:
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("cooccurrence_only")
+        elif kind == ClaimKind.CUSTOMER_RELATIONSHIP and not relationship:
+            # "ET-9000 revenue increased" asserts no customer at all.
+            basis = SupportBasis.INFERRED_UNVERIFIED
+            holds.append("customer_not_stated")
         elif kind in _AFFIRMATIVE_KINDS and not _affirmed(relationship):
             # Provider output is untrusted: "does not support HBM" cited as
             # support must not become a supported exposure.
@@ -522,10 +636,20 @@ def validate_candidate(
             basis = SupportBasis.INFERRED_UNVERIFIED
             holds.append("statement_not_grounded")
 
-    status, status_holds = _status_guard(
-        status, primary_quotes or [c.quote for c in cited]
+    status, status_holds, stating = _status_guard(
+        status, primary_quotes or [c.quote for c in cited], product_terms
     )
     holds.extend(status_holds)
+    if kind == ClaimKind.COMMERCIAL_STATUS:
+        bearing = stating
+    if bearing and synthesis is None:
+        # Freshness follows the evidence that established the claim, not an
+        # unrelated newer citation alongside it.
+        dates = [
+            item
+            for quote, item in primary
+            if any(_normalize(c) in _normalize(quote) for c in bearing)
+        ]
 
     materiality, _ = _materiality(raw.get("materiality"), evidence, scope)
     if kind == ClaimKind.MATERIALITY and materiality is None:

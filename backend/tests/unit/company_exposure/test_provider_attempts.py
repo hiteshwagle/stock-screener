@@ -172,3 +172,29 @@ def test_missing_key_is_pre_dispatch_and_makes_no_call(
     assert result.failure_code == "subscription_credentials_missing"
     assert resources.read(result.ticket_id).state == "released"
     assert go_transport.requests == []
+
+
+def test_unresolved_dispatch_is_never_sent_twice(
+    subscription_runner, provider_input, go_transport, resources, clock, db_session
+):
+    def die(*_args, **_kwargs):
+        raise RuntimeError("worker killed mid-call")
+
+    original = subscription_runner.provider.call_once
+    subscription_runner.provider.call_once = die
+    with pytest.raises(RuntimeError):
+        subscription_runner.run(provider_input)
+    db_session.rollback()
+    subscription_runner.provider.call_once = original
+
+    # The lost call may still have succeeded: pause instead of re-sending.
+    blocked = subscription_runner.run(provider_input)
+    assert blocked.pause_reason == "provider_dispatch_unresolved"
+    assert go_transport.requests == []
+
+    # Closing the period settles it as uncertain spend; then it may retry.
+    clock.advance_to(CONFIG.allocation_period(clock.now())[1])
+    resources.close_ended_periods()
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    assert subscription_runner.run(provider_input).artifact_id is not None
+    assert len(go_transport.requests) == 1

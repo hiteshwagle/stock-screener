@@ -561,3 +561,96 @@ def test_model_path_validates_output_and_ignores_passage_instructions(db_session
     assert not by_statement["Sells HBM"].verified  # only hostile passage cited
     assert by_statement["The ET-9000 tester supports HBM testing."].verified
     assert len(batch.rejected) == 1
+
+
+def test_sentence_initial_names_must_be_grounded():
+    quote = "The ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim(
+            statement="Nvidia buys the ET-9000 for HBM testing.",
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "statement_not_grounded" in result.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("text", "statement", "basis"),
+    [
+        (
+            "ET-9000 revenue increased.",
+            "ET-9000 revenue increased.",
+            SupportBasis.INFERRED_UNVERIFIED,
+        ),
+        (
+            "Nvidia is a leading GPU maker. We sell ET-9000 testers to customers.",
+            "Nvidia buys ET-9000 testers.",
+            SupportBasis.INFERRED_UNVERIFIED,
+        ),
+        (
+            "We sell ET-9000 testers to Nvidia.",
+            "Nvidia buys ET-9000 testers.",
+            SupportBasis.PRIMARY_EXPLICIT,
+        ),
+    ],
+)
+def test_customer_relationship_needs_a_clause_asserting_it(text, statement, basis):
+    result = validate_candidate(
+        claim(
+            "customer_relationship",
+            statement=statement,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == basis
+    held = basis == SupportBasis.INFERRED_UNVERIFIED
+    assert ("customer_not_stated" in result.hold_reasons) is held
+
+
+@pytest.mark.parametrize(
+    ("text", "status"),
+    [
+        ("ET-9000 revenue increased.", CommercialStatus.UNKNOWN),
+        (
+            "ET-9000 testers are shipping in volume.",
+            CommercialStatus.SHIPPING_OR_OPERATING,
+        ),
+    ],
+)
+def test_active_status_needs_wording_that_states_it(text, status):
+    result = validate_candidate(
+        claim(
+            "commercial_status",
+            commercial_status="shipping_or_operating",
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.commercial_status == status
+    unstated = status == CommercialStatus.UNKNOWN
+    assert ("status_not_stated" in result.hold_reasons) is unstated
+
+
+def test_freshness_follows_the_citation_that_carries_the_relationship():
+    old = datetime(2021, 3, 1, tzinfo=timezone.utc)
+    link = "The ET-9000 supports HBM testing."
+    unrelated = "ET-9000 revenue increased."
+    result = validate_candidate(
+        claim(
+            support=[
+                {"ref": "P1", "quote": link},
+                {"ref": "P2", "quote": unrelated},
+            ]
+        ),
+        evidence(item("P1", link, published_at=old), item("P2", unrelated)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.PRIMARY_EXPLICIT
+    assert result.supported_as_of == old

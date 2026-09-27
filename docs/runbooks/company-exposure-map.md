@@ -107,6 +107,7 @@ published in S1).
 | `review_required` / `issuer_link_required` | No accepted issuer link and no registry route | Resolve (below) |
 | `unavailable_capability` / `sec_user_agent_not_configured`, `route_not_approved`, `subscription_credentials_missing`, `theme_definition_unavailable`, `research_disabled` | Configuration or capability missing | Fix configuration, then resume |
 | `paused_allowance` / `allocation_not_configured`, `capacity_exhausted` | Local allocation missing or used up for the period | Wait for the next period or raise the limit; resume |
+| `paused_allowance` / `provider_dispatch_unresolved` | An identical provider call was sent and has no recorded result: it is still running, or its worker died mid-call and it may yet have succeeded | Resume once it finishes; a lost call settles as uncertain spend when its period closes (`refresh-holds`), and resume then sends it again |
 | `paused_storage` | Evidence store full or below the free-space floor | Free space / raise the cap; resume |
 | `retryable_failure` | Transient fetch/provider error; retried with backoff (max 4 attempts) | None; `terminal_failure` after the last attempt |
 

@@ -50,3 +50,30 @@ def clauses(quotes: list[str]) -> list[str]:
 
 def affirmed(clause: str) -> bool:
     return not NEGATION.search(clause)
+
+
+# Wording that asserts a commercial relationship with a counterparty.
+CUSTOMER = re.compile(
+    r"\b(customers?|clients?|suppl(?:y|ies|ied|ier|iers|ying)|sell(?:s|ing)?|sold|"
+    r"sales to|purchas(?:e|es|ed|er|ers|ing)|orders?|ordered|contracts?|contracted|"
+    r"agreements?|partner(?:s|ship|ships)?|buy(?:s|ing)?|bought|ship(?:s|ped|ping)? to)\b"
+    r"|顧客|取引先|供給|納入|受注|客戶|客户|供應|供应|採購|采购|訂單|订单",
+    re.IGNORECASE,
+)
+
+# Wording that asserts a product is shipping or in operation.
+SHIPPING = re.compile(
+    r"\b(ship(?:s|ped|ping|ment|ments)?|deliver(?:s|ed|ing|y|ies)?|"
+    r"in (?:volume |mass |commercial )?production|(?:volume|mass) production|"
+    r"operat(?:es|ing|ional)|in (?:commercial )?(?:service|operation)|deployed|installed)\b"
+    r"|量産|出荷|稼働|量產|出貨|出货|交付|投產|投产",
+    re.IGNORECASE,
+)
+
+# Wording that asserts a product can be bought.
+AVAILABLE = re.compile(
+    r"\b(available|availability|launch(?:ed|es)?|released?|on sale|offer(?:s|ed|ing)?|"
+    r"sell(?:s|ing)?|sold|introduced)\b"
+    r"|販売|発売|提供|上市|推出|銷售|销售|供貨|供货",
+    re.IGNORECASE,
+)
