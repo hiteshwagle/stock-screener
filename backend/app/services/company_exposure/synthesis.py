@@ -24,7 +24,7 @@ from app.domain.company_exposure.policy import (
     MAX_SYNTHESIS_PRIMARY_PREMISES,
     within_synthesis_bound,
 )
-from app.services.company_exposure.wording import affirmed, clauses
+from app.services.company_exposure.wording import affirmed, clauses, mentions
 
 APPLICATION_LINKS = frozenset(
     {"issuer_offers_product", "product_supports_application", "segment_of_issuer"}
@@ -59,7 +59,7 @@ class SynthesisDecision:
 
 
 def _mentions(quote: str, entity: str) -> bool:
-    return entity.casefold() in quote.casefold()
+    return mentions(quote, entity)
 
 
 def validate_synthesis(

@@ -26,6 +26,7 @@ from app.domain.company_exposure.contracts import (
     MaterialityBasis,
     QualitativeMateriality,
 )
+from app.services.company_exposure.wording import mentions
 
 SHARE_METRICS = frozenset(
     {"revenue_share", "profit_share", "capacity_share", "backlog_share", "asset_share"}
@@ -247,7 +248,7 @@ def validate_measure(
         elif percent:
             stored_value, stored_unit = value / Decimal(100), "ratio"
     theme_specific = bool(scope_label) and any(
-        term.casefold() in scope_label.casefold() for term in theme_terms
+        mentions(scope_label, term) for term in theme_terms
     )
     return MaterialityMeasureResult(
         basis=MaterialityBasis.DISCLOSED,
@@ -304,7 +305,11 @@ def compatible_ratio(
         holds.append("share_out_of_range")
         value = None
     return MaterialityMeasureResult(
-        basis=MaterialityBasis.CALCULATED,
+        # A ratio that could not be computed is unknown, not a calculated
+        # value of nothing (a calculated measure always carries its value).
+        basis=MaterialityBasis.CALCULATED
+        if value is not None
+        else MaterialityBasis.UNKNOWN,
         metric=metric,
         value=value,
         unit="ratio",
@@ -389,11 +394,11 @@ def calculate_materiality(
         operands_compatible=not holds,
     )
     all_holds = tuple(dict.fromkeys([*holds, *result.hold_reasons]))
-    theme_specific = any(
-        term.casefold() in numerator.label.casefold() for term in theme_terms
-    )
+    # Held ratios keep their operands and reasons for review but are stored
+    # as unknown: only a computed ratio is a calculated measure.
+    theme_specific = any(mentions(numerator.label, term) for term in theme_terms)
     return MaterialityMeasureResult(
-        basis=MaterialityBasis.CALCULATED,
+        basis=MaterialityBasis.UNKNOWN if all_holds else MaterialityBasis.CALCULATED,
         metric=metric,
         value=None if all_holds else result.value,
         unit="ratio",

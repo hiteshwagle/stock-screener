@@ -48,6 +48,24 @@ def clauses(quotes: list[str]) -> list[str]:
     ]
 
 
+def mentions(text: str, term: str) -> bool:
+    """Whether ``text`` names ``term`` as a word, not inside another word.
+
+    "AI" is not in "available" and "X1" is not in "X100", but "HBM" is in
+    "HBM3E" and "tester" in "testers". Scripts without word boundaries
+    (CJK) fall back to substring matching.
+    """
+
+    if not term or not text:
+        return False
+    if not term.isascii():
+        return term.casefold() in text.casefold()
+    before = r"(?<![0-9])" if term[0].isdigit() else r"(?<![A-Za-z])"
+    after = r"(?![0-9])" if term[-1].isdigit() else r"(?:e?s)?(?![A-Za-z])"
+    pattern = before + re.escape(term) + after
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 def affirmed(clause: str) -> bool:
     return not NEGATION.search(clause)
 

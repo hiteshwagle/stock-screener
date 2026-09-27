@@ -77,6 +77,7 @@ from app.services.company_exposure.wording import (
     SHIPPING,
     affirmed,
     clauses,
+    mentions,
 )
 
 VERIFICATION_POLICY = "verification-v1"
@@ -293,9 +294,8 @@ def _linking_clauses(quotes: list[str], product_terms, theme_terms) -> list[str]
 
     linking = []
     for clause in clauses(quotes):
-        folded = clause.casefold()
-        if any(t.casefold() in folded for t in product_terms if t) and any(
-            t.casefold() in folded for t in theme_terms if t
+        if any(mentions(clause, t) for t in product_terms) and any(
+            mentions(clause, t) for t in theme_terms
         ):
             linking.append(clause)
     return linking
@@ -374,9 +374,10 @@ def _ungrounded(statement: str, quotes: list[str], scope: AssessmentScope) -> li
 
     known = " ".join(
         [*quotes, *scope.issuer_names, *scope.theme_terms, scope.theme_label or ""]
-    ).casefold()
+    )
     candidates = _NUMBER.findall(statement) + _name_parts(statement)
-    return [c for c in dict.fromkeys(candidates) if c.casefold() not in known]
+    # Word-bounded: "AI" is not grounded by "available", nor "40%" by "140%".
+    return [c for c in dict.fromkeys(candidates) if not mentions(known, c)]
 
 
 # Function words a statement may add without asserting anything new.
@@ -507,12 +508,18 @@ def _affirmed(clauses: list[str]) -> bool:
 
 
 def _customer_clauses(
-    quotes: list[str], statement: str, scope: AssessmentScope, product_terms
+    quotes: list[str],
+    statement: str,
+    scope: AssessmentScope,
+    product_terms,
+    key_tokens,
 ) -> list[str]:
-    """Clauses asserting a commercial relationship with the named counterparty.
+    """Clauses asserting a relationship for the claimed product.
 
-    Names in the statement that are not the issuer, theme or product are the
-    counterparty; when there is one, the clause must name it.
+    The clause must name the claimed product ("Nvidia is our customer" says
+    nothing about ET-9000). Names in the statement that are not the issuer,
+    theme or product are the counterparty; when there is one, the clause
+    must name it too.
     """
 
     own = " ".join([*scope.issuer_names, *scope.theme_terms, *product_terms]).casefold()
@@ -521,10 +528,8 @@ def _customer_clauses(
         clause
         for clause in clauses(quotes)
         if CUSTOMER.search(clause)
-        and (
-            not counterparty
-            or any(p.casefold() in clause.casefold() for p in counterparty)
-        )
+        and _names_product(clause, product_terms, key_tokens)
+        and (not counterparty or any(mentions(clause, p) for p in counterparty))
     ]
 
 
@@ -532,7 +537,7 @@ def _names_product(text: str, product_terms, key_tokens) -> bool:
     """Whether text names the claimed product (a term or a key token)."""
 
     return bool(_tokens(text) & key_tokens) or any(
-        t.casefold() in text.casefold() for t in product_terms if t
+        mentions(text, t) for t in product_terms
     )
 
 
@@ -553,7 +558,7 @@ def _bound_measure(measure, texts: list[str], product_terms, key_tokens, scope):
     joined = " ".join(t for t in texts if t)
     if measure.theme_specific or _names_product(joined, product_terms, key_tokens):
         return measure
-    if any(t and t.casefold() in joined.casefold() for t in scope.theme_terms):
+    if any(mentions(joined, t) for t in scope.theme_terms):
         return measure
     return unknown_materiality("materiality_not_bound_to_exposure")
 
@@ -575,7 +580,7 @@ def _synthesis_scope_holds(
     subject = str(spec.get("subject", ""))
     application = str(spec.get("application", "")).casefold()
     holds = []
-    if not any(t and t.casefold() in application for t in scope.theme_terms):
+    if not any(mentions(application, t) for t in scope.theme_terms):
         holds.append("synthesis_application_not_theme")
     through_product = any(
         names_product(link.source) or names_product(link.target) for link in links
@@ -866,7 +871,11 @@ def validate_candidate(
             )
         elif kind == ClaimKind.CUSTOMER_RELATIONSHIP:
             relationship = _customer_clauses(
-                primary_quotes, str(raw.get("statement", "")), scope, product_terms
+                primary_quotes,
+                str(raw.get("statement", "")),
+                scope,
+                product_terms,
+                key_tokens,
             )
         else:
             relationship = clauses(primary_quotes)

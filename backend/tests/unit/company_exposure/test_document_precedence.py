@@ -214,3 +214,47 @@ def test_displayed_measure_returns_the_passage_it_rests_on(dossier):
             "document_revision_id": str(passage.document_revision_id),
         }
     ]
+
+
+def test_held_ratio_is_persisted_as_unknown(dossier):
+    from app.models.company_exposure import MaterialityMeasure
+    from app.services.company_exposure.materiality import (
+        Operand,
+        calculate_materiality,
+    )
+
+    passage = dossier.passages["materiality"]
+
+    def operand(value, unit):
+        return Operand(
+            value=Decimal(value),
+            unit=unit,
+            period="FY2025",
+            scope="issuer_consolidated",
+            label="Memory test revenue",
+            currency="USD",
+            passage_id=str(passage.id),
+            quote=f"Memory test revenue was USD {value} {unit} in FY2025",
+        )
+
+    held = calculate_materiality(
+        metric="revenue_share",
+        numerator=operand("20", "million"),
+        denominator=operand("1", "billion"),
+    )
+    assert "unit_mismatch" in held.hold_reasons
+    candidate = verified_claim(
+        "materiality",
+        passage=passage,
+        supported_as_of=ORIGINAL_10K,
+        materiality=held,
+    )
+    _, ref = dossier.persist(dossier.attempt(candidate))
+    (revision_id,) = ref.claim_revision_ids.values()
+    row = (
+        dossier.db.query(MaterialityMeasure)
+        .filter_by(claim_revision_id=revision_id)
+        .one()
+    )
+    assert (row.basis, row.value_low) == ("unknown", None)
+    assert "unit_mismatch" in row.hold_reasons

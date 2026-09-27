@@ -940,3 +940,55 @@ def test_every_asserted_status_needs_product_bound_wording(status, text, kept, h
     assert result.commercial_status == expected
     if hold:
         assert hold in result.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("text", "term", "found"),
+    [
+        ("The ET-9000 is available.", "AI", False),
+        ("Our AI accelerators ship.", "AI", True),
+        ("Supports HBM3E stacks.", "HBM", True),
+        ("Legacy X100 testers.", "X1", False),
+        ("ET-9000 testers ship.", "tester", True),
+        ("高頻寬記憶體HBM測試", "記憶體", True),
+    ],
+)
+def test_terms_match_as_words(text, term, found):
+    from app.services.company_exposure.wording import mentions
+
+    assert mentions(text, term) is found
+
+
+def test_short_theme_term_is_not_matched_inside_a_word():
+    ai_scope = AssessmentScope(
+        issuer_id=SCOPE.issuer_id,
+        economic_theme_id=SCOPE.economic_theme_id,
+        theme_fingerprint=SCOPE.theme_fingerprint,
+        theme_label="AI",
+        theme_terms=("AI",),
+        issuer_names=SCOPE.issuer_names,
+    )
+    text = "The ET-9000 is available."
+    result = validate_candidate(
+        claim(statement=text, support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        ai_scope,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "cooccurrence_only" in result.hold_reasons
+
+
+def test_customer_clause_must_name_the_claimed_product():
+    text = "Nvidia is our customer."
+    result = validate_candidate(
+        claim(
+            "customer_relationship",
+            product_terms=["X100"],  # filtered: not a term of "et-9000"
+            statement=text,
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "customer_not_stated" in result.hold_reasons
