@@ -208,6 +208,22 @@ def test_support_from_an_amended_filing_marks_the_claim_as_an_amendment():
     assert result.verified and result.amendment
 
 
+def test_segment_label_must_be_a_whole_word_of_the_evidence():
+    # "Lab" occurs only inside "collaboration".
+    text = "Through a collaboration, the ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim(
+            reporting_scope="segment_or_subsidiary",
+            scope_label="Lab",
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert "scope_label_not_in_evidence" in result.hold_reasons
+    assert not result.verified
+
+
 def test_statement_cannot_add_figures_or_names_the_evidence_lacks():
     text = "The ET-9000 supports HBM testing."
     grounded = validate_candidate(

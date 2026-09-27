@@ -401,3 +401,48 @@ def test_grounded_matching_basis_keeps_the_ratio():
     )
     assert result.hold_reasons == ()
     assert result.value == Decimal("0.2")
+
+
+@pytest.mark.parametrize(
+    ("period", "quote", "evidence", "held"),
+    [
+        # "1" and "2024" both occur in the filing date, but no quarter is stated.
+        ("Q1 FY2024", "Memory test was 20% of revenue.", ("2024-12-31",), True),
+        (
+            "Q1 FY2024",
+            "In the first quarter of fiscal 2024, memory test was 20% of revenue.",
+            (),
+            False,
+        ),
+        # A quarterly figure is not an annual one.
+        ("FY2024", "In Q1 2024 memory test was 20% of revenue.", (), True),
+        ("FY2024", "Memory test was 20% of revenue.", ("2024-12-31",), False),
+    ],
+)
+def test_period_must_be_stated_as_a_whole_period(period, quote, evidence, held):
+    result = validate_measure(
+        metric="revenue_percent",
+        value=Decimal(20),
+        unit="percent",
+        period=period,
+        scope="issuer_consolidated",
+        scope_label=None,
+        quote=quote,
+        passage_id="p",
+        period_evidence=evidence,
+    )
+    assert ("period_not_in_quote" in result.hold_reasons) is held
+
+
+def test_scope_label_words_must_be_whole_words_in_the_quote():
+    result = validate_measure(
+        metric="revenue_percent",
+        value=Decimal(20),
+        unit="percent",
+        period="FY2025",
+        scope="segment_or_subsidiary",
+        scope_label="Lab",
+        quote="Our collaboration revenue was 20% of revenue in FY2025.",
+        passage_id="p",
+    )
+    assert "scope_not_in_quote" in result.hold_reasons

@@ -160,6 +160,60 @@ _ADJUSTED = re.compile(
 _STANDARD = re.compile(r"\b(gaap|ifrs)\b", re.IGNORECASE)
 
 
+# Period grammar: a year, optionally narrowed to a quarter or half.
+_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_SHORT_YEAR = re.compile(r"\bfy\s*'?(\d{2})\b", re.IGNORECASE)
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_ORDINALS = {"first": "1", "second": "2", "third": "3", "fourth": "4"}
+_QUARTER = re.compile(
+    r"\bq([1-4])\b|\b([1-4])q\b|\b(first|second|third|fourth)\s+(?:fiscal\s+)?quarter\b"
+    r"|第([1-4])四半期",
+    re.IGNORECASE,
+)
+_HALF = re.compile(
+    r"\bh([12])\b|\b([12])h\b|\b(first|second)\s+half\b|(上|下)半",
+    re.IGNORECASE,
+)
+
+
+def _years(text: str) -> set[str]:
+    return set(_YEAR.findall(text)) | {f"20{y}" for y in _SHORT_YEAR.findall(text)}
+
+
+def _sub_periods(text: str) -> set[tuple[str, str]]:
+    """Quarters and halves a text names, e.g. {("q", "1")}."""
+
+    found = set()
+    for kind, pattern in (("q", _QUARTER), ("h", _HALF)):
+        for match in pattern.finditer(text):
+            part = next(g for g in match.groups() if g).casefold()
+            part = {"上": "1", "下": "2"}.get(part, _ORDINALS.get(part, part))
+            found.add((kind, part))
+    return found
+
+
+def _period_grounded(period: str, quote: str, period_evidence: tuple[str, ...]) -> bool:
+    """The whole period is stated, not just digits that occur somewhere.
+
+    The year may come from the quote or the cited document's own period or
+    dates; a quarter or half must be stated by the quote itself, and a quote
+    about a quarter or half is not an annual figure ("Q1 FY2024" is not
+    grounded by an annual filing dated 2024-12-31).
+    """
+
+    period = _norm(period)
+    evidence = [_norm(e) for e in period_evidence]
+    if _ISO_DATE.fullmatch(period):
+        return period in quote or any(period in e for e in evidence)
+    years = _years(period)
+    if len(years) != 1:
+        return False
+    if not years <= _years(quote).union(*(_years(e) for e in evidence)):
+        return False
+    stated, claimed = _sub_periods(quote), _sub_periods(period)
+    return claimed <= stated if claimed else not stated
+
+
 def _stated_basis(quote: str, supplied: str | None) -> tuple[str, list[str]]:
     """The basis a quote states, and holds for a supplied one it does not.
 
@@ -209,13 +263,11 @@ def _grounding_holds(
         words = _CURRENCY_WORDS.get(currency.upper(), (currency.casefold(),))
         if not any(word in text for word in words):
             holds.append("currency_not_in_quote")
-    # The period may come from the document itself (its reporting period).
-    period_text = " ".join((text, *(_norm(p) for p in period_evidence)))
-    digits = re.findall(r"\d+", period or "")
-    if not period or any(d not in period_text for d in digits):
+    # The year may come from the document itself (its reporting period).
+    if not period or not _period_grounded(period, text, period_evidence):
         holds.append("period_not_in_quote")
     if scope_label and any(
-        word not in text for word in _WORD.findall(scope_label.casefold())
+        not mentions(text, word) for word in _WORD.findall(scope_label.casefold())
     ):
         holds.append("scope_not_in_quote")
     return list(dict.fromkeys(holds))

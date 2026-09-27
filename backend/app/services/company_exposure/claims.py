@@ -503,8 +503,11 @@ def _scope_hold(
 
     text = " ".join(carrying).casefold()
     if reporting_scope == ReportingScope.SEGMENT_OR_SUBSIDIARY:
+        # Each label word must be named as a word: "Lab" is not in
+        # "collaboration".
         if any(
-            word not in text for word in _TOKEN.findall((scope_label or "").casefold())
+            not mentions(text, word)
+            for word in _TOKEN.findall((scope_label or "").casefold())
         ):
             return "scope_label_not_in_evidence"
         return None

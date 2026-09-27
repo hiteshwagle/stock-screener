@@ -220,6 +220,15 @@ class SubscriptionArtifactRunner:
             existing = self.cached(provider_input)
             self.commit()
             return self._reused(existing)
+        if ticket.state == "in_flight":
+            self.commit()
+            return ArtifactRunResult(
+                artifact_id=None,
+                ticket_id=None,
+                retryable=True,
+                pause_reason=None,
+                failure_code=ticket.reason,
+            )
         if not ticket.allowed:
             self.commit()
             return ArtifactRunResult(

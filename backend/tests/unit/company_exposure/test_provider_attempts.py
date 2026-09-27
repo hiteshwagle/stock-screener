@@ -187,9 +187,14 @@ def test_unresolved_dispatch_is_never_sent_twice(
     db_session.rollback()
     subscription_runner.provider.call_once = original
 
-    # The lost call may still have succeeded: pause instead of re-sending.
+    # The lost call may still finish: recheck later instead of re-sending
+    # (the stage pauses as unresolved once its retries run out).
     blocked = subscription_runner.run(provider_input)
-    assert blocked.pause_reason == "provider_dispatch_unresolved"
+    assert (blocked.failure_code, blocked.retryable, blocked.pause_reason) == (
+        "provider_dispatch_in_flight",
+        True,
+        None,
+    )
     assert go_transport.requests == []
 
     # Closing the period settles it as uncertain spend; then it may retry.
@@ -197,6 +202,36 @@ def test_unresolved_dispatch_is_never_sent_twice(
     resources.close_ended_periods()
     go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
     assert subscription_runner.run(provider_input).artifact_id is not None
+    assert len(go_transport.requests) == 1
+
+
+def test_identical_call_in_flight_is_rechecked_then_reused(
+    subscription_runner, provider_input, go_transport, db_session
+):
+    original = subscription_runner.provider.call_once
+    overlapping = []
+
+    def call_once(*args, **kwargs):
+        # A second job asks for the same call while this one is in flight.
+        overlapping.append(subscription_runner.run(provider_input))
+        return original(*args, **kwargs)
+
+    subscription_runner.provider.call_once = call_once
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    first = subscription_runner.run(provider_input)
+    subscription_runner.provider.call_once = original
+    assert first.artifact_id is not None
+    # Retryable, not a pause that would strand the second job.
+    [blocked] = overlapping
+    assert (blocked.failure_code, blocked.retryable, blocked.pause_reason) == (
+        "provider_dispatch_in_flight",
+        True,
+        None,
+    )
+
+    # Once the first call stored its artifact, the recheck reuses it.
+    again = subscription_runner.run(provider_input)
+    assert (again.reused, again.artifact_id) == (True, first.artifact_id)
     assert len(go_transport.requests) == 1
 
 

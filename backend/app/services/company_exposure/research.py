@@ -85,6 +85,10 @@ from app.services.company_exposure.preparation import (
     select_passages,
 )
 from app.services.company_exposure.research_requests import enqueue_stage
+from app.services.company_exposure.resources import (
+    PROVIDER_DISPATCH_IN_FLIGHT,
+    PROVIDER_DISPATCH_UNRESOLVED,
+)
 from app.services.company_exposure.storage import StorageUnavailable
 
 ANNUAL_REPORTS = DocumentQuery(document_kinds=("annual_report",), max_documents=2)
@@ -340,11 +344,20 @@ class ResearchStageRunner:
                 else "live_mode_not_installed",
             )
         if outcome.status == StepStatus.RETRYABLE and attempts >= MAX_STAGE_ATTEMPTS:
-            outcome = StageOutcome(
-                StepStatus.FAILED,
-                ResearchJobState.TERMINAL_FAILURE,
-                {**outcome.detail, "attempts": attempts},
-            )
+            if outcome.detail.get("condition") == PROVIDER_DISPATCH_IN_FLIGHT:
+                # The identical call never settled (its worker likely died):
+                # it may still have run, so pause rather than fail or resend.
+                outcome = StageOutcome.pause(
+                    ResearchJobState.PAUSED_ALLOWANCE,
+                    PROVIDER_DISPATCH_UNRESOLVED,
+                    attempts=attempts,
+                )
+            else:
+                outcome = StageOutcome(
+                    StepStatus.FAILED,
+                    ResearchJobState.TERMINAL_FAILURE,
+                    {**outcome.detail, "attempts": attempts},
+                )
         return self._finish(work_id, lease_token, request, stage, outcome, attempts)
 
     def _finish(self, work_id, lease_token, request, stage, outcome, attempts):

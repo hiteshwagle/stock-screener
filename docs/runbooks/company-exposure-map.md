@@ -107,7 +107,7 @@ published in S1).
 | `review_required` / `issuer_link_required` | No accepted issuer link and no registry route | Resolve (below) |
 | `unavailable_capability` / `sec_user_agent_not_configured`, `route_not_approved`, `subscription_credentials_missing`, `theme_definition_unavailable`, `research_disabled` | Configuration or capability missing | Fix configuration, then resume |
 | `paused_allowance` / `allocation_not_configured`, `capacity_exhausted` | Local allocation missing or used up for the period | Wait for the next period or raise the limit; resume |
-| `paused_allowance` / `provider_dispatch_unresolved` | An identical provider call was sent and is not settled: it is still running, its worker died mid-call, or it timed out after sending (`uncertain`), and it may yet have succeeded | Resume after its allocation period closes (`refresh-holds` expires it as uncertain spend); resume then sends it again |
+| `paused_allowance` / `provider_dispatch_unresolved` | An identical provider call was sent and is not settled, and it may yet have succeeded: it timed out after sending (`uncertain`), or it stayed in flight through every retry (its worker likely died mid-call). While an identical call is merely in flight the stage retries (`provider_dispatch_in_flight`) and reuses its result | Resume after its allocation period closes (`refresh-holds` expires it as uncertain spend); resume then sends it again |
 | `paused_storage` | Evidence store full or below the free-space floor | Free space / raise the cap; resume |
 | `retryable_failure` | Transient fetch/provider error; retried with backoff (max 4 attempts) | None; `terminal_failure` after the last attempt |
 

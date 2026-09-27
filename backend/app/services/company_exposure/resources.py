@@ -109,6 +109,13 @@ class PeriodCloseReport:
     expired_reservation_ids: tuple[UUID, ...]
 
 
+# An identical call is still reserved or sent without a result: it may
+# finish and store its artifact, so the caller rechecks later.
+PROVIDER_DISPATCH_IN_FLIGHT = "provider_dispatch_in_flight"
+# An identical call timed out after sending: it may have run remotely and
+# stays unresolved until its allocation period closes.
+PROVIDER_DISPATCH_UNRESOLVED = "provider_dispatch_unresolved"
+
 _UNSETTLED = frozenset(
     {
         ReservationState.RESERVED,
@@ -229,13 +236,18 @@ class ResearchResources:
         )
         if settled is not None and settled():
             return ReservationTicket(False, "reused", "artifact_exists")
-        if self._dispatch_unresolved(dispatch.logical_operation_key):
-            # The same call is running, or its worker died mid-call: it may
-            # still succeed, so never send it twice. Its reservation settles
-            # as uncertain spend when the period closes; resume then retries.
+        unsettled = self._unsettled_states(dispatch.logical_operation_key)
+        # Never send an identical call twice while one may still succeed.
+        if ReservationState.UNCERTAIN in unsettled:
+            # It timed out after sending; it settles as uncertain spend when
+            # its period closes, and resume then sends it again.
             return ReservationTicket(
-                False, "paused_allowance", "provider_dispatch_unresolved"
+                False, "paused_allowance", PROVIDER_DISPATCH_UNRESOLVED
             )
+        if unsettled:
+            # Still running (or its worker died mid-call): retry later, when
+            # its artifact is reused or the stage gives up and pauses.
+            return ReservationTicket(False, "in_flight", PROVIDER_DISPATCH_IN_FLIGHT)
         outcome = self.ledger.reserve(
             pool_id=request_pool.id,
             amount=1,
@@ -313,13 +325,12 @@ class ResearchResources:
             period_end=period_end,
         )
 
-    def _dispatch_unresolved(self, logical_operation_key: str) -> bool:
-        """An identical call may still have run and is not yet settled.
+    def _unsettled_states(self, logical_operation_key: str) -> set[ReservationState]:
+        """States of identical calls that may still have run and are unsettled.
 
-        That covers a call reserved or sent without a result (a worker died
-        mid-call) and one that timed out after sending (``uncertain``): either
-        may have succeeded remotely, so it blocks re-sending until it expires
-        with its allocation period.
+        A call reserved or sent without a result is in flight (or its worker
+        died mid-call); one that timed out after sending is ``uncertain``.
+        Either may have succeeded remotely, so neither may be sent again.
         """
 
         attempts = self.session.execute(
@@ -328,10 +339,11 @@ class ResearchResources:
                 ResearchProviderAttempt.reservation_id.is_not(None),
             )
         ).scalars()
-        return any(
-            self.ledger.state(reservation_id) in _UNSETTLED
-            for reservation_id in attempts
-        )
+        return {
+            state
+            for state in (self.ledger.state(r) for r in attempts)
+            if state in _UNSETTLED
+        }
 
     def _ids(self, ticket: ReservationTicket) -> list[UUID]:
         return [i for i in (ticket.id, ticket.token_reservation_id) if i is not None]

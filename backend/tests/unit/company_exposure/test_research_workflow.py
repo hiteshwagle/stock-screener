@@ -451,6 +451,33 @@ def test_filing_fetch_gaps_pause_only_when_an_operator_can_fix_them(
     assert (acquired.stage, acquired.status) == outcome
 
 
+def test_identical_call_in_flight_retries_then_pauses_if_it_never_settles(
+    harness, monkeypatch
+):
+    from app.services.company_exposure.claims import ClaimReviewBatch
+
+    harness.serve_sec()
+    harness.request()
+    harness.step(), harness.step()
+    # Another job's identical provider call stays reserved/dispatched.
+    monkeypatch.setattr(
+        harness.runner.verifier,
+        "verify_claims",
+        lambda *_a, **_k: ClaimReviewBatch(
+            failure_code="provider_dispatch_in_flight", retryable=True
+        ),
+    )
+    outcomes = []
+    for _ in range(4):
+        outcomes.append(harness.step())
+        harness.clock.advance(hours=1)
+    # Rechecked on backoff while it may still finish (not stranded) ...
+    assert [o.status for o in outcomes[:3]] == ["retryable"] * 3
+    # ... and paused, never failed or resent, once it has not settled.
+    assert (outcomes[-1].status, outcomes[-1].state) == ("paused", "paused_allowance")
+    assert outcomes[-1].detail["condition"] == "provider_dispatch_unresolved"
+
+
 def test_slow_io_renews_the_lease_instead_of_losing_the_stage(harness):
     harness.serve_sec()
     pace = harness.rate.acquire
