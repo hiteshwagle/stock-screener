@@ -13,7 +13,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from datetime import date
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, ContextManager, Mapping, Protocol, Sequence
 
 from app.domain.relative_strength import (
     BALANCED_RS_FORMULA_VERSION,
@@ -543,3 +543,72 @@ class StockScanner(Protocol):
         market_rs_resolution: MarketRsResolution | None = ...,
     ) -> dict:
         ...
+
+
+@dataclass(frozen=True)
+class StockScanCall:
+    """One ``StockScanner.scan_stock_multi`` invocation.
+
+    ``kwargs`` are passed through verbatim, so a call means the same thing
+    whether it runs in-process or in a compute worker process.
+    """
+
+    symbol: str
+    kwargs: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class StockScanOutcome:
+    """What one :class:`StockScanCall` produced: a result or the exception it raised."""
+
+    result: object | None = None
+    error: BaseException | None = None
+
+
+class StockScanBatchRunner(Protocol):
+    """Runs a batch of scan calls and returns outcomes in input order."""
+
+    def scan_batch(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+        ...
+
+
+StockScanBatchRunnerFactory = Callable[
+    [StockScanner, int],
+    ContextManager[StockScanBatchRunner],
+]
+"""Opens a runner for ``(scanner, processes)``; closing it releases any workers."""
+
+
+class SerialStockScanBatchRunner:
+    """Runs every call in the current process, one after another."""
+
+    def __init__(self, scanner: StockScanner) -> None:
+        self._scanner = scanner
+
+    def __enter__(self) -> "SerialStockScanBatchRunner":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def scan_batch(self, calls: Sequence[StockScanCall]) -> list[StockScanOutcome]:
+        return [run_stock_scan_call(self._scanner, call) for call in calls]
+
+
+def run_stock_scan_call(scanner: StockScanner, call: StockScanCall) -> StockScanOutcome:
+    """Invoke the scanner for one call, capturing any exception as the outcome."""
+    try:
+        return StockScanOutcome(
+            result=scanner.scan_stock_multi(symbol=call.symbol, **call.kwargs)
+        )
+    except Exception as exc:
+        return StockScanOutcome(error=exc)
+
+
+def serial_stock_scan_batch_runner(
+    scanner: StockScanner,
+    processes: int,
+) -> SerialStockScanBatchRunner:
+    """Default :data:`StockScanBatchRunnerFactory`: ignores ``processes``."""
+    del processes
+    return SerialStockScanBatchRunner(scanner)

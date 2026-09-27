@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Iterator, Sequence
@@ -34,8 +33,14 @@ from app.domain.scanning.ports import (
     MarketRsReader,
     MarketRsResolution,
     ProgressSink,
+    SerialStockScanBatchRunner,
     StockDataProvider,
+    StockScanBatchRunner,
+    StockScanBatchRunnerFactory,
+    StockScanCall,
     StockScanner,
+    StockScanOutcome,
+    serial_stock_scan_batch_runner,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,7 +79,12 @@ def _should_persist_result(result: object) -> bool:
 
 @dataclass(frozen=True)
 class RunBulkScanCommand:
-    """Immutable value object describing the scan to execute."""
+    """Immutable value object describing the scan to execute.
+
+    ``parallel_workers`` is how many processes may compute a chunk's scan
+    results. Only chunks whose data is fully prefetched (always true for
+    cache-only scans) are spread across them; 1 computes in-process.
+    """
 
     scan_id: str
     symbols: list[str]
@@ -121,10 +131,14 @@ class RunBulkScanUseCase:
         scanner: StockScanner,
         data_provider: StockDataProvider | None = None,
         market_rs_reader: MarketRsReader | None = None,
+        scan_batch_runner_factory: StockScanBatchRunnerFactory = (
+            serial_stock_scan_batch_runner
+        ),
     ) -> None:
         self._scanner = scanner
         self._data_provider = data_provider
         self._market_rs_reader = market_rs_reader
+        self._scan_batch_runner_factory = scan_batch_runner_factory
 
     def execute(
         self,
@@ -258,6 +272,46 @@ class RunBulkScanUseCase:
         uow.commit()
 
         # ── Process chunks ────────────────────────────────────────
+        with self._scan_batch_runner_factory(
+            self._scanner,
+            cmd.parallel_workers if len(remaining_symbols) > 1 else 1,
+        ) as compute_runner:
+            return self._process_chunks(
+                uow,
+                scan,
+                cmd,
+                progress,
+                cancel,
+                remaining_symbols=remaining_symbols,
+                already_done=already_done,
+                total=total,
+                screener_names=screener_names,
+                composite_method=composite_method,
+                merged_requirements=merged_requirements,
+                default_market=default_market,
+                rs_publication_by_market=rs_publication_by_market,
+                compute_runner=compute_runner,
+            )
+
+    def _process_chunks(
+        self,
+        uow: UnitOfWork,
+        scan: object,
+        cmd: RunBulkScanCommand,
+        progress: ProgressSink,
+        cancel: CancellationToken,
+        *,
+        remaining_symbols: Sequence[str],
+        already_done: int,
+        total: int,
+        screener_names: list[str],
+        composite_method: str,
+        merged_requirements: object | None,
+        default_market: str,
+        rs_publication_by_market: dict[str, tuple[str, int | None, date | None]],
+        compute_runner: StockScanBatchRunner,
+    ) -> RunBulkScanResult:
+        in_process_runner = SerialStockScanBatchRunner(self._scanner)
         processed = already_done
         # Restore passed count from the scan record so resume doesn't
         # lose previously-accumulated passes.
@@ -377,7 +431,7 @@ class RunBulkScanUseCase:
             # 5b — Scan each symbol in the chunk
             chunk_results: list[tuple[str, dict]] = []
 
-            def _scan_one(symbol: str) -> tuple[str, dict | None, bool, bool]:
+            def _call_for(symbol: str) -> StockScanCall | None:
                 sym = symbol.upper()
                 # cache_only invariant: the bulk prefetch is the only sanctioned
                 # data source. Any path that leaves a symbol out of pre_fetched_data
@@ -385,8 +439,12 @@ class RunBulkScanUseCase:
                 # must not fall through to per-symbol prepare_data() which can still
                 # hit live APIs.
                 if cmd.cache_only and sym not in pre_fetched_data:
-                    return (sym, None, False, False)
-                scan_kwargs: dict[str, object] = {}
+                    return None
+                scan_kwargs: dict[str, object] = {
+                    "screener_names": screener_names,
+                    "criteria": cmd.criteria,
+                    "composite_method": composite_method,
+                }
                 if merged_requirements is not None:
                     scan_kwargs["pre_merged_requirements"] = merged_requirements
                 if (
@@ -398,62 +456,54 @@ class RunBulkScanUseCase:
                     )
                 if sym in pre_fetched_data:
                     scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
-                try:
-                    result = self._scanner.scan_stock_multi(
-                        symbol=sym,
-                        screener_names=screener_names,
-                        criteria=cmd.criteria,
-                        composite_method=composite_method,
-                        **scan_kwargs,
-                    )
-                    persistable = _should_persist_result(result)
-                    passed_flag = (
-                        bool(result.get("passes_template"))
-                        if isinstance(result, dict)
-                        else False
-                    )
-                    return (sym, result, passed_flag, persistable)
-                except Exception:
+                return StockScanCall(symbol=sym, kwargs=scan_kwargs)
+
+            def _interpret(
+                sym: str,
+                outcome: StockScanOutcome,
+            ) -> tuple[dict | None, bool, bool]:
+                if outcome.error is not None:
                     logger.debug(
                         "Error scanning %s in scan %s",
                         sym,
                         cmd.scan_id,
-                        exc_info=True,
+                        exc_info=outcome.error,
                     )
-                    return (sym, None, False, False)
+                    return (None, False, False)
+                result = outcome.result
+                passed_flag = (
+                    bool(result.get("passes_template"))
+                    if isinstance(result, dict)
+                    else False
+                )
+                return (result, passed_flag, _should_persist_result(result))
 
-            outcomes: list[tuple[str, dict | None, bool, bool] | None] = [
-                None for _ in chunk
-            ]
+            calls = [_call_for(symbol) for symbol in chunk]
             prefetch_covers_chunk = bool(pre_fetched_data) and all(
                 symbol.upper() in pre_fetched_data for symbol in chunk
             )
-            effective_workers = (
-                cmd.parallel_workers
+            # Symbols outside the prefetch fetch their own data (live
+            # providers); keep those serial so they respect rate limits.
+            runner = (
+                compute_runner
                 if cmd.cache_only or prefetch_covers_chunk
-                else 1
+                else in_process_runner
             )
-            if effective_workers > 1 and len(chunk) > 1:
-                workers = min(effective_workers, len(chunk))
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = {
-                        executor.submit(_scan_one, symbol): index
-                        for index, symbol in enumerate(chunk)
-                    }
-                    for future in as_completed(futures):
-                        outcomes[futures[future]] = future.result()
-            else:
-                for index, symbol in enumerate(chunk):
-                    outcomes[index] = _scan_one(symbol)
+            scan_outcomes = iter(
+                runner.scan_batch([call for call in calls if call is not None])
+            )
 
-            for outcome in outcomes:
-                if outcome is None:
+            for call in calls:
+                if call is None:
                     failed += 1
                     processed += 1
                     continue
-                sym, result, passed_flag, persistable = outcome
+                result, passed_flag, persistable = _interpret(
+                    call.symbol,
+                    next(scan_outcomes),
+                )
                 if persistable and result is not None:
-                    chunk_results.append((sym, result))
+                    chunk_results.append((call.symbol, result))
                     if passed_flag:
                         passed += 1
                 else:

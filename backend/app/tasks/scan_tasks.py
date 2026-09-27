@@ -16,7 +16,7 @@ from ..celery_app import celery_app
 from ..database import SessionLocal, is_corruption_error, safe_rollback
 from ..models.scan_result import Scan, ScanResult
 from ..config import settings
-from ..utils.parallelism import bounded_symbol_workers
+from ..utils.parallelism import resolve_scan_compute_processes
 from .workload_coordination import serialized_market_workload
 
 logger = logging.getLogger(__name__)
@@ -240,7 +240,9 @@ def _run_bulk_scan_via_use_case(task_instance, scan_id, symbol_list, criteria):
             chunk_size=settings.scan_usecase_chunk_size,
             correlation_id=task_instance.request.id,
             cache_only=cache_only,
-            parallel_workers=bounded_symbol_workers(4),
+            parallel_workers=resolve_scan_compute_processes(
+                settings.scan_compute_processes
+            ),
         )
         result = use_case.execute(uow, cmd, progress, cancel)
     except Exception:

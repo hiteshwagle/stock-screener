@@ -616,7 +616,7 @@ def build_daily_snapshot(
         BootstrapCacheCoverageInsufficient,
         BuildDailySnapshotCommand,
     )
-    from app.utils.parallelism import bounded_symbol_workers
+    from app.utils.parallelism import resolve_scan_compute_processes
     from app.wiring.bootstrap import get_build_daily_snapshot_use_case
 
     def _publish_activity(activity_fn, **kwargs) -> None:
@@ -935,10 +935,10 @@ def build_daily_snapshot(
             if static_worker_config_requested
             else None
         ),
-        static_parallel_workers=(
-            bounded_symbol_workers(settings.static_snapshot_parallel_workers)
+        parallel_workers=resolve_scan_compute_processes(
+            settings.static_snapshot_parallel_workers
             if static_worker_config_requested
-            else 1
+            else settings.scan_compute_processes
         ),
         bootstrap_cache_only_if_covered=bootstrap_gate_requested,
         bootstrap_coverage_report=effective_bootstrap_coverage_report,

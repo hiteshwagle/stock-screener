@@ -93,6 +93,7 @@ def get_export_scan_results_use_case() -> ExportScanResultsUseCase:
 
 
 def get_run_bulk_scan_use_case() -> RunBulkScanUseCase:
+    from app.infra.tasks.scan_compute_pool import process_stock_scan_batch_runner
     from app.use_cases.scanning.run_bulk_scan import RunBulkScanUseCase
 
     runtime = resolve_runtime_services()
@@ -101,6 +102,7 @@ def get_run_bulk_scan_use_case() -> RunBulkScanUseCase:
         scanner=runtime.scan_orchestrator(),
         data_provider=runtime.stock_data_provider(),
         market_rs_reader=runtime.market_rs_reader(),
+        scan_batch_runner_factory=process_stock_scan_batch_runner,
     )
 
 
@@ -123,6 +125,7 @@ def get_compare_feature_runs_use_case() -> CompareFeatureRunsUseCase:
 
 
 def get_build_daily_snapshot_use_case() -> BuildDailyFeatureSnapshotUseCase:
+    from app.infra.tasks.scan_compute_pool import process_stock_scan_batch_runner
     from app.services.bootstrap_cache_coverage import (
         evaluate_bootstrap_cache_coverage,
     )
@@ -138,6 +141,7 @@ def get_build_daily_snapshot_use_case() -> BuildDailyFeatureSnapshotUseCase:
         market_calendar=runtime.market_calendar_service(),
         market_rs_reader=runtime.market_rs_reader(),
         bootstrap_coverage_evaluator=evaluate_bootstrap_cache_coverage,
+        scan_batch_runner_factory=process_stock_scan_batch_runner,
     )
 
 

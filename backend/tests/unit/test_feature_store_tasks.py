@@ -981,8 +981,8 @@ def test_build_daily_snapshot_static_daily_mode_requires_bulk_prefetch():
     fake_use_case = _FakeUseCase()
 
     with patch(
-        "app.utils.parallelism.os.cpu_count",
-        return_value=4,
+        "app.utils.parallelism.available_cpu_count",
+        return_value=2,
     ), patch(
         "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
         return_value=True,
@@ -1020,7 +1020,7 @@ def test_build_daily_snapshot_static_daily_mode_requires_bulk_prefetch():
         == settings.static_snapshot_chunk_size
     )
     assert (
-        fake_use_case.received_cmd.static_parallel_workers
+        fake_use_case.received_cmd.parallel_workers
         == 2
     )
 
@@ -1029,7 +1029,7 @@ def test_build_daily_snapshot_static_daily_mode_keeps_setting_as_upper_bound_on_
     fake_use_case = _FakeUseCase()
 
     with patch(
-        "app.utils.parallelism.os.cpu_count",
+        "app.utils.parallelism.available_cpu_count",
         return_value=16,
     ), patch(
         "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
@@ -1059,7 +1059,7 @@ def test_build_daily_snapshot_static_daily_mode_keeps_setting_as_upper_bound_on_
         )
 
     assert (
-        fake_use_case.received_cmd.static_parallel_workers
+        fake_use_case.received_cmd.parallel_workers
         == settings.static_snapshot_parallel_workers
     )
 
@@ -1106,8 +1106,8 @@ def test_build_daily_snapshot_bootstrap_gate_pass_wires_cache_only_without_null_
     celery_progress = object()
 
     with patch(
-        "app.utils.parallelism.os.cpu_count",
-        return_value=4,
+        "app.utils.parallelism.available_cpu_count",
+        return_value=2,
     ), patch(
         "app.interfaces.tasks.feature_store_tasks._is_market_trading_day",
         return_value=True,
@@ -1149,7 +1149,7 @@ def test_build_daily_snapshot_bootstrap_gate_pass_wires_cache_only_without_null_
     assert not hasattr(fake_use_case.received_cmd, "bootstrap_coverage_threshold")
     assert fake_use_case.received_cmd.bootstrap_coverage_report["eligible"] is True
     assert fake_use_case.received_cmd.static_chunk_size == settings.static_snapshot_chunk_size
-    assert fake_use_case.received_cmd.static_parallel_workers == 2
+    assert fake_use_case.received_cmd.parallel_workers == 2
     assert fake_use_case.received_cmd.batch_only_prices is False
     assert fake_use_case.received_cmd.require_bulk_prefetch is False
     mock_celery_progress.assert_called_once()

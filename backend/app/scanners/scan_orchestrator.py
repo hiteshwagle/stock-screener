@@ -7,7 +7,6 @@ calculates composite scores.
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -286,44 +285,34 @@ def _run_screeners(
     runnable: dict[str, BaseStockScreener],
     unavailable: list[str],
 ) -> _ScreenerExecution:
-    def run_one(
-        name: str,
-        screener: BaseStockScreener,
-    ) -> tuple[str, Optional[ScreenerResult]]:
-        try:
-            result = screener.scan_stock(symbol, stock_data, criteria)
-            logger.info(
-                "%s - %s: score=%.1f, passes=%s, rating=%s",
-                symbol,
-                name,
-                result.score,
-                result.passes,
-                result.rating,
-            )
-            return name, result
-        except Exception as exc:
-            logger.error("Error running %s screener on %s: %s", name, symbol, exc)
-            return name, None
-
+    # Screeners run one after another: they are CPU-bound Python, so threads
+    # would only contend for the GIL. Scans parallelize across processes at
+    # the symbol level instead (see app.infra.tasks.scan_compute_pool).
     results: dict[str, ScreenerResult] = {}
     hard_errors: list[str] = []
     insufficient: dict[str, str | None] = {}
     unavailable = list(unavailable)
-    with ThreadPoolExecutor(max_workers=min(len(runnable), 5)) as executor:
-        futures = {
-            executor.submit(run_one, name, screener): name
-            for name, screener in runnable.items()
-        }
-        for future in as_completed(futures):
-            name, result = future.result()
-            if result is None:
-                hard_errors.append(name)
-            elif result.rating == "Insufficient Data":
-                unavailable.append(name)
-                details = result.details if isinstance(result.details, dict) else {}
-                insufficient[name] = details.get("reason") or details.get("error")
-            else:
-                results[name] = result
+    for name, screener in runnable.items():
+        try:
+            result = screener.scan_stock(symbol, stock_data, criteria)
+        except Exception as exc:
+            logger.error("Error running %s screener on %s: %s", name, symbol, exc)
+            hard_errors.append(name)
+            continue
+        logger.debug(
+            "%s - %s: score=%.1f, passes=%s, rating=%s",
+            symbol,
+            name,
+            result.score,
+            result.passes,
+            result.rating,
+        )
+        if result.rating == "Insufficient Data":
+            unavailable.append(name)
+            details = result.details if isinstance(result.details, dict) else {}
+            insufficient[name] = details.get("reason") or details.get("error")
+        else:
+            results[name] = result
     return _ScreenerExecution(
         results=results,
         unavailable=unavailable,
