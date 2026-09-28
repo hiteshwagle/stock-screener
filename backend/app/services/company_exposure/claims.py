@@ -683,6 +683,13 @@ def _affirmed(clauses: list[str]) -> bool:
     return any(not NEGATION.search(clause) for clause in clauses)
 
 
+def _counterparty(statement: str, scope: AssessmentScope, product_terms) -> list[str]:
+    """Names in the statement that are not the issuer, theme or product."""
+
+    own = " ".join([*scope.issuer_names, *scope.theme_terms, *product_terms]).casefold()
+    return [p for p in _name_parts(statement) if p.casefold() not in own]
+
+
 def _customer_clauses(
     quotes: list[str],
     statement: str,
@@ -698,8 +705,7 @@ def _customer_clauses(
     must name it too.
     """
 
-    own = " ".join([*scope.issuer_names, *scope.theme_terms, *product_terms]).casefold()
-    counterparty = [p for p in _name_parts(statement) if p.casefold() not in own]
+    counterparty = _counterparty(statement, scope, product_terms)
     # A statement that says who buys must match a clause saying the same.
     direction = _customer_direction(statement, scope.issuer_names)
     return [
@@ -739,10 +745,14 @@ def _first_person(text: str, issuer_names) -> str:
     """Read the issuer's own name as "we"/"our": "Example Corp is NVIDIA's
     customer" states the same direction as "We are NVIDIA's customer"."""
 
-    for name in sorted((n for n in issuer_names if n), key=len, reverse=True):
-        pattern = re.escape(name)
+    for name in sorted((n.strip() for n in issuer_names if n.strip()), key=len)[::-1]:
+        # Boundaries only where the name starts or ends with a word character:
+        # "Example Corp." ends in punctuation, which \b cannot follow.
+        start = r"(?<!\w)" if name[0].isalnum() else ""
+        end = r"(?!\w)" if name[-1].isalnum() else ""
+        pattern = start + re.escape(name)
         text = re.sub(pattern + r"['’]s\b", "our", text, flags=re.IGNORECASE)
-        text = re.sub(r"\b" + pattern + r"\b", "we", text, flags=re.IGNORECASE)
+        text = re.sub(pattern + end, "we", text, flags=re.IGNORECASE)
     return text
 
 
@@ -757,7 +767,7 @@ def _customer_direction(text: str, issuer_names=()) -> str | None:
 
 
 def _contradicts(
-    quote: str, kind, product_terms, key_tokens, scope, status=None
+    quote: str, kind, product_terms, key_tokens, scope, status=None, counterparty=()
 ) -> bool:
     """A cited conflict that is about this claim and actually denies it.
 
@@ -774,7 +784,7 @@ def _contradicts(
         if not _names_product(clause, product_terms, key_tokens):
             continue
         if any(
-            _denies(kind, part, scope.theme_terms, status)
+            _denies(kind, part, scope.theme_terms, status, counterparty)
             for part in denied_conjuncts(clause)
         ):
             return True
@@ -806,7 +816,7 @@ _MATERIALITY_WORDING = re.compile(
 )
 
 
-def _denies(kind, part: str, theme_terms, status=None) -> bool:
+def _denies(kind, part: str, theme_terms, status=None, counterparty=()) -> bool:
     """Whether a denied conjunct denies this kind of proposition.
 
     "ET-9000 does not support PCIe" says nothing about a customer, a status
@@ -817,7 +827,10 @@ def _denies(kind, part: str, theme_terms, status=None) -> bool:
     if kind in _LINKED_KINDS:
         return any(mentions(part, t) for t in theme_terms)
     if kind == ClaimKind.CUSTOMER_RELATIONSHIP:
-        return bool(CUSTOMER.search(part))
+        # "AMD is not our customer" says nothing about the claimed NVIDIA.
+        return bool(CUSTOMER.search(part)) and (
+            not counterparty or any(mentions(part, p) for p in counterparty)
+        )
     if kind == ClaimKind.COMMERCIAL_STATUS:
         return _denies_status(part, status)
     if kind == ClaimKind.EXPOSURE_END:
@@ -885,8 +898,15 @@ def _synthesis_scope_holds(
     return holds
 
 
-# Tokens that name some product or company: model numbers, acronyms.
-_PRODUCT_LIKE = re.compile(r"\b[A-Za-z][\w-]*\d[\w-]*|\b[A-Z]{2,}[\w-]*")
+# A clause whose subject was elided: it opens with a verb or auxiliary
+# ("...but has not begun volume shipments"), so it continues the product
+# named before it rather than naming another.
+_ELIDED_SUBJECT = re.compile(
+    r"^\s*(?:and\s+|but\s+)?(?:has|have|had|is|are|was|were|does|do|did|will|"
+    r"would|can|could|may|might|remains?|continues?|not|never|yet|still|"
+    r"currently)\b",
+    re.IGNORECASE,
+)
 
 
 def _status_guard(
@@ -915,9 +935,7 @@ def _status_guard(
     # not begun volume shipments" (subject elided) still denies it.
     if any(
         denial.search(c)
-        and (
-            _names_product(c, product_terms, key_tokens) or not _PRODUCT_LIKE.search(c)
-        )
+        and (_names_product(c, product_terms, key_tokens) or _ELIDED_SUBJECT.match(c))
         for c in bearing
     ):
         return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []
@@ -1172,7 +1190,15 @@ def validate_candidate(
     conflicting_primary = any(
         c.direction == "conflicting"
         and c.role == EvidenceRole.ORIGINAL_PRIMARY
-        and _contradicts(c.quote, kind, product_terms, key_tokens, scope, status)
+        and _contradicts(
+            c.quote,
+            kind,
+            product_terms,
+            key_tokens,
+            scope,
+            status,
+            _counterparty(str(raw.get("statement", "")), scope, product_terms),
+        )
         for c in cited
     )
 

@@ -216,6 +216,74 @@ def test_reviewed_cik_replaces_a_stale_accepted_link(
     assert current.identifiers[("US", "cik")] == "0001234567"
 
 
+def test_pending_correction_can_be_rejected(
+    capsys, cli_kwargs, db_session, monkeypatch
+):
+    from app.config import settings
+    from app.domain.company_exposure.contracts import (
+        SERVICE_PRINCIPAL,
+        RegistryMatch,
+    )
+    from app.services.company_exposure.issuer_identity import (
+        IssuerIdentityAdapter,
+        LinkProposal,
+    )
+    from tests.fixtures.company_exposure.factory import make_security
+
+    identity = IssuerIdentityAdapter(db_session)
+    linked, unresolved = (
+        make_security(db_session, "KEEP"),
+        make_security(db_session, "NONE"),
+    )
+    kept = identity.accept_registry_match(
+        RegistryMatch(
+            security_id=linked.id,
+            market="US",
+            scheme="cik",
+            value="7654321",
+            candidate_count=1,
+            ticker_confirmed=True,
+            matched_ticker="KEEP",
+            registry_capture_revision_id=None,
+            official_record_capture_revision_id=None,
+        ),
+        SERVICE_PRINCIPAL,
+    ).issuer_id
+    for security, cik in ((linked, "1234567"), (unresolved, "2345678")):
+        # A mistaken correction (and a doubtful first link) await review.
+        identity.propose_link(
+            LinkProposal(
+                security_id=security.id,
+                issuer_id=None,
+                identifiers=(("US", "cik", cik),),
+                evidence={},
+                requested_by="test:admin",
+                reason="supplied CIK",
+            )
+        )
+    linked_id, unresolved_id = linked.id, unresolved.id
+    db_session.commit()  # each CLI call closes the session
+    monkeypatch.setattr(settings, "admin_principal_id", "ops:alice")
+
+    # Confirming the linked CIK rejects the correction and keeps the link.
+    args = ["resolve-issuer", "--security-id", str(linked_id), "--cik", "7654321"]
+    code, confirmed = _run(capsys, [*args, "--apply"], **cli_kwargs)
+    assert (code, confirmed["state"]) == (0, "already_linked")
+    assert "rejected_proposal" in confirmed
+    after = identity.resolve_security(linked_id)
+    assert (after.issuer_id, after.pending_review) == (kept, False)
+
+    # Without an accepted link, reject-link records the rejection itself.
+    reject = ["reject-link", "--security-id", str(unresolved_id)]
+    code, dry = _run(capsys, reject, **cli_kwargs)
+    assert (code, dry["state"]) == (0, "dry_run")
+    code, rejected = _run(capsys, [*reject, "--apply"], **cli_kwargs)
+    assert (code, rejected["state"], rejected["issuer_id"]) == (0, "rejected", None)
+    assert not identity.resolve_security(unresolved_id).pending_review
+    code, again = _run(capsys, [*reject, "--apply"], **cli_kwargs)
+    assert (code, again["state"]) == (2, "not_pending")
+
+
 def test_process_reports_disabled_research_as_blocked(capsys, cli_kwargs):
     code, payload = _run(
         capsys,

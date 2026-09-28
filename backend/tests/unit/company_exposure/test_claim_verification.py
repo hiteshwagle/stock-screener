@@ -563,6 +563,22 @@ def test_customer_wording_must_cover_the_claimed_product(quote, supported):
     assert ("customer_not_stated" not in result.hold_reasons) is supported
 
 
+def test_issuer_names_ending_in_punctuation_keep_direction():
+    from dataclasses import replace as _replace
+
+    quote = "NVIDIA is our customer for ET-9000 HBM solutions."
+    result = validate_candidate(
+        claim(
+            "customer_relationship",
+            statement="Example Corp. is NVIDIA's customer for ET-9000.",
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        _replace(SCOPE, issuer_names=("Example Corp.",)),
+    )
+    assert "customer_not_stated" in result.hold_reasons
+
+
 @pytest.mark.parametrize(
     ("statement", "supported"),
     [
@@ -873,8 +889,15 @@ def test_negated_or_modal_language_cannot_support_shipping(text, hold):
     assert hold in result.hold_reasons
 
 
-def test_another_products_negated_status_does_not_deny_the_claim():
-    text = "Legacy X100 is not shipping; ET-9000 is shipping in volume."
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Legacy X100 is not shipping; ET-9000 is shipping in volume.",
+        # No model number: the other product is still a named subject.
+        "Legacy Widget is not shipping; ET-9000 is shipping in volume.",
+    ],
+)
+def test_another_products_negated_status_does_not_deny_the_claim(text):
     result = validate_candidate(
         claim(
             commercial_status="shipping_or_operating",
@@ -956,6 +979,13 @@ def test_segment_links_must_point_from_owner_to_segment(premise, permitted):
             "NVIDIA is our customer for ET-9000 HBM solutions.",
             "NVIDIA is no longer our customer for ET-9000.",
             True,
+        ),
+        # A denial about another counterparty says nothing about NVIDIA.
+        (
+            "customer_relationship",
+            "NVIDIA is our customer for ET-9000 HBM solutions.",
+            "AMD is not our customer for ET-9000.",
+            False,
         ),
         # Exit wording supports an exit; only a denied exit contradicts it.
         (

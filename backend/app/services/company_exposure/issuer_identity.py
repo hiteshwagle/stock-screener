@@ -438,6 +438,75 @@ class IssuerIdentityAdapter:
             LinkAcceptancePolicy.ADMINISTRATOR_REVIEWED.value,
         )
 
+    def pending_proposal(self, security_id: int) -> IssuerSecurityLinkRevision | None:
+        """The listing's undecided link proposal, if its newest revision is one."""
+
+        revisions = self._link_revisions(security_id)
+        if revisions and revisions[0].state in {
+            LinkState.PROPOSED,
+            LinkState.REVIEW_REQUIRED,
+        }:
+            return revisions[0]
+        return None
+
+    def reject_link(
+        self, preview_id: UUID, principal, expected_hash: str
+    ) -> IssuerLinkRef | None:
+        """Administrator rejection of a pending proposal (trusted principal).
+
+        A pending proposal holds research on the listing, so rejecting it
+        records a newer decision: the accepted link, if any, is re-affirmed
+        and returned; otherwise the rejection itself is the decision.
+        """
+
+        if not _is_admin(principal):
+            raise PermissionError("admin_required")
+        proposal = self.session.get(IssuerSecurityLinkRevision, preview_id)
+        if proposal is None or proposal.state not in {
+            LinkState.PROPOSED,
+            LinkState.REVIEW_REQUIRED,
+        }:
+            raise IssuerIdentityError("proposal_not_pending")
+        if self.proposal_hash(proposal) != expected_hash:
+            raise IssuerIdentityError("stale_proposal")
+        with research_write(self.session):
+            security = self._security(proposal.security_id, lock=True)
+            if self._link_revisions(proposal.security_id)[0].id != proposal.id:
+                raise IssuerIdentityError("stale_proposal")
+            current = self.current_link(security.id)
+            evidence = {"rejected_proposal_id": str(proposal.id)}
+            if current is None:
+                self._add_link(
+                    security,
+                    proposal.issuer_id,
+                    state=LinkState.REJECTED,
+                    policy=LinkAcceptancePolicy.ADMINISTRATOR_REVIEWED,
+                    actor=principal.subject,
+                    reason="administrator rejected link proposal",
+                    evidence=evidence,
+                )
+                return None
+            kept = self._add_link(
+                security,
+                current.issuer_id,
+                state=LinkState.ACCEPTED,
+                policy=LinkAcceptancePolicy(current.acceptance_policy),
+                actor=principal.subject,
+                reason="administrator rejected link proposal; accepted link kept",
+                evidence={**evidence, "kept_link_revision_id": str(current.id)},
+                snapshot_extra={
+                    key: value
+                    for key, value in (current.snapshot or {}).items()
+                    if key in {"entity_title", "identifier"}
+                },
+            )
+        return IssuerLinkRef(
+            LinkState.ACCEPTED.value,
+            kept.id,
+            kept.issuer_id,
+            current.acceptance_policy,
+        )
+
     def accept_registry_match(
         self, match: RegistryMatch, service_principal: str = SERVICE_PRINCIPAL
     ) -> IssuerLinkRef | ProposalRef:

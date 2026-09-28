@@ -112,7 +112,7 @@ published in S1).
 |---|---|---|
 | `review_required` / `multiple_ciks`, `ticker_not_in_submissions`, `cik_linked_to_other_issuer`, `security_already_linked_elsewhere`, `cross_listed_issuer`, `ticker_changed_since_prior_link`, `inactive_listing` | The official SEC registry match was not safe to accept automatically | Confirm the CIK from the filing cover page, then resolve (below) |
 | `review_required` / `issuer_link_required` | No accepted issuer link and no registry route | Resolve (below) |
-| `review_required` / `issuer_link_review_pending` | A link proposal for the listing (e.g. a CIK supplied with the request) awaits review; research never proceeds on the old link meanwhile | Apply or reject the proposal, then resume |
+| `review_required` / `issuer_link_review_pending` | A link proposal for the listing (e.g. a CIK supplied with the request) awaits review; research never proceeds on the old link meanwhile | Apply it with `resolve-issuer`, or reject it with `reject-link` (confirming the linked CIK with `resolve-issuer` also rejects it); then resume |
 | `unavailable_capability` / `sec_user_agent_not_configured`, `route_not_approved`, `subscription_credentials_missing`, `theme_definition_unavailable`, `research_disabled` | Configuration or capability missing | Fix configuration, then resume |
 | `paused_allowance` / `allocation_not_configured`, `capacity_exhausted` | Local allocation missing or used up for the period | Wait for the next period or raise the limit; resume |
 | `paused_allowance` / `provider_dispatch_unresolved` | An identical provider call was sent and is not settled, and it may yet have succeeded: it timed out after sending (`uncertain`), or it stayed in flight through every retry (its worker likely died mid-call). While an identical call is merely in flight the stage retries (`provider_dispatch_in_flight`) and reuses its result | Resume after its allocation period closes (`refresh-holds` expires it as uncertain spend); resume then sends it again |
@@ -130,6 +130,13 @@ administrator applies it. To resolve a `review_required` job:
 ./venv/bin/python scripts/company_exposure.py resolve-issuer --security-id 42 --cik 1234567 --apply   # needs ADMIN_PRINCIPAL_ID
 ./venv/bin/python scripts/company_exposure.py resume <job_id> --apply
 ./venv/bin/python scripts/company_exposure.py process
+```
+
+To reject a pending proposal instead (the accepted link, if any, is kept):
+
+```bash
+./venv/bin/python scripts/company_exposure.py reject-link --security-id 42          # dry run
+./venv/bin/python scripts/company_exposure.py reject-link --security-id 42 --apply  # needs ADMIN_PRINCIPAL_ID
 ```
 
 When another listing's issuer already owns the confirmed CIK (a

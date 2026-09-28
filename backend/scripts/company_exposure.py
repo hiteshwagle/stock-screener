@@ -8,6 +8,7 @@ docs/runbooks/company-exposure-map.md). Secret values are never printed.
     python scripts/company_exposure.py status
     python scripts/company_exposure.py job JOB_ID
     python scripts/company_exposure.py resolve-issuer --security-id 42 --cik 1234567 [--apply]
+    python scripts/company_exposure.py reject-link --security-id 42 [--apply]
     python scripts/company_exposure.py resume JOB_ID [--apply]
     python scripts/company_exposure.py process [--max-steps 3]
     python scripts/company_exposure.py inspect-holds
@@ -86,7 +87,6 @@ def status(session, config) -> dict:
 def resolve_issuer(
     session, *, security_id: int, cik: str, apply: bool, admin_subject: str
 ) -> dict:
-    from app.domain.economic_taxonomy.contracts import AdminPrincipal
     from app.services.company_exposure.issuer_identity import (
         IssuerIdentityAdapter,
         LinkProposal,
@@ -96,11 +96,23 @@ def resolve_issuer(
     # A cross-listing joins the issuer owning the CIK; a stale accepted link
     # (security_already_linked_elsewhere, ticker_changed_since_prior_link) is
     # corrected unless the CIK already belongs to its issuer.
-    already_linked, owner = identity.reviewed_link_target(
-        security_id, "US", "cik", cik
-    )
+    already_linked, owner = identity.reviewed_link_target(security_id, "US", "cik", cik)
     if already_linked:
-        return {"state": "already_linked", "issuer_id": str(owner)}
+        # Confirming the linked CIK rejects any pending correction, which
+        # would otherwise hold research on this listing indefinitely.
+        linked = {"state": "already_linked", "issuer_id": str(owner)}
+        pending = identity.pending_proposal(security_id)
+        if pending is None:
+            return linked
+        if not apply:
+            return {**linked, "pending_proposal": str(pending.id)}
+        if not admin_subject:
+            return {"state": "blocked", "reason": "admin_principal_unbound"}
+        identity.reject_link(
+            pending.id, _principal(admin_subject), identity.proposal_hash(pending)
+        )
+        session.commit()
+        return {**linked, "rejected_proposal": str(pending.id)}
     if not apply:
         return {
             "state": "dry_run",
@@ -122,19 +134,48 @@ def resolve_issuer(
     )
     if proposal.link_revision_id is None:
         return {"state": proposal.state, "reason": proposal.reason}
-    principal = AdminPrincipal(
-        subject=admin_subject,
-        auth_method="operator_cli",
-        roles=frozenset({"taxonomy:review"}),
-    )
     ref = identity.apply_link(
-        proposal.link_revision_id, principal, proposal.proposal_hash
+        proposal.link_revision_id, _principal(admin_subject), proposal.proposal_hash
     )
     session.commit()
     return {
         "state": ref.state,
         "issuer_id": str(ref.issuer_id),
         "link_revision_id": str(ref.link_revision_id),
+    }
+
+
+def _principal(admin_subject: str):
+    from app.domain.economic_taxonomy.contracts import AdminPrincipal
+
+    return AdminPrincipal(
+        subject=admin_subject,
+        auth_method="operator_cli",
+        roles=frozenset({"taxonomy:review"}),
+    )
+
+
+def reject_link(session, *, security_id: int, apply: bool, admin_subject: str) -> dict:
+    """Reject a listing's pending link proposal, keeping any accepted link."""
+
+    from app.services.company_exposure.issuer_identity import IssuerIdentityAdapter
+
+    identity = IssuerIdentityAdapter(session)
+    pending = identity.pending_proposal(security_id)
+    if pending is None:
+        return {"state": "not_pending", "security_id": security_id}
+    if not apply:
+        return {"state": "dry_run", "pending_proposal": str(pending.id)}
+    if not admin_subject:
+        return {"state": "blocked", "reason": "admin_principal_unbound"}
+    kept = identity.reject_link(
+        pending.id, _principal(admin_subject), identity.proposal_hash(pending)
+    )
+    session.commit()
+    return {
+        "state": "rejected",
+        "rejected_proposal": str(pending.id),
+        "issuer_id": None if kept is None else str(kept.issuer_id),
     }
 
 
@@ -235,6 +276,17 @@ def _parser() -> argparse.ArgumentParser:
             admin_subject=_admin_subject(),
         )
     )
+    reject = sub.add_parser("reject-link")
+    reject.add_argument("--security-id", type=int, required=True)
+    reject.add_argument("--apply", action="store_true")
+    reject.set_defaults(
+        handler=lambda s, c, a: reject_link(
+            s,
+            security_id=a.security_id,
+            apply=a.apply,
+            admin_subject=_admin_subject(),
+        )
+    )
     res = sub.add_parser("resume")
     res.add_argument("job_id", type=UUID)
     res.add_argument("--apply", action="store_true")
@@ -290,6 +342,7 @@ def main(
         "blocked",
         "not_found",
         "not_paused",
+        "not_pending",
     }
     return EXIT_BLOCKED if blocked else EXIT_OK
 
