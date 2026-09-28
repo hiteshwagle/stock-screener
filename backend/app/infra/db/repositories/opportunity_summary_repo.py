@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 from sqlalchemy import (
@@ -12,6 +13,7 @@ from sqlalchemy import (
     func,
     literal_column,
     select,
+    text,
 )
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -20,6 +22,8 @@ from app.domain.scanning.opportunity_summary import OpportunityStateSummary
 from app.infra.db.models.feature_store import StockFeatureDaily
 from app.infra.db.portability import json_text
 from app.models.scan_result import ScanResult
+
+logger = logging.getLogger(__name__)
 
 # The two details_json keys the opportunity projection carries, in the order the
 # index ``ix_sfd_run_action_state_survivor`` (migration ``20260926_0058``) stores
@@ -36,6 +40,141 @@ CORRECTION_SURVIVOR_KEY = "correction_survivor"
 # see ``counted_opportunity_predicates``.
 _SURVIVOR_TRUE_TEXT = "true"
 _SURVIVOR_TRUE_SQLITE = "1"
+
+# Migration 20260926_0058 carries the index the counted path depends on. It is
+# asked for by name because a missing index is not an error anywhere: the query
+# still returns the right answer, just slowly.
+_COUNT_INDEX_NAME = "ix_sfd_run_action_state_survivor"
+
+# The probe is matched against the relation the aggregation actually reads, not
+# against the name alone: PostgreSQL allows the same index name in another
+# schema, and a valid index there would otherwise answer for a missing or
+# invalid one here -- selecting the slow counted path on the strength of an
+# index it cannot use.
+#
+# ``to_regclass`` resolves the name exactly the way the runtime query does --
+# first match in ``search_path`` -- and yields its OID, so the probe is tied to
+# the *same* relation the aggregation will read. Matching every same-named table
+# across ``current_schemas(false)`` would not: with the table in a later schema
+# but a valid index in the first, the probe would answer "usable" for a relation
+# the counted query cannot index.
+#
+# ``indisvalid AND indisready`` -- an interrupted ``CREATE INDEX CONCURRENTLY``
+# leaves a same-named index that exists, refuses inserts, and cannot serve a
+# sequential scan. Present is not the same as usable, so both flags are checked.
+_INDEX_USABLE_SQL = text(
+    """
+    SELECT count(*)
+    FROM pg_index i
+    JOIN pg_class idx ON idx.oid = i.indexrelid
+    WHERE idx.relname = :name
+      AND i.indrelid = to_regclass(:table)
+      AND i.indisvalid
+      AND i.indisready
+    """
+)
+
+
+def _count_index_is_usable(session: Session) -> bool:
+    """Whether the index the counted path needs is present, usable, and here.
+
+    The counted shape only pays off with this index. Its own measurement puts
+    the same sixteen counts at 6.8 ms with the index and 56.7 s without, so a
+    build that was never run, was rolled back, or failed halfway would turn the
+    Daily Snapshot into a multi-minute scan rather than a slow query.
+
+    A backend without these catalogs returns ``False``, which keeps the grouped
+    fallback in charge -- correct on every backend, fastest on one.
+
+    The probe runs on a **connection-level** savepoint, not
+    ``session.begin_nested()``. That distinction is the whole point: the ORM
+    version flushes the session unconditionally before opening the savepoint --
+    measured, even with the project's ``autoflush=False``:
+
+        sessionmaker(autoflush=False); session.add(pending); with session.begin_nested():
+          -> before_flush fired, INSERT issued
+
+    This repository shares one session with every writer repository, so a
+    pending write that fails during that flush would surface here as an index
+    probe failure. ``_recover_aborted_probe`` could then roll back the caller's
+    unit of work and this method would carry on through the fallback -- quietly
+    discarding staged work that had nothing to do with the index.
+
+    ``session.connection().begin_nested()`` issues ``SAVEPOINT`` on the
+    connection without touching the ORM's pending state. Verified against the
+    same probe-failure path:
+
+        before_flush fired   : no
+        staged write retained: yes
+        session still usable : yes
+    """
+    try:
+        # ``begin_nested`` on the connection, not the session: no flush, so the
+        # caller's pending writes are neither issued nor risked here.
+        with session.connection().begin_nested():
+            return bool(
+                session.execute(
+                    _INDEX_USABLE_SQL,
+                    {
+                        "name": _COUNT_INDEX_NAME,
+                        "table": StockFeatureDaily.__tablename__,
+                    },
+                ).scalar()
+            )
+    except Exception as exc:  # noqa: BLE001 - an unreadable catalog means "not usable".
+        _recover_aborted_probe(session)
+        logger.warning(
+            "Opportunity summary: index probe failed, using the grouped fallback (%s)",
+            exc,
+        )
+        return False
+
+
+def _recover_aborted_probe(session: Session) -> None:
+    """Make sure the session can still serve the fallback query.
+
+    ``begin_nested()`` unwinds its savepoint on the way out, but a dialect that
+    cannot open one at all leaves the aborted transaction in place. If the
+    session is still unusable, roll it back rather than hand it to the caller.
+    """
+    try:
+        if session.is_active:
+            return
+        session.rollback()
+    except Exception as exc:  # noqa: BLE001 - recovery must not mask the original failure.
+        logger.warning("Opportunity summary: probe recovery failed (%s)", exc)
+
+
+def survivor_predicate(details) -> ColumnElement:
+    """The one survivor test, for any ``details_json``/``details`` column.
+
+    Single definition on purpose. ``for_feature_run`` (counted) and
+    ``for_scan``/``_aggregate`` (grouped) read the same projection through
+    different shapes, and before this they decided the survivor flag with
+    different SQL: the grouped path used ``as_boolean().is_(True)``, the counted
+    path a text comparison. Identical data then classified differently depending
+    on which path read it -- on PostgreSQL the cast also accepts ``'t'``,
+    ``'yes'`` and ``'on'``, which the text comparison rejected, and it raises on
+    a value like ``'2'`` while the text comparison does not.
+
+    Cast-free by requirement: this expression is also the one migration
+    ``20260926_0058`` indexes, and ``CREATE INDEX`` evaluates it against every
+    row of every historical run. A cast that can raise would fail the startup
+    migration on a single bad value.
+
+    ``IN`` matching ``lower(...)`` needs both members because the two backends
+    spell JSON ``true`` differently: PostgreSQL keeps the boolean and ``->>``
+    renders the text ``'true'``; SQLite stores it as the integer ``1``, so its
+    ``->>`` yields ``'1'``. ``'1'`` never occurs in the Postgres text form, so
+    the extra member is inert there.
+
+    Values outside the list -- ``'t'``, ``'yes'``, ``'on'``, ``'2'`` -- are not
+    survivors. That is the deliberate reading: only the two canonical spellings
+    of the flag count, and no input can make this raise.
+    """
+    return func.lower(json_text(details, (CORRECTION_SURVIVOR_KEY,))).in_(
+        [_SURVIVOR_TRUE_TEXT, _SURVIVOR_TRUE_SQLITE]
+    )
 
 
 def counted_opportunity_predicates() -> tuple[ColumnElement, ColumnElement]:
@@ -71,13 +210,19 @@ def counted_opportunity_predicates() -> tuple[ColumnElement, ColumnElement]:
     details = StockFeatureDaily.details_json
     return (
         cast(json_text(details, (ACTION_STATE_KEY,)), String),
-        func.lower(json_text(details, (CORRECTION_SURVIVOR_KEY,))).in_(
-            [_SURVIVOR_TRUE_TEXT, _SURVIVOR_TRUE_SQLITE]
-        ),
+        survivor_predicate(details),
     )
 
 
 class SqlOpportunityStateSummaryRepository:
+    """Reads the opportunity projection from the feature store, two ways.
+
+    ``for_feature_run`` counts the projection with both keys in the ``WHERE``
+    clause; ``for_scan``/``_aggregate`` group it. Both classify a row through
+    the shared ``survivor_predicate``, so the shape differs but the answer
+    cannot.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -95,7 +240,24 @@ class SqlOpportunityStateSummaryRepository:
         Counted rather than grouped: the feature-store table is large enough per
         run that the grouped shape's per-row document reads dominate the Daily
         Snapshot build. See ``_count_feature_run``.
+
+        Falls back to the grouped shape when the index the counted path needs is
+        absent or unusable. Both shapes return the same summary, so the caller
+        only sees a latency difference -- and the counted shape without its index
+        is the slow one.
         """
+        if not _count_index_is_usable(self._session):
+            logger.warning(
+                "Opportunity summary: %s is missing or unusable; falling back to the "
+                "grouped aggregate for run %s",
+                _COUNT_INDEX_NAME,
+                run_id,
+            )
+            return self._aggregate(
+                model=StockFeatureDaily,
+                details=StockFeatureDaily.details_json,
+                predicate=StockFeatureDaily.run_id == int(run_id),
+            )
         return self._count_feature_run(int(run_id))
 
     def _count_feature_run(self, run_id: int) -> OpportunityStateSummary:
@@ -207,12 +369,12 @@ class SqlOpportunityStateSummaryRepository:
         are the same in both.
         """
         action_state = details["action_state"].as_string()
-        # The survivor test stays in SQL, as it was upstream. Deciding it in
-        # Python instead makes ``JSON_EXTRACT(...) IS 1`` collapse to
-        # ``bool(...)`` on SQLite, where the string "false" and the integer 2
-        # are both truthy -- so identical data would count differently
-        # depending on the backend.
-        survivor = details["correction_survivor"].as_boolean().is_(True)
+        # The survivor test goes through the shared definition, so the grouped
+        # path cannot classify a row differently from the counted one. It stays
+        # in SQL -- deciding it in Python collapses ``JSON_EXTRACT(...) IS 1`` to
+        # ``bool(...)`` on SQLite, where the string "false" and the integer 2 are
+        # both truthy, so identical data would count differently by backend.
+        survivor = survivor_predicate(details)
         buckets = (
             self._session.query(
                 survivor.label("survivor"),

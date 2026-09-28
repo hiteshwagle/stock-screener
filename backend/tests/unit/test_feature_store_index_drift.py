@@ -722,7 +722,42 @@ def test_opportunity_summary_migration_matches_the_repository_shape():
             return values
 
     class _FakeSession:
-        def execute(self, statement):
+        """Enough of a ``Session`` for the probe plus one counted ``SELECT``.
+
+        ``_count_index_is_usable`` opens a savepoint and reads the catalogs
+        through ``execute``; the statement under test is captured by the
+        caller. The two are told apart by the ``name`` bind parameter, which
+        only the probe carries -- so ``execute`` must accept ``params``.
+        """
+
+        is_active = True
+
+        def connection(self):
+            """The connection the probe opens its savepoint on."""
+
+            class _C:
+                """No-op savepoint; nothing to unwind in this double."""
+
+                @staticmethod
+                def begin_nested():
+                    """Stand in for the probe's savepoint."""
+                    import contextlib
+
+                    return contextlib.nullcontext()
+
+            return _C()
+
+        def execute(self, statement, params=None):
+            """Answer the probe; capture every other statement for the caller."""
+            # The index probe runs first and is not the statement under test; the
+            # captured list must hold only the counted SELECT.
+            if params is not None and "name" in params:
+                class _ProbeResult:
+                    @staticmethod
+                    def scalar():
+                        return 1
+
+                return _ProbeResult()
             captured.append(
                 str(statement.compile(dialect=postgresql.dialect())).replace(
                     "stock_feature_daily.", ""
