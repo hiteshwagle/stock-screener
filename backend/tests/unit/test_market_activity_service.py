@@ -1217,9 +1217,9 @@ def test_runtime_activity_status_exposes_bootstrap_stage_metadata(
         {"key": "prices", "label": "Price Refresh"},
         {"key": "fundamentals", "label": "Fundamentals Refresh"},
         {"key": "market_rs", "label": "Market RS"},
-        {"key": "breadth", "label": "Breadth Calculation"},
         {"key": "groups", "label": "Group Rankings"},
         {"key": "scan", "label": "Scan"},
+        {"key": "breadth", "label": "Breadth Calculation"},
     ]
 
 

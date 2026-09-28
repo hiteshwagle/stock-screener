@@ -37,9 +37,11 @@ RUNTIME_STAGE_SEQUENCE = (
     "prices",
     "fundamentals",
     "market_rs",
-    "breadth",
     "groups",
     "scan",
+    # Breadth runs after the scan in both bootstrap and the daily pipeline so
+    # its failure cannot withhold the scanner.
+    "breadth",
 )
 
 STAGE_LABELS = {
