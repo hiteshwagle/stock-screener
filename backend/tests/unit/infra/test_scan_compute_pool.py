@@ -104,9 +104,13 @@ def test_a_dead_worker_degrades_to_in_process_without_losing_results():
     assert [outcome.result["pid"] for outcome in after] == [_PARENT_PID, _PARENT_PID]
 
 
-def test_pool_start_failure_computes_in_process(monkeypatch):
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("fork failed"), ValueError("cannot find context for 'fork'")],
+)
+def test_pool_start_failure_computes_in_process(monkeypatch, failure):
     def broken_context():
-        raise OSError("fork unavailable")
+        raise failure
 
     monkeypatch.setattr(scan_compute_pool, "_default_mp_context", broken_context)
 

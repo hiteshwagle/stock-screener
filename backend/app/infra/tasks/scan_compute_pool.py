@@ -151,8 +151,10 @@ class ProcessStockScanBatchRunner:
             # Fork every worker now, before the parent holds any chunk data.
             self._executor.submit(_warm_up).result()
             logger.info("Scan compute pool started with %d processes", self._processes)
-        except (OSError, BrokenProcessPool):
-            # Fork failed or a worker died starting up.
+        except (OSError, ValueError, BrokenProcessPool):
+            # Fork failed or is unavailable on this platform (ValueError from
+            # get_context, e.g. an explicit process count on Windows), or a
+            # worker died starting up.
             logger.warning(
                 "Scan compute pool failed to start; computing in-process",
                 exc_info=True,
