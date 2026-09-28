@@ -93,6 +93,7 @@ from app.services.company_exposure.wording import (
     mention_spans,
     mentions,
     nearest_subject,
+    negated_conjuncts,
     predicated,
 )
 
@@ -958,8 +959,13 @@ def _status_guard(
     # ET-9000 is shipping" still states ET-9000's status, while "...but has
     # not begun volume shipments" (subject elided) still denies it.
     if any(
-        denial.search(c)
-        and (_names_product(c, product_terms, key_tokens) or _ELIDED_SUBJECT.match(c))
+        (_names_product(c, product_terms, key_tokens) or _ELIDED_SUBJECT.match(c))
+        # The status predicate itself must be denied: "does not support PCIe
+        # and is shipping" negates PCIe, not shipping.
+        and any(
+            any(pattern.search(part) for pattern in wording)
+            for part in negated_conjuncts(c, denial)
+        )
         for c in bearing
     ):
         return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []

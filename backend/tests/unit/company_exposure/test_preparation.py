@@ -277,6 +277,29 @@ def test_selection_keeps_premises_for_alphabetic_product_names(
     ]
 
 
+def test_companion_premises_keep_slots_when_theme_matches_fill_the_limit(
+    evidence_preparer, db_session, store
+):
+    matches = "".join(
+        f"<p>HBM demand item {n} and the ET-9000 supports HBM testing.</p>"
+        for n in range(30)
+    )
+    html = (
+        "<html><body><p>Our ET-9000 tester is commercially available.</p>"
+        f"{matches}</body></html>"
+    )
+    revision = _revision(
+        db_session, store, html.encode("utf-8"), "text/html", "html:full"
+    )
+    prepared = evidence_preparer.prepare(revision)
+    selection = select_passages(prepared, QuestionSet(terms=("HBM",)), limit=24)
+    texts = [b.text for b in selection.blocks]
+    assert len(texts) == 24
+    assert "Our ET-9000 tester is commercially available." in texts
+    # Unused reserve returns to theme matches; the rest are counted.
+    assert selection.omitted_matches == 30 - 23
+
+
 def test_non_english_text_keeps_original_script(evidence_preparer, db_session, store):
     html = (
         "<html><body><p>当社はHBM向けテスターを量産出荷していない。</p></body></html>"

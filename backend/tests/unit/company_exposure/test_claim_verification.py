@@ -940,6 +940,8 @@ def test_negated_or_modal_language_cannot_support_shipping(text, hold):
         "Legacy Widget is not shipping; ET-9000 is shipping in volume.",
         # A leading adverb does not elide the named subject after it.
         "Currently, Legacy Widget is not shipping; ET-9000 is shipping in volume.",
+        # The negation governs another predicate, not the shipping status.
+        "ET-9000 does not support PCIe and is shipping in volume.",
     ],
 )
 def test_another_products_negated_status_does_not_deny_the_claim(text):

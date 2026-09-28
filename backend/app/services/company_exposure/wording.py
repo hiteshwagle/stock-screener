@@ -129,6 +129,19 @@ def denied_conjuncts(clause: str) -> list[str]:
     return denied
 
 
+def negated_conjuncts(clause: str, denial: re.Pattern = NEGATION) -> list[str]:
+    """Conjuncts of ``clause`` that ``denial`` governs (see denied_conjuncts);
+    "does not support PCIe and is shipping" negates only the first."""
+
+    negated, governed = [], False
+    for part in _AND.split(clause):
+        if FINITE.search(part) or denial.search(part):
+            governed = bool(denial.search(part))
+        if governed:
+            negated.append(part)
+    return negated
+
+
 def clauses(quotes: list[str]) -> list[str]:
     """Clauses of the quoted sentences, split at contrastive joins and at an
     "and" joining two predicates."""

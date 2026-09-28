@@ -572,11 +572,19 @@ def select_passages(
             score += 1
         scored.append((score, block.ordinal, block))
     scored.sort(key=lambda item: (-item[0], item[1]))
-    chosen = [item[2] for item in scored[:limit]]
-    chosen += _companions(prepared, chosen, limit - len(chosen))
+    ranked = [item[2] for item in scored]
+    # When theme matches alone would fill the limit, a quarter is reserved
+    # for companion premises; slots they leave unused go back to matches.
+    reserve = limit // 4 if len(ranked) > limit - limit // 4 else 0
+    primary = ranked[: limit - reserve]
+    companions = _companions(
+        prepared, primary, limit - len(primary), {b.ordinal for b in ranked}
+    )
+    backfill = ranked[len(primary) :][: limit - len(primary) - len(companions)]
+    chosen = [*primary, *companions, *backfill]
     return PassageSelection(
         blocks=tuple(sorted(chosen, key=lambda b: b.ordinal)),
-        omitted_matches=max(0, len(scored) - limit),
+        omitted_matches=max(0, len(ranked) - len(primary) - len(backfill)),
     )
 
 
@@ -591,7 +599,9 @@ _PRODUCT_TOKEN = re.compile(
 _PERIOD_TOKEN = re.compile(r"^(?:fy|cy|q|h)\d", re.IGNORECASE)
 
 
-def _companions(prepared: PreparedEvidence, chosen, capacity: int) -> list:
+def _companions(
+    prepared: PreparedEvidence, chosen, capacity: int, matches: set[int] = frozenset()
+) -> list:
     """Blocks naming a product the theme passages name, within capacity.
 
     A synthesis joins premises across passages: "Our ET-9000 tester is
@@ -609,7 +619,9 @@ def _companions(prepared: PreparedEvidence, chosen, capacity: int) -> list:
     }
     if not products:
         return []
-    taken = {block.ordinal for block in chosen}
+    # Theme matches compete in the main ranking; companions are the premises
+    # that never name the theme.
+    taken = {block.ordinal for block in chosen} | set(matches)
     ranked = []
     for block in prepared.blocks:
         if block.kind == "heading" or block.ordinal in taken:
