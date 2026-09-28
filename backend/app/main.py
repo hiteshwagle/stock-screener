@@ -146,18 +146,18 @@ def _publish_missing_feature_refreshes() -> None:
     six-hourly slot. A Redis NX key per feature lets every API worker call
     this while only one enqueues; both tasks are idempotent regardless.
     """
-    from .infra.db.models.cot import CotPublicationPointer
     from .infra.db.models.social_signals import (
         SocialSignalRunPointer,
         SocialSourceRegistry,
     )
+    from .services.bootstrap_readiness_service import has_compatible_cot_publication
     from .services.redis_pool import get_redis_client
 
     try:
         with SessionLocal() as db:
             registry = db.get(SocialSourceRegistry, 1)
             missing = {
-                "cot": db.query(CotPublicationPointer).first() is None,
+                "cot": not has_compatible_cot_publication(db),
                 "social": (
                     registry is not None
                     and registry.mode == "live"
@@ -180,7 +180,16 @@ def _publish_missing_feature_refreshes() -> None:
                 from .interfaces.tasks.social_signal_tasks import (
                     refresh_social_signals as task,
                 )
-            result = task.delay(origin="startup")
+            try:
+                result = task.delay(origin="startup")
+            except Exception:
+                # Release the guard so another worker or restart retries, and
+                # keep going: one feature's broker failure must not skip the next.
+                redis.delete(f"startup_refresh:{feature}")
+                logger.warning(
+                    "Initial %s refresh publication failed", feature, exc_info=True
+                )
+                continue
             logger.info(
                 "Initial %s refresh queued", feature, extra={"task_id": result.id}
             )

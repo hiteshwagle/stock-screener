@@ -59,6 +59,32 @@ class BootstrapReadiness:
         ]
 
 
+def has_compatible_cot_publication(db: Session) -> bool:
+    """A COT publication the deployed read path accepts (see ``CotQueryService``).
+
+    An upgrade that bumps a registry, schema or calculation version leaves a
+    pointer the read path rejects, so pointer existence alone is not enough.
+    """
+    from ..domain.cot.models import (
+        COT_CALCULATION_VERSION,
+        COT_REGISTRY_VERSION,
+        COT_SCHEMA_VERSION,
+    )
+    from ..infra.db.models.cot import CotImportRun, CotPublicationPointer
+
+    return (
+        db.query(CotPublicationPointer.key)
+        .join(CotImportRun, CotImportRun.id == CotPublicationPointer.run_id)
+        .filter(
+            CotImportRun.registry_version == COT_REGISTRY_VERSION,
+            CotImportRun.schema_version == COT_SCHEMA_VERSION,
+            CotImportRun.calculation_version == COT_CALCULATION_VERSION,
+        )
+        .first()
+        is not None
+    )
+
+
 class BootstrapReadinessService:
     def normalize_market(self, market: str) -> str:
         return get_market_catalog().get(market).code
@@ -354,11 +380,13 @@ class BootstrapReadinessService:
     def feature_status(self, db: Session, *, enabled_markets: list[str]) -> dict[str, str]:
         """Publication state of optional features backed by external providers."""
         from ..config import settings
-        from ..infra.db.models.cot import CotPublicationPointer
         from ..infra.db.models.options_analytics import OptionsAnalyticsPointer
         from ..infra.db.models.social_signals import (
             SocialSignalRunPointer,
             SocialSourceRegistry,
+        )
+        from ..use_cases.options_analytics import (
+            OPTIONS_ANALYTICS_CALCULATION_VERSION,
         )
 
         def published(query) -> str:
@@ -375,11 +403,14 @@ class BootstrapReadinessService:
             and registry.provider != "disabled"
         )
         return {
-            "cot": published(db.query(CotPublicationPointer)),
+            "cot": "ready" if has_compatible_cot_publication(db) else "missing",
             "options": (
                 published(
+                    # The read path keys publications by calculation version.
                     db.query(OptionsAnalyticsPointer).filter(
-                        OptionsAnalyticsPointer.market == "US"
+                        OptionsAnalyticsPointer.market == "US",
+                        OptionsAnalyticsPointer.calculation_version
+                        == OPTIONS_ANALYTICS_CALCULATION_VERSION,
                     )
                 )
                 if options_on

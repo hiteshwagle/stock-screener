@@ -147,3 +147,33 @@ def test_missing_feature_refreshes_are_queued_once(monkeypatch, tmp_path):
 
     cot.delay.assert_called_once_with(origin="startup")
     social.delay.assert_called_once_with(origin="startup")
+
+
+def test_failed_feature_enqueue_releases_its_guard_and_continues(monkeypatch, tmp_path):
+    from app import main as module
+
+    _sqlite_sessions(monkeypatch, tmp_path)
+    monkeypatch.setattr(module.settings, "social_signals_mode", "live")
+    monkeypatch.setattr(module.settings, "social_ingest_provider", "xui")
+    module.initialize_runtime()
+
+    guard_keys = set()
+    redis = Mock()
+    redis.set.side_effect = lambda key, value, nx, ex: (
+        key not in guard_keys and not guard_keys.add(key)
+    )
+    redis.delete.side_effect = guard_keys.discard
+    monkeypatch.setattr("app.services.redis_pool.get_redis_client", lambda: redis)
+    cot = Mock()
+    cot.delay.side_effect = ConnectionError("broker unavailable")
+    social = Mock()
+    monkeypatch.setattr("app.interfaces.tasks.cot_tasks.refresh_cot", cot)
+    monkeypatch.setattr(
+        "app.interfaces.tasks.social_signal_tasks.refresh_social_signals", social
+    )
+
+    module._publish_missing_feature_refreshes()
+
+    social.delay.assert_called_once_with(origin="startup")
+    # The COT guard is released so the next worker or restart retries it.
+    assert guard_keys == {"startup_refresh:social"}

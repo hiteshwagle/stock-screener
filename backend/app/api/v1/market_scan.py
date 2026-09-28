@@ -24,6 +24,7 @@ from ...schemas.market_scan import (
 from ...services.daily_snapshot_service import (
     build_daily_snapshot_payload,
     daily_snapshot_cache_key,
+    derived_outputs_version,
     daily_snapshot_etag,
     get_or_build_daily_snapshot_payload,
     latest_completed_scan,
@@ -81,10 +82,15 @@ def get_daily_snapshot(
             detail=f"Unsupported market '{market}'. Expected one of: {supported}.",
         )
 
-    # Keyed on the latest scan run: publishing a new run switches the key,
-    # so cached snapshots invalidate immediately (TTL is just a backstop).
+    # Keyed on the latest scan run and the late breadth/exposure outputs:
+    # publishing either switches the key, so cached snapshots invalidate
+    # immediately (TTL is just a backstop).
     scan = latest_completed_scan(db, code)
-    cache_key = daily_snapshot_cache_key(code, scan.scan_id if scan else None)
+    cache_key = daily_snapshot_cache_key(
+        code,
+        scan.scan_id if scan else None,
+        derived_outputs=derived_outputs_version(db, code),
+    )
 
     def build_payload_json() -> str:
         payload = build_daily_snapshot_payload(

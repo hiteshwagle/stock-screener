@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from time import monotonic
 from typing import Any, Callable
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domain.common.query import FilterSpec, PageSpec, SortOrder, SortSpec
@@ -34,6 +35,7 @@ from app.domain.scanning.leadership_policy import (
 )
 from app.infra.serialization import json_safe
 from app.models.market_breadth import MarketBreadth
+from app.models.market_exposure import MarketExposure
 from app.models.scan_result import Scan
 from app.schemas.scanning import ScanResultItem
 from app.services.group_ranking_payloads import group_snapshot_metadata
@@ -74,12 +76,33 @@ class _DailySnapshotMemoryCacheEntry:
 _daily_snapshot_memory_cache: dict[str, _DailySnapshotMemoryCacheEntry] = {}
 
 
-def daily_snapshot_cache_key(market: str, scan_id: str | None) -> str:
-    """Cache key scoped to the scan run, so a new run invalidates immediately."""
-    return (
+def daily_snapshot_cache_key(
+    market: str,
+    scan_id: str | None,
+    *,
+    derived_outputs: str | None = None,
+) -> str:
+    """Cache key scoped to the scan run, so a new run invalidates immediately.
+
+    ``derived_outputs`` (see ``derived_outputs_version``) also switches the key
+    when breadth or exposure land, since both now finish after the scan.
+    """
+    key = (
         f"daily_snapshot:v{DAILY_SNAPSHOT_SCHEMA_VERSION}"
         f":{market.upper()}:{scan_id or 'no-scan'}"
     )
+    return f"{key}:{derived_outputs}" if derived_outputs else key
+
+
+def derived_outputs_version(db: Session, market: str) -> str:
+    """Latest breadth and exposure dates: the late inputs of a Daily Snapshot."""
+    code = market.upper()
+
+    def latest(model) -> str:
+        value = db.query(func.max(model.date)).filter(model.market == code).scalar()
+        return value.isoformat() if hasattr(value, "isoformat") else str(value or "none")
+
+    return f"b={latest(MarketBreadth)};e={latest(MarketExposure)}"
 
 
 def daily_snapshot_etag(payload_json: str) -> str:

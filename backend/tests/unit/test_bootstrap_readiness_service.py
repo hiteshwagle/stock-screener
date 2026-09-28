@@ -641,3 +641,49 @@ def test_feature_status_is_independent_of_market_readiness(readiness_db, monkeyp
     readiness_db.add(SocialSourceRegistry(id=1, mode="live", provider="xui"))
     readiness_db.commit()
     assert service.feature_status(readiness_db, enabled_markets=["US"])["social"] == "missing"
+
+
+def test_feature_status_ignores_publications_from_older_versions(readiness_db, monkeypatch) -> None:
+    """An upgrade that bumps a version leaves a pointer the read path rejects."""
+    import app.infra.db.models.social_signals  # noqa: F401
+    from app.config import settings
+    from app.domain.cot.models import (
+        COT_CALCULATION_VERSION,
+        COT_REGISTRY_VERSION,
+        COT_SCHEMA_VERSION,
+    )
+    from app.infra.db.models.cot import CotImportRun, CotPublicationPointer
+    from app.infra.db.models.options_analytics import OptionsAnalyticsPointer
+    from app.use_cases.options_analytics import OPTIONS_ANALYTICS_CALCULATION_VERSION
+
+    Base.metadata.create_all(readiness_db.get_bind())
+    monkeypatch.setattr(settings, "options_analytics_enabled", True)
+    service = BootstrapReadinessService()
+
+    def cot_run(run_id, calculation_version):
+        readiness_db.add(
+            CotImportRun(
+                id=run_id,
+                origin="test",
+                status="published",
+                registry_version=COT_REGISTRY_VERSION,
+                schema_version=COT_SCHEMA_VERSION,
+                calculation_version=calculation_version,
+            )
+        )
+
+    cot_run(1, "cot-positions-v0")
+    readiness_db.add(CotPublicationPointer(key="latest", run_id=1, report_date=date(2026, 9, 22)))
+    readiness_db.add(OptionsAnalyticsPointer(market="US", calculation_version="options-analytics-v0", run_id=1))
+    readiness_db.commit()
+    stale = service.feature_status(readiness_db, enabled_markets=["US"])
+    assert (stale["cot"], stale["options"]) == ("missing", "missing")
+
+    cot_run(2, COT_CALCULATION_VERSION)
+    readiness_db.query(CotPublicationPointer).update({"run_id": 2})
+    readiness_db.add(
+        OptionsAnalyticsPointer(market="US", calculation_version=OPTIONS_ANALYTICS_CALCULATION_VERSION, run_id=2)
+    )
+    readiness_db.commit()
+    current = service.feature_status(readiness_db, enabled_markets=["US"])
+    assert (current["cot"], current["options"]) == ("ready", "ready")
