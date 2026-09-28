@@ -84,7 +84,7 @@ async def test_job_status_is_operational_not_accepted(call, completed_shadow_job
     assert (body["state"], body["settled"], body["terminal"]) == (
         "partial",
         True,
-        False,
+        True,  # complete with gaps: nothing resumes it, so polling stops
     )
     assert body["assessment_revision_id"] == revision_id
     assert [s["stage"] for s in body["stages"]] == [

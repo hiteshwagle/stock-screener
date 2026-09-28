@@ -939,6 +939,32 @@ def test_negated_or_modal_language_cannot_support_shipping(text, hold):
     assert hold in result.hold_reasons
 
 
+def test_modality_about_another_predicate_keeps_a_factual_status():
+    text = "ET-9000 may support PCIe and is commercially available today."
+    result = validate_candidate(
+        claim(
+            commercial_status="commercially_available",
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.commercial_status == CommercialStatus.COMMERCIALLY_AVAILABLE
+    assert "modal_commercial_status" not in result.hold_reasons
+
+
+def test_materiality_claim_without_a_measure_is_not_primary():
+    text = "The ET-9000 supports HBM testing."
+    result = validate_candidate(
+        claim("materiality", statement=text, support=[{"ref": "P1", "quote": text}]),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.support_basis == SupportBasis.INFERRED_UNVERIFIED
+    assert "materiality_not_evidenced" in result.hold_reasons
+    assert not result.verified
+
+
 @pytest.mark.parametrize(
     "text",
     [

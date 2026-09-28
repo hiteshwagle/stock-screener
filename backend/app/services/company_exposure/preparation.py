@@ -576,15 +576,26 @@ def select_passages(
     # When theme matches alone would fill the limit, a quarter is reserved
     # for companion premises; slots they leave unused go back to matches.
     reserve = limit // 4 if len(ranked) > limit - limit // 4 else 0
-    primary = ranked[: limit - reserve]
-    companions = _companions(
-        prepared, primary, limit - len(primary), {b.ordinal for b in ranked}
-    )
-    backfill = ranked[len(primary) :][: limit - len(primary) - len(companions)]
-    chosen = [*primary, *companions, *backfill]
+    matches = {b.ordinal for b in ranked}
+    chosen = ranked[: limit - reserve]
+    pool = iter(ranked[len(chosen) :])
+    companions: list = []
+    # Companions follow every theme passage that enters the selection, so a
+    # product first named by a backfilled match still brings its premise.
+    while len(chosen) + len(companions) < limit:
+        companions += _companions(
+            prepared,
+            chosen,
+            limit - len(chosen) - len(companions),
+            matches | {b.ordinal for b in companions},
+        )
+        backfill = next(pool, None) if len(chosen) + len(companions) < limit else None
+        if backfill is None:
+            break
+        chosen.append(backfill)
     return PassageSelection(
-        blocks=tuple(sorted(chosen, key=lambda b: b.ordinal)),
-        omitted_matches=max(0, len(ranked) - len(primary) - len(backfill)),
+        blocks=tuple(sorted([*chosen, *companions], key=lambda b: b.ordinal)),
+        omitted_matches=max(0, len(ranked) - len(chosen)),
     )
 
 

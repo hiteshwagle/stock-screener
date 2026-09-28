@@ -44,6 +44,7 @@ from app.domain.company_exposure.contracts import (
     CommercialStatus,
     Conclusion,
     EvidenceRole,
+    MaterialityBasis,
     ReportingScope,
     SupportBasis,
     as_utc,
@@ -974,7 +975,9 @@ def _status_guard(
     stating = [
         clause
         for clause in bearing
-        if not (factual and _MODALITY.search(clause))
+        # Modality only where it governs the status predicate: "may support
+        # PCIe and is commercially available today" states availability.
+        if not (factual and _modal_status(clause, wording))
         # Always the claimed product: "Legacy X100 is shipping" says nothing
         # about ET-9000, with or without surviving model product terms.
         and _names_product(clause, product_terms, key_tokens)
@@ -987,6 +990,16 @@ def _status_guard(
     ):
         return CommercialStatus.UNKNOWN, ["modal_commercial_status"], []
     return CommercialStatus.UNKNOWN, ["status_not_stated"], []
+
+
+def _modal_status(clause: str, wording) -> bool:
+    """Whether planning or qualification wording governs the conjunct that
+    carries the status wording."""
+
+    return any(
+        any(pattern.search(part) for pattern in wording)
+        for part in negated_conjuncts(clause, _MODALITY)
+    )
 
 
 def canonical_product_key(value) -> str:
@@ -1421,6 +1434,14 @@ def validate_candidate(
     )
     if kind == ClaimKind.MATERIALITY and materiality is None:
         materiality = unknown_materiality("no_materiality_disclosed")
+    if kind == ClaimKind.MATERIALITY and (
+        materiality.basis == MaterialityBasis.UNKNOWN or materiality.held
+    ):
+        # A materiality claim rests on its measure: an ordinary exposure quote
+        # labelled "materiality" states no revenue, share or significance.
+        if basis in {SupportBasis.PRIMARY_EXPLICIT, SupportBasis.PRIMARY_SYNTHESIS}:
+            basis = SupportBasis.INFERRED_UNVERIFIED
+        holds.append("materiality_not_evidenced")
 
     if basis in {SupportBasis.PRIMARY_EXPLICIT, SupportBasis.PRIMARY_SYNTHESIS}:
         conclusion = (

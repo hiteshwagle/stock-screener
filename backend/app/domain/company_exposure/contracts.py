@@ -176,6 +176,8 @@ TERMINAL_JOB_STATES = frozenset(
     {
         ResearchJobState.READY_FOR_PUBLICATION,
         ResearchJobState.PUBLISHED,
+        # Complete with coverage gaps: nothing is paused, nothing resumes it.
+        ResearchJobState.PARTIAL,
         ResearchJobState.TERMINAL_FAILURE,
         ResearchJobState.CANCELLED,
     }

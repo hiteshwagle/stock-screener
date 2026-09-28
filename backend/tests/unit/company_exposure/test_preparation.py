@@ -300,6 +300,28 @@ def test_companion_premises_keep_slots_when_theme_matches_fill_the_limit(
     assert selection.omitted_matches == 30 - 23
 
 
+def test_companions_follow_products_named_by_backfilled_matches(
+    evidence_preparer, db_session, store
+):
+    plain = "".join(f"<p>HBM demand item {n} increased.</p>" for n in range(20))
+    html = (
+        "<html><body><p>Our ET-9000 tester is commercially available.</p>"
+        f"{plain}<p>The ET-9000 supports HBM testing.</p>"
+        "</body></html>"
+    )
+    revision = _revision(
+        db_session, store, html.encode("utf-8"), "text/html", "html:backfill"
+    )
+    prepared = evidence_preparer.prepare(revision)
+    selection = select_passages(prepared, QuestionSet(terms=("HBM",)), limit=24)
+    texts = [b.text for b in selection.blocks]
+    # The ET-9000 match ranks after 18 plain matches and enters as backfill;
+    # its availability premise still comes with it.
+    assert "The ET-9000 supports HBM testing." in texts
+    assert "Our ET-9000 tester is commercially available." in texts
+    assert len(texts) == 22 and selection.omitted_matches == 0
+
+
 def test_non_english_text_keeps_original_script(evidence_preparer, db_session, store):
     html = (
         "<html><body><p>当社はHBM向けテスターを量産出荷していない。</p></body></html>"
