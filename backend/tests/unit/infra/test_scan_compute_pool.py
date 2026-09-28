@@ -153,6 +153,18 @@ def test_soft_limit_while_waiting_propagates_without_waiting_for_workers(soft_li
     assert time.monotonic() - started < 10  # workers terminated, not awaited
 
 
+def test_soft_limit_before_the_pool_exists_propagates(monkeypatch):
+    def interrupted_context():
+        raise _SoftLimit()
+
+    monkeypatch.setattr(scan_compute_pool, "_default_mp_context", interrupted_context)
+
+    with pytest.raises(_SoftLimit):
+        ProcessStockScanBatchRunner(_PidScanner(), 2).__enter__()
+
+    assert scan_compute_pool._scanners_by_token == {}
+
+
 def test_soft_limit_during_warm_up_propagates(monkeypatch, soft_limit_in):
     monkeypatch.setattr(scan_compute_pool, "_warm_up", _slow_warm_up)
     started = time.monotonic()

@@ -141,7 +141,6 @@ class ProcessStockScanBatchRunner:
     def __enter__(self) -> "ProcessStockScanBatchRunner":
         self._token = next(_tokens)
         _scanners_by_token[self._token] = self._scanner
-        warm_up: Future | None = None
         try:
             self._executor = ProcessPoolExecutor(
                 max_workers=self._processes,
@@ -150,20 +149,20 @@ class ProcessStockScanBatchRunner:
                 initargs=(self._token,),
             )
             # Fork every worker now, before the parent holds any chunk data.
-            warm_up = self._executor.submit(_warm_up)
-            warm_up.result()
+            self._executor.submit(_warm_up).result()
             logger.info("Scan compute pool started with %d processes", self._processes)
-        except Exception:
-            if warm_up is not None and not warm_up.done():
-                # Raised in the parent while waiting (e.g. Celery's soft time
-                # limit), not a startup failure: propagate it.
-                self.__exit__(*sys.exc_info())
-                raise
+        except (OSError, BrokenProcessPool):
+            # Fork failed or a worker died starting up.
             logger.warning(
                 "Scan compute pool failed to start; computing in-process",
                 exc_info=True,
             )
             self._shutdown()
+        except BaseException:
+            # Anything else, e.g. Celery's soft time limit landing at any point
+            # during startup, is not ours to swallow.
+            self.__exit__(*sys.exc_info())
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
