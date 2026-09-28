@@ -183,7 +183,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # The backend migrates inside its lifespan before it serves HTTP. A revision that
+      # builds an index on a large table can run for minutes; while it does, /readyz is
+      # not up and the container is momentarily unhealthy. The worker tier waits on
+      # `service_healthy`, so a short grace aborts the deploy with
+      # "dependency failed to start: container <backend> is unhealthy" and leaves the
+      # Celery containers down. Keep this above the longest expected migration.
+      start_period: 900s
     stop_grace_period: 30s
     restart: unless-stopped
 
