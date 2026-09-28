@@ -102,8 +102,14 @@ def initialize_runtime() -> None:
     from .services.social_source_admin_service import SocialSourceAdminService
 
     with SessionLocal() as db:
-        sources = SocialSourceAdminService(db).ensure_seed_sources()
+        service = SocialSourceAdminService(db)
+        sources = service.ensure_seed_sources()
+        runtime = service.apply_deployment_settings(settings)
     logger.info("Social source inventory ready", extra={"source_count": len(sources)})
+    logger.info(
+        "Social runtime ready",
+        extra={"mode": runtime.mode, "provider": runtime.provider},
+    )
 
 
 async def trigger_ui_snapshot_rebuild_on_startup() -> None:
@@ -128,11 +134,70 @@ def _publish_group_history_reconciliation() -> None:
         )
 
 
+# Long enough to cover the API workers and restarts of one deploy; a restart
+# after it expires retries a feature that is still unpublished.
+STARTUP_REFRESH_GUARD_SECONDS = 6 * 60 * 60
+
+
+def _publish_missing_feature_refreshes() -> None:
+    """Queue the first COT and social imports instead of waiting for Beat.
+
+    COT otherwise waits for the weekday 17:00 ET slot and social for its next
+    six-hourly slot. A Redis NX key per feature lets every API worker call
+    this while only one enqueues; both tasks are idempotent regardless.
+    """
+    from .infra.db.models.cot import CotPublicationPointer
+    from .infra.db.models.social_signals import (
+        SocialSignalRunPointer,
+        SocialSourceRegistry,
+    )
+    from .services.redis_pool import get_redis_client
+
+    try:
+        with SessionLocal() as db:
+            registry = db.get(SocialSourceRegistry, 1)
+            missing = {
+                "cot": db.query(CotPublicationPointer).first() is None,
+                "social": (
+                    registry is not None
+                    and registry.mode == "live"
+                    and registry.provider != "disabled"
+                    and db.get(SocialSignalRunPointer, "latest_published") is None
+                ),
+            }
+        redis = get_redis_client()
+        for feature, unpublished in missing.items():
+            if not unpublished or redis is None or not redis.set(
+                f"startup_refresh:{feature}",
+                "1",
+                nx=True,
+                ex=STARTUP_REFRESH_GUARD_SECONDS,
+            ):
+                continue
+            if feature == "cot":
+                from .interfaces.tasks.cot_tasks import refresh_cot as task
+            else:
+                from .interfaces.tasks.social_signal_tasks import (
+                    refresh_social_signals as task,
+                )
+            result = task.delay(origin="startup")
+            logger.info(
+                "Initial %s refresh queued", feature, extra={"task_id": result.id}
+            )
+    except Exception:
+        logger.warning("Initial feature refresh publication failed", exc_info=True)
+
+
+def _publish_startup_work() -> None:
+    _publish_group_history_reconciliation()
+    _publish_missing_feature_refreshes()
+
+
 def trigger_group_history_reconciliation_on_startup() -> dict[str, str]:
     """Launch best-effort broker publication outside loop-owned executors."""
     publisher = threading.Thread(
-        target=_publish_group_history_reconciliation,
-        name="group-history-startup-publisher",
+        target=_publish_startup_work,
+        name="startup-publisher",
         daemon=True,
     )
     publisher.start()
