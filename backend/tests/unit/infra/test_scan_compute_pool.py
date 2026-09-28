@@ -122,24 +122,61 @@ class _SoftLimit(Exception):
 
 class _SlowScanner:
     def scan_stock_multi(self, symbol, **kwargs):
-        time.sleep(1)
+        time.sleep(30)
         return {"symbol": symbol}
 
 
-def test_exception_raised_in_parent_while_waiting_propagates():
-    # Celery's soft time limit is a signal handler raising in the parent.
+def _slow_warm_up():
+    time.sleep(30)
+
+
+@pytest.fixture
+def soft_limit_in():
+    """Arm a Celery-style soft time limit: a signal handler raising in the parent."""
+
     def raise_soft_limit(signum, frame):
         raise _SoftLimit()
 
     previous = signal.signal(signal.SIGALRM, raise_soft_limit)
-    try:
+    yield lambda seconds: signal.setitimer(signal.ITIMER_REAL, seconds)
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, previous)
+
+
+def test_soft_limit_while_waiting_propagates_without_waiting_for_workers(soft_limit_in):
+    started = time.monotonic()
+    with pytest.raises(_SoftLimit):
         with ProcessStockScanBatchRunner(_SlowScanner(), 2) as runner:
-            signal.setitimer(signal.ITIMER_REAL, 0.2)
-            with pytest.raises(_SoftLimit):
-                runner.scan_batch(_calls("A", "B"))
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+            soft_limit_in(0.2)
+            runner.scan_batch(_calls("A", "B"))
+
+    assert time.monotonic() - started < 10  # workers terminated, not awaited
+
+
+def test_soft_limit_during_warm_up_propagates(monkeypatch, soft_limit_in):
+    monkeypatch.setattr(scan_compute_pool, "_warm_up", _slow_warm_up)
+    started = time.monotonic()
+    soft_limit_in(0.2)
+    with pytest.raises(_SoftLimit):
+        ProcessStockScanBatchRunner(_PidScanner(), 2).__enter__()
+
+    assert time.monotonic() - started < 10
+    assert scan_compute_pool._scanners_by_token == {}
+
+
+def test_worker_dying_between_batches_degrades_to_in_process():
+    with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
+        runner.scan_batch(_calls("A", "B"))
+        executor = runner._executor
+        os.kill(next(iter(executor._processes)), signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while not executor._broken and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert executor._broken  # submit() itself now raises BrokenProcessPool
+
+        outcomes = runner.scan_batch(_calls("X", "Y"))
+
+    assert [outcome.result["pid"] for outcome in outcomes] == [_PARENT_PID, _PARENT_PID]
 
 
 def _start_pool_in_daemon(queue):

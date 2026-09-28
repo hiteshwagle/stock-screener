@@ -22,7 +22,7 @@ import math
 import pickle
 import signal
 import sys
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Sequence
 
@@ -141,6 +141,7 @@ class ProcessStockScanBatchRunner:
     def __enter__(self) -> "ProcessStockScanBatchRunner":
         self._token = next(_tokens)
         _scanners_by_token[self._token] = self._scanner
+        warm_up: Future | None = None
         try:
             self._executor = ProcessPoolExecutor(
                 max_workers=self._processes,
@@ -149,9 +150,15 @@ class ProcessStockScanBatchRunner:
                 initargs=(self._token,),
             )
             # Fork every worker now, before the parent holds any chunk data.
-            self._executor.submit(_warm_up).result()
+            warm_up = self._executor.submit(_warm_up)
+            warm_up.result()
             logger.info("Scan compute pool started with %d processes", self._processes)
         except Exception:
+            if warm_up is not None and not warm_up.done():
+                # Raised in the parent while waiting (e.g. Celery's soft time
+                # limit), not a startup failure: propagate it.
+                self.__exit__(*sys.exc_info())
+                raise
             logger.warning(
                 "Scan compute pool failed to start; computing in-process",
                 exc_info=True,
@@ -160,7 +167,8 @@ class ProcessStockScanBatchRunner:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._shutdown()
+        # On an exception (e.g. a soft time limit) don't wait for running scans.
+        self._shutdown(terminate=exc_type is not None)
         if self._token is not None:
             _scanners_by_token.pop(self._token, None)
             self._token = None
@@ -170,7 +178,7 @@ class ProcessStockScanBatchRunner:
             return self._serial.scan_batch(calls)
 
         batches = _split(calls, self._processes * _BATCHES_PER_PROCESS)
-        futures = [self._executor.submit(_scan_calls, batch) for batch in batches]
+        futures = [self._submit(batch) for batch in batches]
         outcomes: list[StockScanOutcome] = []
         for batch, future in zip(batches, futures):
             try:
@@ -197,10 +205,25 @@ class ProcessStockScanBatchRunner:
                 outcomes.extend(self._serial.scan_batch(batch))
         return outcomes
 
-    def _shutdown(self) -> None:
+    def _submit(self, batch: Sequence[StockScanCall]) -> Future:
+        try:
+            return self._executor.submit(_scan_calls, batch)
+        except BrokenProcessPool as exc:
+            # A worker died between batches; the collect loop recomputes it.
+            failed: Future = Future()
+            failed.set_exception(exc)
+            return failed
+
+    def _shutdown(self, *, terminate: bool = False) -> None:
         executor, self._executor = self._executor, None
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=True)
+        if executor is None:
+            return
+        if terminate:
+            # ponytail: private _processes; use executor.terminate_workers()
+            # once we're on Python 3.14.
+            for process in list((executor._processes or {}).values()):
+                process.terminate()
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 def process_stock_scan_batch_runner(
