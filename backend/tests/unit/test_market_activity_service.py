@@ -1285,3 +1285,34 @@ def test_runtime_activity_status_hides_background_warning_when_secondary_work_is
     payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["background_warning"] is None
+
+
+def test_options_activity_cannot_mask_a_concurrent_breadth_failure(db_session, monkeypatch):
+    """Breadth now runs after the snapshot, concurrently with the Options follow-on."""
+    from app.services import market_activity_service as module
+
+    monkeypatch.setattr(
+        module,
+        "get_runtime_bootstrap_status",
+        lambda _db: _bootstrap_status(required=False, enabled=["US"], state="ready"),
+    )
+    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
+    common = {"market": "US", "lifecycle": "daily_refresh"}
+    module.mark_market_activity_started(
+        db_session, stage_key="options", task_id="options-1", **common
+    )
+    module.mark_market_activity_started(
+        db_session, stage_key="breadth", task_id="breadth-1", **common
+    )
+    module.mark_market_activity_failed(
+        db_session, stage_key="breadth", task_id="breadth-1", message="OOM", **common
+    )
+    module.mark_market_activity_completed(
+        db_session, stage_key="options", task_id="options-1", **common
+    )
+
+    rows = {
+        row["stage_key"]: row["status"]
+        for row in module.get_runtime_activity_status(db_session)["markets"]
+    }
+    assert rows == {"breadth": "failed", "options": "completed"}

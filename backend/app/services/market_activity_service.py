@@ -42,16 +42,26 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _activity_key(market: str) -> str:
-    return f"{MARKET_ACTIVITY_KEY_PREFIX}{str(market).upper()}"
+# Stages that run beside a market's pipeline rather than inside it (Options
+# is dispatched after the snapshot and overlaps the late breadth stage). They
+# keep their own record: the reducer lets only one running owner hold a
+# record, so a shared one would hide the pipeline's progress and failures.
+SIDE_ACTIVITY_STAGE_KEYS = ("options",)
+
+
+def _activity_key(market: str, stage_key: str | None = None) -> str:
+    key = f"{MARKET_ACTIVITY_KEY_PREFIX}{str(market).upper()}"
+    return f"{key}:{stage_key}" if stage_key in SIDE_ACTIVITY_STAGE_KEYS else key
 
 
 def _get_setting(db: Session, key: str) -> AppSetting | None:
     return db.query(AppSetting).filter(AppSetting.key == key).first()
 
 
-def _load_market_activity(db: Session, market: str) -> dict[str, Any] | None:
-    setting = _get_setting(db, _activity_key(market))
+def _load_market_activity(
+    db: Session, market: str, stage_key: str | None = None
+) -> dict[str, Any] | None:
+    setting = _get_setting(db, _activity_key(market, stage_key))
     if setting is None:
         return None
     try:
@@ -159,7 +169,12 @@ def _stage_market_activity(
     market: str,
     payload: RuntimeActivityUpdate | RuntimeActivityRecord | dict[str, Any],
 ) -> dict[str, Any]:
-    key = _activity_key(market)
+    stage_key = (
+        payload.get("stage_key")
+        if isinstance(payload, dict)
+        else getattr(payload, "stage_key", None)
+    )
+    key = _activity_key(market, stage_key)
     setting = _get_setting(db, key)
     existing_payload = None
     if setting is not None:
@@ -594,6 +609,19 @@ def get_runtime_activity_status(db: Session) -> dict[str, Any]:
                 bootstrap_run=bootstrap_run,
             )
         )
+        for stage_key in SIDE_ACTIVITY_STAGE_KEYS:
+            side_record = _load_market_activity(db, market, stage_key)
+            if side_record is not None:
+                market_payloads.append(
+                    _market_payload(
+                        market=market,
+                        record=side_record,
+                        bootstrap_state=bootstrap_status.bootstrap_state,
+                        bootstrap_required=bootstrap_status.bootstrap_required,
+                        primary_market=primary_market,
+                        bootstrap_run=bootstrap_run,
+                    )
+                )
 
     return build_runtime_activity_status(
         bootstrap_status=bootstrap_status,

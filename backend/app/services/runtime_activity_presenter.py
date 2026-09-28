@@ -43,11 +43,12 @@ def build_runtime_activity_status(
         RuntimeActivityRecord.from_payload(payload)
         for payload in market_payloads
     ]
-    active_markets = [
+    # A market can have a pipeline row and a side-stage row (Options).
+    active_markets = list(dict.fromkeys(
         record.market
         for record in activity_records
         if record.status in ACTIVE_ACTIVITY_STATUSES
-    ]
+    ))
     has_warning = any(
         record.status in WARNING_ACTIVITY_STATUSES
         for record in activity_records
