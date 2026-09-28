@@ -17,7 +17,6 @@ B and B makes HBM" does not establish that A's product serves HBM.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from app.domain.company_exposure.policy import (
@@ -26,17 +25,13 @@ from app.domain.company_exposure.policy import (
     within_synthesis_bound,
 )
 from app.services.company_exposure.wording import (
-    CJK_SEGMENT,
-    CLAUSE_BOUNDARY,
     OFFERS,
     PART_OF,
-    PHRASE_BOUNDARY,
     SERVES,
     affirmed,
     clauses,
-    mention_spans,
     mentions,
-    nearest_subject,
+    predicated,
 )
 
 APPLICATION_LINKS = frozenset(
@@ -52,8 +47,6 @@ _RELATIONSHIP_WORDING = {
 # Relationships whose wording is a predicate of the link source: "Example
 # Corp offers ET-9000", "ET-9000 supports HBM".
 _PREDICATED = frozenset({"issuer_offers_product", "product_supports_application"})
-_PASSIVE_AGENT = re.compile(r"\s+by\b", re.IGNORECASE)
-_POSSESSOR = re.compile(r"([\w&.-]+)['’]s\s*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,49 +77,6 @@ class SynthesisDecision:
 
 def _mentions(quote: str, entity: str) -> bool:
     return mentions(quote, entity)
-
-
-def _own_mention(phrase: str, target: str, source: str) -> bool:
-    """``phrase`` names ``target`` other than as a third party's ("Acme's
-    ET-9000"); the source's own possessive ("Example Corp's") is fine."""
-
-    for start, _ in mention_spans(phrase, target):
-        possessor = _POSSESSOR.search(phrase[:start])
-        if possessor is None or mentions(source, possessor.group(1)):
-            return True
-    return False
-
-
-def _predicated(clause: str, link: Link, wording: re.Pattern) -> bool:
-    """Whether the clause states the relationship of the link's own ends.
-
-    The source must be the verb's nearest subject and the target its object
-    (or the passive "ET-9000 is sold by Example Corp"): "Example Corp relies
-    on Acme, which offers ET-9000" and "Example Corp says Acme offers
-    ET-9000" name both ends and an offer verb, but Acme is the one offering. Verb-final CJK wording needs the verb and both ends in one
-    comma-delimited segment.
-    """
-
-    for verb in wording.finditer(clause):
-        if not verb.group().isascii():
-            continue
-        subject = PHRASE_BOUNDARY.split(clause[: verb.start()])[-1]
-        rest = clause[verb.end() :]
-        if nearest_subject(subject, mention_spans(subject, link.source)) and (
-            _own_mention(CLAUSE_BOUNDARY.split(rest)[0], link.target, link.source)
-        ):
-            return True
-        agent = _PASSIVE_AGENT.match(rest)
-        if agent and _mentions(subject, link.target):
-            by = PHRASE_BOUNDARY.split(rest[agent.end() :])[0]
-            if nearest_subject(by, mention_spans(by, link.source)):
-                return True
-    return any(
-        any(not match.group().isascii() for match in wording.finditer(segment))
-        and _mentions(segment, link.source)
-        and _mentions(segment, link.target)
-        for segment in CJK_SEGMENT.split(clause)
-    )
 
 
 def validate_synthesis(
@@ -167,7 +117,7 @@ def validate_synthesis(
         elif wording is not None and not any(
             affirmed(clause)
             and (
-                _predicated(clause, link, wording)
+                predicated(clause, link.source, link.target, wording)
                 if link.relationship in _PREDICATED
                 else wording.search(clause)
             )

@@ -133,7 +133,11 @@ administrator applies it. To resolve a `review_required` job:
 
 When another listing's issuer already owns the confirmed CIK (a
 cross-listing, `cik_linked_to_other_issuer`), `resolve-issuer` links this
-listing to that issuer; the dry run shows it as `issuer_id`.
+listing to that issuer; the dry run shows it as `issuer_id`. A listing that
+already has an accepted link (`security_already_linked_elsewhere`,
+`ticker_changed_since_prior_link`) is relinked to the reviewed CIK; the
+command reports `already_linked` only when that CIK already belongs to the
+current issuer.
 
 `resume` re-runs the paused stage; it does not reset the job's cumulative
 budgets. With nothing paused it changes nothing and reports `not_paused`

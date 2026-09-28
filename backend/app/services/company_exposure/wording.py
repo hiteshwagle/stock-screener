@@ -36,15 +36,65 @@ def sentences(text: str) -> list[str]:
     return [s for s in SENTENCES.split(text) if s.strip()]
 
 
+# Finite verbs that give each side of an "and" its own predicate.
+_FINITE = re.compile(
+    r"\b(?:is|are|was|were|has|have|had|won|wins|grew|grows|rose|rises|fell|falls|"
+    r"increased|decreased|declined|remains?|remained|became|becomes|received|"
+    r"launched|reported|supports?|supported|serves?|served|uses?|used|sells?|sold|"
+    r"ships?|shipped|offers?|offered|makes?|made|manufactures?|manufactured|"
+    r"produces?|produced|delivers?|delivered|targets?|targeted|enables?|enabled|"
+    r"powers?|powered|buys?|bought|purchases?|purchased|discontinued|exited|"
+    r"ceased|terminated|divested)\b",
+    re.IGNORECASE,
+)
+_AND = re.compile(r",?\s*\band\b\s*", re.IGNORECASE)
+# Adverbs that may precede a shared subject's second verb ("and also supports").
+_ADVERBS = frozenset(
+    {"also", "currently", "now", "further", "additionally", "recently", "still"}
+)
+
+
+def _own_subject(part: str) -> bool:
+    """Whether ``part`` names a subject before its first finite verb."""
+
+    verb = _FINITE.search(part)
+    if verb is None:
+        return False
+    words = [w for w in part[: verb.start()].split() if w.casefold() not in _ADVERBS]
+    return bool(words)
+
+
+def _coordinated(clause: str) -> list[str]:
+    """Split "A rose, and our X200 supports B" into its two predicates.
+
+    An "and" separates clauses only when both sides carry their own finite
+    verb and the right side its own subject; "supports DDR5 and HBM
+    testing", "NVIDIA and AMD are customers" and "is available and supports
+    HBM testing" stay whole.
+    """
+
+    parts = _AND.split(clause)
+    joined, current = [], parts[0]
+    for part in parts[1:]:
+        if _FINITE.search(current) and _own_subject(part):
+            joined.append(current)
+            current = part
+        else:
+            current = f"{current} and {part}"
+    return [*joined, current]
+
+
 def clauses(quotes: list[str]) -> list[str]:
-    """Clauses of the quoted sentences, split at contrastive joins."""
+    """Clauses of the quoted sentences, split at contrastive joins and at an
+    "and" joining two predicates."""
 
     return [
-        clause
+        part
         for quote in quotes
         for sentence in sentences(quote)
         for clause in CONTRAST.split(sentence)
-        if clause.strip()
+        for part in _coordinated(clause)
+        if part.strip()
     ]
 
 
@@ -228,3 +278,52 @@ PART_OF = re.compile(
     r"wholly[- ]owned|owned\s+by)\b|セグメント|子会社|事業部|部門|分部|子公司",
     re.IGNORECASE,
 )
+
+
+_PASSIVE_AGENT = re.compile(r"\s+by\b", re.IGNORECASE)
+_POSSESSOR = re.compile(r"([\w&.-]+)['’]s\s*$")
+
+
+def own_mention(phrase: str, target: str, source: str) -> bool:
+    """``phrase`` names ``target`` other than as a third party's ("Acme's
+    ET-9000"); the source's own possessive ("Example Corp's") is fine."""
+
+    for start, _ in mention_spans(phrase, target):
+        possessor = _POSSESSOR.search(phrase[:start])
+        if possessor is None or mentions(source, possessor.group(1)):
+            return True
+    return False
+
+
+def predicated(clause: str, source: str, target: str, wording: re.Pattern) -> bool:
+    """Whether ``clause`` states ``wording`` of ``source`` about ``target``.
+
+    The source must be the verb's nearest subject and the target in its
+    object phrase (or the passive "ET-9000 is sold by Example Corp"):
+    "Example Corp relies on Acme, which offers ET-9000", "Example Corp says
+    Acme offers ET-9000" and "Our ET-9000 sales rose and X200 supports HBM"
+    name both ends and the verb, but another subject owns the verb.
+    Verb-final CJK wording needs the verb and both ends in one
+    comma-delimited segment.
+    """
+
+    for verb in wording.finditer(clause):
+        if not verb.group().isascii():
+            continue
+        subject = PHRASE_BOUNDARY.split(clause[: verb.start()])[-1]
+        rest = clause[verb.end() :]
+        if nearest_subject(subject, mention_spans(subject, source)) and own_mention(
+            CLAUSE_BOUNDARY.split(rest)[0], target, source
+        ):
+            return True
+        agent = _PASSIVE_AGENT.match(rest)
+        if agent and mentions(subject, target):
+            by = PHRASE_BOUNDARY.split(rest[agent.end() :])[0]
+            if nearest_subject(by, mention_spans(by, source)):
+                return True
+    return any(
+        any(not match.group().isascii() for match in wording.finditer(segment))
+        and mentions(segment, source)
+        and mentions(segment, target)
+        for segment in CJK_SEGMENT.split(clause)
+    )

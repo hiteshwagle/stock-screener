@@ -73,6 +73,7 @@ from app.services.company_exposure.wording import (
     AVAILABLE,
     CJK_OTHER_ACTOR,
     CJK_SEGMENT,
+    CLAUSE_BOUNDARY,
     CUSTOMER,
     EXIT,
     ISSUER_SUBJECT,
@@ -90,6 +91,7 @@ from app.services.company_exposure.wording import (
     mention_spans,
     mentions,
     nearest_subject,
+    predicated,
 )
 
 VERIFICATION_POLICY = "verification-v1"
@@ -357,14 +359,30 @@ def _linking_clauses(
     linking = []
     for clause in clauses(quotes):
         # Both ends and a predicate joining them: "ET-9000 revenue and HBM
-        # demand both increased" names both but asserts no relationship.
-        if (
-            any(_issuers_own(clause, t, issuer_names) for t in product_terms)
-            and any(mentions(clause, t) for t in theme_terms)
-            and SERVES.search(clause)
+        # demand both increased" names both but asserts no relationship, and
+        # "Our ET-9000 sales rose as X200 supports HBM" serves HBM with X200.
+        if any(
+            _issuers_own(clause, p, issuer_names) and _serves(clause, p, t)
+            for p in product_terms
+            for t in theme_terms
         ):
             linking.append(clause)
     return linking
+
+
+def _serves(clause: str, product: str, theme: str) -> bool:
+    """The serving verb takes the product as its subject ("ET-9000 supports
+    HBM testing") or its object, followed by the theme ("Customers use our
+    ET-9000 for HBM testing")."""
+
+    if predicated(clause, product, theme, SERVES):
+        return True
+    for verb in SERVES.finditer(clause):
+        obj = CLAUSE_BOUNDARY.split(clause[verb.end() :])[0]
+        spans = mention_spans(obj, product)
+        if spans and mentions(obj[spans[0][1] :], theme):
+            return True
+    return False
 
 
 def _direct_clauses(quotes: list[str], theme_terms, issuer_names) -> list[str]:
@@ -729,12 +747,16 @@ def _contradicts(quote: str, kind, product_terms, key_tokens, scope) -> bool:
     affirmative or unrelated same-product quote disputes nothing.
     """
 
-    if not _names_product(quote, product_terms, key_tokens):
-        return False
-    if affirmed(quote) and not EXIT.search(quote):
-        return False
-    return kind not in _LINKED_KINDS or any(
-        mentions(quote, t) for t in scope.theme_terms
+    # Judged per clause: "We discontinued X100; ET-9000 supports HBM
+    # testing" ends X100, not the ET-9000 claim.
+    return any(
+        _names_product(clause, product_terms, key_tokens)
+        and (not affirmed(clause) or EXIT.search(clause))
+        and (
+            kind not in _LINKED_KINDS
+            or any(mentions(clause, t) for t in scope.theme_terms)
+        )
+        for clause in clauses([quote])
     )
 
 

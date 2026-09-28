@@ -432,6 +432,10 @@ def test_non_text_scope_label_is_rejected_output():
         # A named company before the product makes it that company's.
         ("Acme ET-9000 testers support HBM testing.", False),
         ("The ET-9000 supports HBM testing.", True),
+        # The serving verb belongs to another product in the same sentence.
+        ("Our ET-9000 sales rose, and our X200 supports HBM testing.", False),
+        ("Our ET-9000 sales rose and X200 supports HBM testing.", False),
+        ("Our ET-9000 tester is available and supports HBM testing.", True),
     ],
 )
 def test_linked_product_must_be_the_issuers_own(text, linked):
@@ -514,6 +518,10 @@ def test_whitespace_segment_label_is_no_label():
         # Affirmative, or about something else: no contradiction.
         ("The ET-9000 supports HBM testing.", False),
         ("The ET-9000 does not support PCIe 6.0 testing.", False),
+        # The denial or exit must be in the clause naming the product.
+        ("We discontinued X100; ET-9000 supports HBM testing.", False),
+        ("ET-9000 supports HBM testing, and we discontinued X100.", False),
+        ("We discontinued the ET-9000 HBM tester line.", True),
     ],
 )
 def test_conflicting_citation_must_be_about_the_claimed_product(conflict, disputed):
@@ -528,6 +536,28 @@ def test_conflicting_citation_must_be_about_the_claimed_product(conflict, disput
     )
     assert (result.conclusion == Conclusion.DISPUTED) is disputed
     assert ("conflicting_primary_evidence" in result.hold_reasons) is disputed
+
+
+@pytest.mark.parametrize(
+    ("quote", "supported"),
+    [
+        ("NVIDIA is our customer for ET-9000 HBM solutions.", True),
+        # The relationship is about X200; ET-9000 only shares the sentence.
+        ("NVIDIA is our customer for X200, and our ET-9000 won an award.", False),
+        ("NVIDIA is our customer for X200 and ET-9000 won an award.", False),
+    ],
+)
+def test_customer_wording_must_cover_the_claimed_product(quote, supported):
+    result = validate_candidate(
+        claim(
+            "customer_relationship",
+            statement="NVIDIA is our customer for ET-9000.",
+            support=[{"ref": "P1", "quote": quote}],
+        ),
+        evidence(item("P1", quote)),
+        SCOPE,
+    )
+    assert ("customer_not_stated" not in result.hold_reasons) is supported
 
 
 @pytest.mark.parametrize(

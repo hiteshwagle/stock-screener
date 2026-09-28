@@ -175,6 +175,47 @@ def test_cross_listing_resolves_to_the_issuer_owning_the_cik(
     assert resumed["state"] == "queued"
 
 
+def test_reviewed_cik_replaces_a_stale_accepted_link(
+    capsys, cli_kwargs, db_session, monkeypatch
+):
+    from app.config import settings
+    from app.domain.company_exposure.contracts import (
+        SERVICE_PRINCIPAL,
+        RegistryMatch,
+    )
+    from app.services.company_exposure.issuer_identity import IssuerIdentityAdapter
+    from tests.fixtures.company_exposure.factory import make_security
+
+    security = make_security(db_session, "STALE")
+    identity = IssuerIdentityAdapter(db_session)
+    stale = identity.accept_registry_match(
+        RegistryMatch(
+            security_id=security.id,
+            market="US",
+            scheme="cik",
+            value="7654321",
+            candidate_count=1,
+            ticker_confirmed=True,
+            matched_ticker="STALE",
+            registry_capture_revision_id=None,
+            official_record_capture_revision_id=None,
+        ),
+        SERVICE_PRINCIPAL,
+    ).issuer_id
+    db_session.commit()  # each CLI call closes the session
+    monkeypatch.setattr(settings, "admin_principal_id", "ops:alice")
+    args = ["resolve-issuer", "--security-id", str(security.id), "--apply"]
+
+    code, same = _run(capsys, [*args, "--cik", "7654321"], **cli_kwargs)
+    assert (code, same["state"]) == (0, "already_linked")
+
+    code, applied = _run(capsys, [*args, "--cik", "1234567"], **cli_kwargs)
+    assert (code, applied["state"]) == (0, "accepted")
+    current = identity.resolve_security(security.id)
+    assert current.issuer_id != stale
+    assert current.identifiers[("US", "cik")] == "0001234567"
+
+
 def test_process_reports_disabled_research_as_blocked(capsys, cli_kwargs):
     code, payload = _run(
         capsys,
