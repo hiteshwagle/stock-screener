@@ -357,3 +357,45 @@ def test_runtime_activity_status_logs_lock_lookup_failure(
     assert us_market["status"] == "running"
     assert "Runtime activity lock lookup failed" in caplog.text
     assert "old-task" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("lock_tasks", "expected_owner"),
+    [({}, "new-options"), ({"US": {"task_id": "old-options"}}, "old-options")],
+    ids=["orphaned-owner-replaced", "live-owner-kept"],
+)
+def test_stale_options_side_record_recovers_only_without_a_live_owner(
+    db_session, monkeypatch, lock_tasks, expected_owner
+):
+    """A killed Options worker must not leave its side record running forever."""
+    from app.models.app_settings import AppSetting
+    from app.services import market_activity_service as module
+
+    payload = _persisted_running_record(
+        stage_key="options",
+        task_name="daily-us-options-analytics",
+        task_id="old-options",
+        message="Refreshing Options Command Center",
+    )
+    db_session.add(
+        AppSetting(
+            key=f"{module.MARKET_ACTIVITY_KEY_PREFIX}US:options",
+            value=json.dumps(payload),
+            category=module.RUNTIME_ACTIVITY_CATEGORY,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock(lock_tasks))
+    monkeypatch.setattr(module, "_utcnow_iso", lambda: "2026-06-23T06:00:00+00:00")
+
+    result = module.mark_market_activity_started(
+        db_session,
+        market="US",
+        stage_key="options",
+        lifecycle="daily_refresh",
+        task_name="daily-us-options-analytics",
+        task_id="new-options",
+        message="Refreshing Options Command Center",
+    )
+
+    assert result["task_id"] == expected_owner

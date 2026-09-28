@@ -34,7 +34,10 @@ from ..wiring.bootstrap import get_data_fetch_lock
 
 RUNTIME_ACTIVITY_CATEGORY = "runtime_activity"
 MARKET_ACTIVITY_KEY_PREFIX = "runtime.activity.market."
-DATA_FETCH_RUNTIME_STAGE_KEYS = frozenset({"prices"})
+# Stages whose tasks hold the data-fetch lock (Options runs under
+# serialized_data_fetch_task), so an orphaned running record can be told from
+# a live one and replaced once stale.
+DATA_FETCH_RUNTIME_STAGE_KEYS = frozenset({"prices", "options"})
 _LIVE_RUNTIME_TASK_LOOKUP_FAILED = object()
 logger = logging.getLogger(__name__)
 
