@@ -35,9 +35,6 @@ PROD_COMPOSE = ROOT / "docker-compose.prod.yml"
 # and needed 519 s in the backend lifespan before /readyz answered.
 OBSERVED_MIGRATION_SECONDS = 519
 
-# The budget the backend carried while eight Celery containers failed to start.
-BUDGET_WHILE_FAILING_SECONDS = 30 + 30 * 3  # start_period + interval * retries
-
 # Floor for the start-up grace. A real migration has to fit with room to spare.
 MIN_START_PERIOD_SECONDS = 600
 
@@ -60,24 +57,27 @@ def _duration_seconds(value: object) -> int:
     return amount * {"": 1, "s": 1, "m": 60, "h": 3600}[unit]
 
 
-def _budget(check: dict) -> int:
-    """Return the seconds a service may stay unhealthy before start checks end."""
-    return (
-        _duration_seconds(check["start_period"])
-        + _duration_seconds(check["interval"]) * int(check["retries"])
-    )
-
-
 def test_backend_start_period_covers_a_long_migration():
-    """A running migration must never be reported as an unhealthy backend."""
+    """A running migration must never be reported as an unhealthy backend.
+
+    ``start_period`` is the whole grace: while it runs, a failing probe does not count
+    towards ``retries``, so a migration that fits inside it is never reported unhealthy.
+    That is the property to assert.
+
+    ``start_period + interval * retries`` deliberately is *not* asserted anywhere. Docker
+    does not define the unhealthy deadline that way -- probe scheduling also depends on
+    ``start_interval`` and on when prior checks complete -- so treating it as an exact
+    budget either overstates or understates the real window. It also measures the wrong
+    quantity: the window after the grace, not the grace itself.
+    """
     check = _yaml(BASE_COMPOSE)["services"]["backend"]["healthcheck"]
 
     assert _duration_seconds(check["start_period"]) >= MIN_START_PERIOD_SECONDS, (
         "backend.healthcheck.start_period is shorter than the startup grace a long "
         "migration needs"
     )
-    assert _budget(check) > OBSERVED_MIGRATION_SECONDS, (
-        "the backend health-check budget does not cover the observed migration runtime"
+    assert _duration_seconds(check["start_period"]) > OBSERVED_MIGRATION_SECONDS, (
+        "the backend start_period does not cover the observed migration runtime"
     )
 
 
@@ -91,9 +91,11 @@ def test_backend_grace_is_not_smaller_than_the_redis_grace():
     redis_check = _yaml(BASE_COMPOSE)["services"]["redis"]["healthcheck"]
 
     assert _duration_seconds(redis_check["start_period"]) >= MIN_REDIS_START_PERIOD_SECONDS
-    assert _budget(_yaml(BASE_COMPOSE)["services"]["backend"]["healthcheck"]) >= _budget(
-        redis_check
-    ), "the backend grace is expected to bound the deploy, not the redis grace"
+    assert _duration_seconds(
+        _yaml(BASE_COMPOSE)["services"]["backend"]["healthcheck"]["start_period"]
+    ) >= _duration_seconds(redis_check["start_period"]), (
+        "the backend grace is expected to bound the deploy, not the redis grace"
+    )
 
 
 def test_prod_backend_start_period_matches_the_base_file():
