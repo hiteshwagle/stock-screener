@@ -6,7 +6,7 @@ import importlib
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
@@ -102,3 +102,58 @@ def test_historical_metadata_uses_exact_date_published_run_and_no_newer_group():
     assert metadata[old_date]["AAA"].ibd_industry_group == "Old Group"
     assert metadata[old_date]["MISSING"].company_name is None
     assert metadata[old_date]["MISSING"].ibd_industry_group == "No Group"
+
+
+def test_historical_metadata_reads_extended_fallback_without_loading_feature_rows():
+    """A US run's full details documents OOM-killed the 512M breadth worker."""
+    db = _database()
+    as_of = date(2026, 8, 20)
+    run = FeatureRun(
+        as_of_date=as_of,
+        run_type="daily_snapshot",
+        status="published",
+        config_json={"universe": {"market": "US"}},
+        published_at=datetime(2026, 8, 20, 22, tzinfo=UTC),
+    )
+    db.add(run)
+    db.flush()
+    db.add_all(
+        [
+            StockFeatureDaily(
+                run_id=run.id,
+                symbol="EXT",
+                as_of_date=as_of,
+                details_json={
+                    "company_name": None,
+                    "extended": {"company_name": "Ext Co", "ibd_industry_group": "Ext Group"},
+                    "ibd_industry_group": "Top Group",
+                },
+            ),
+            StockFeatureDaily(run_id=run.id, symbol="NUL", as_of_date=as_of, details_json=None),
+            StockFeatureDaily(run_id=run.id, symbol="ARR", as_of_date=as_of, details_json=[1, 2]),
+        ]
+    )
+    db.commit()
+    reader = sessionmaker(bind=db.get_bind())()
+    statements = []
+    event.listen(
+        db.get_bind(),
+        "before_cursor_execute",
+        lambda _conn, _cursor, sql, *_args: statements.append(sql),
+    )
+
+    metadata = _metadata_module().BreadthContributorMetadataLoader.historical(
+        reader, "us", {as_of: ("ext", "NUL", "ARR")}
+    )[as_of]
+
+    assert (metadata["EXT"].company_name, metadata["EXT"].ibd_industry_group) == (
+        "Ext Co",
+        "Top Group",
+    )
+    for symbol in ("NUL", "ARR"):
+        assert (metadata[symbol].company_name, metadata[symbol].ibd_industry_group) == (
+            None,
+            "No Group",
+        )
+    # Only extracted values leave the database, never the whole document.
+    assert not any("details_json AS" in sql for sql in statements)

@@ -18,6 +18,9 @@ from .contributors import NO_GROUP_LABEL
 from .types import BreadthContributorMetadata
 
 
+_METADATA_KEYS = ("company_name", "ibd_industry_group")
+
+
 def _text(value: Any) -> str | None:
     if value is None:
         return None
@@ -117,16 +120,30 @@ class BreadthContributorMetadataLoader:
                 selected_by_date[run.as_of_date] = run
 
         run_ids = tuple(run.id for run in selected_by_date.values())
+        # Project only the metadata keys (top level and ``extended``): a US
+        # run's full details documents expand to ~2.3 GB in Python and
+        # OOM-killed the 512M breadth worker. A missing key, or a document
+        # that is not an object, extracts as NULL.
+        details = StockFeatureDaily.details_json
         feature_rows = (
-            db.query(StockFeatureDaily)
+            db.query(
+                StockFeatureDaily.run_id,
+                StockFeatureDaily.symbol,
+                *(details[key] for key in _METADATA_KEYS),
+                *(details[("extended", key)] for key in _METADATA_KEYS),
+            )
             .filter(StockFeatureDaily.run_id.in_(run_ids))
             .all()
             if run_ids
             else []
         )
+        count = len(_METADATA_KEYS)
         details_by_run_symbol = {
-            (row.run_id, str(row.symbol).upper()): row.details_json or {}
-            for row in feature_rows
+            (run_id, str(symbol).upper()): {
+                **{key: value for key, value in zip(_METADATA_KEYS, values[:count])},
+                "extended": dict(zip(_METADATA_KEYS, values[count:])),
+            }
+            for run_id, symbol, *values in feature_rows
         }
 
         result: dict[date, Mapping[str, BreadthContributorMetadata]] = {}
