@@ -1,0 +1,172 @@
+import { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import {
+  Alert, Box, Button, MenuItem, Paper, Stack, TextField, Typography,
+} from '@mui/material';
+
+import {
+  getResearchJob, getResearchJobPreview, requestExposureResearch,
+  researchJobKey, researchJobRefreshMs, researchPreviewKey,
+} from '../../api/companyExposures';
+import ExposureResearchPanel from './ExposureResearchPanel';
+
+const isAuthError = (error) => [401, 403].includes(error?.response?.status);
+
+const errorCode = (error) => error?.response?.data?.detail?.code
+  || (typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : null)
+  || error?.message || 'Request failed';
+
+// Live freshness and holds on a sealed preview: recheck once a minute.
+export const PREVIEW_REFRESH_MS = 60_000;
+
+const newIdempotencyKey = () => `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+export default function ExposureResearchWorkspace() {
+  const [keyDraft, setKeyDraft] = useState('');
+  const [adminKey, setAdminKey] = useState('');
+  const [symbol, setSymbol] = useState('');
+  const [themeId, setThemeId] = useState('');
+  const [kind, setKind] = useState('verify');
+  const [jobId, setJobId] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  const job = useQuery({
+    queryKey: researchJobKey(jobId),
+    queryFn: () => getResearchJob(adminKey, jobId),
+    enabled: Boolean(adminKey && jobId),
+    // Paused jobs keep a slow poll: an operator may resume them via the CLI.
+    refetchInterval: (query) => researchJobRefreshMs(query.state.data),
+  });
+  const revisionId = job.data?.assessment_revision_id;
+  const preview = useQuery({
+    queryKey: researchPreviewKey(jobId, revisionId),
+    queryFn: () => getResearchJobPreview(adminKey, jobId),
+    enabled: Boolean(adminKey && jobId && revisionId),
+    // Freshness and holds are evaluated when read and change without a new
+    // revision (a deadline passes, a hold is recorded): refresh them.
+    staleTime: PREVIEW_REFRESH_MS,
+    refetchInterval: PREVIEW_REFRESH_MS,
+  });
+
+  // One idempotency key per submission: a retry after a lost response reuses
+  // it (the server returns the same job); a confirmed response or changed
+  // inputs start a new submission.
+  const pendingSubmission = useRef(null);
+  const submissionKey = (body) => {
+    const signature = JSON.stringify(body);
+    if (pendingSubmission.current?.signature !== signature) {
+      pendingSubmission.current = { signature, key: newIdempotencyKey() };
+    }
+    return pendingSubmission.current.key;
+  };
+
+  const request = useMutation({
+    mutationFn: () => {
+      const body = {
+        kind,
+        symbol: symbol.trim().toUpperCase(),
+        economicThemeId: themeId.trim(),
+      };
+      return requestExposureResearch(adminKey, {
+        ...body,
+        idempotencyKey: submissionKey(body),
+      });
+    },
+    onSuccess: (data) => {
+      pendingSubmission.current = null;
+      setJobId(data.job_id);
+      setMessage({
+        severity: 'success',
+        text: data.dispatch === 'not_dispatched'
+          ? 'Research queued; the research worker has not picked it up yet.'
+          : 'Research queued.',
+      });
+    },
+    onError: (error) => {
+      setMessage({ severity: 'error', text: errorCode(error) });
+      // A rejected key is never kept: ask for it again.
+      if (isAuthError(error)) setAdminKey('');
+    },
+  });
+  const changeKey = () => { setAdminKey(''); setJobId(null); setMessage(null); };
+  const jobAuthFailed = job.isError && isAuthError(job.error);
+  const previewAuthFailed = preview.isError && isAuthError(preview.error);
+  useEffect(() => {
+    if (jobAuthFailed || previewAuthFailed) setAdminKey('');
+  }, [jobAuthFailed, previewAuthFailed]);
+
+  const canSubmit = Boolean(adminKey && symbol.trim() && themeId.trim()) && !request.isPending;
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2, mt: 3 }} data-testid="exposure-research-workspace">
+      <Typography variant="h6">Company exposure research (shadow)</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Verify one US listing against one economic theme from primary filings. Results are
+        previews for review and never change theme membership.
+      </Typography>
+      {!adminKey ? (
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+          <TextField
+            size="small"
+            type="password"
+            label="Admin key"
+            value={keyDraft}
+            onChange={(event) => setKeyDraft(event.target.value)}
+            autoComplete="off"
+          />
+          <Button
+            variant="outlined"
+            disabled={!keyDraft}
+            onClick={() => { setAdminKey(keyDraft); setKeyDraft(''); }}
+          >
+            Unlock
+          </Button>
+        </Stack>
+      ) : (
+        <Box
+          component="form"
+          onSubmit={(event) => { event.preventDefault(); if (canSubmit) request.mutate(); }}
+        >
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
+            <TextField
+              size="small"
+              label="US symbol"
+              value={symbol}
+              onChange={(event) => setSymbol(event.target.value)}
+            />
+            <TextField
+              size="small"
+              label="Economic theme ID"
+              value={themeId}
+              onChange={(event) => setThemeId(event.target.value)}
+              sx={{ minWidth: 320 }}
+            />
+            <TextField
+              select
+              size="small"
+              label="Kind"
+              value={kind}
+              onChange={(event) => setKind(event.target.value)}
+            >
+              <MenuItem value="verify">Verify</MenuItem>
+              <MenuItem value="refresh">Refresh</MenuItem>
+            </TextField>
+            <Button type="submit" variant="contained" disabled={!canSubmit}>
+              Request research
+            </Button>
+            <Button variant="text" onClick={changeKey}>
+              Change key
+            </Button>
+          </Stack>
+        </Box>
+      )}
+      {message && <Alert severity={message.severity} sx={{ mt: 1.5 }}>{message.text}</Alert>}
+      {job.isError && <Alert severity="error" sx={{ mt: 1.5 }}>{errorCode(job.error)}</Alert>}
+      {job.data && (
+        <Box sx={{ mt: 2 }}>
+          <ExposureResearchPanel job={job.data} preview={preview.data} />
+        </Box>
+      )}
+    </Paper>
+  );
+}

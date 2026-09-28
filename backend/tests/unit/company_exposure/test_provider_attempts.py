@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from app.models.company_exposure import (
+    ResearchArtifact,
+    ResearchProviderAttempt,
+    ResearchProviderResult,
+)
+from app.services.company_exposure.config import ExposureRuntimeConfig
+from app.services.company_exposure.providers import (
+    ProviderInput,
+    SubscriptionArtifactRunner,
+    SubscriptionProvider,
+    default_client_factory,
+)
+from app.services.company_exposure.resources import ResearchResources
+from tests.fixtures.company_exposure.factory import FakeGoTransport, FixedClock
+
+CONFIG = ExposureRuntimeConfig(
+    text_route_enabled=True,
+    subscription_key_present=True,
+    daily_request_limit=10,
+    daily_token_limit=100_000,
+)
+
+
+@pytest.fixture
+def clock():
+    return FixedClock()
+
+
+@pytest.fixture
+def go_transport():
+    return FakeGoTransport()
+
+
+@pytest.fixture
+def resources(db_session, clock):
+    return ResearchResources(db_session, CONFIG, clock=clock.now)
+
+
+@pytest.fixture
+def subscription_runner(db_session, resources, go_transport):
+    provider = SubscriptionProvider(
+        api_key="test-key",
+        client_factory=default_client_factory(go_transport.transport),
+    )
+    return SubscriptionArtifactRunner(db_session, resources, provider)
+
+
+@pytest.fixture
+def provider_input():
+    return ProviderInput(
+        operation="claim_review",
+        messages=[{"role": "user", "content": "Passage: ..."}],
+        input_hash="a" * 64,
+        policy_hash="b" * 64,
+        max_output_tokens=1000,
+        logical_operation_key="claim_review:" + "a" * 64,
+    )
+
+
+@pytest.mark.case("R03")
+@pytest.mark.exposure_layer("unit")
+def test_retry_records_two_go_attempts_and_reuses_success(
+    subscription_runner, provider_input, go_transport, db_session
+):
+    go_transport.queue_status(503)
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 321})
+    first = subscription_runner.run(provider_input)
+    assert first.retryable is True
+    success = subscription_runner.run(provider_input)
+    repeated = subscription_runner.run(provider_input)
+    assert repeated.artifact_id == success.artifact_id
+    assert repeated.reused is True
+    assert len(go_transport.requests) == 2
+    assert db_session.query(ResearchProviderAttempt).count() == 2
+    assert [
+        a.attempt_number
+        for a in db_session.query(ResearchProviderAttempt).order_by(
+            ResearchProviderAttempt.attempt_number
+        )
+    ] == [1, 2]
+    assert db_session.query(ResearchArtifact).count() == 1
+    assert {request.json["model"] for request in go_transport.requests} == {"kimi-k2.6"}
+    assert all(r.url.endswith("/chat/completions") for r in go_transport.requests)
+
+
+@pytest.mark.case("R04")
+@pytest.mark.exposure_layer("unit")
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectError("refused"),
+        httpx.ConnectTimeout("connect"),
+        httpx.PoolTimeout("pool"),
+    ],
+)
+def test_connect_phase_failure_is_pre_dispatch_and_released(
+    subscription_runner, provider_input, go_transport, resources, error
+):
+    go_transport.queue_exception(error)
+    result = subscription_runner.run(provider_input)
+    usage = resources.read(result.ticket_id)
+    assert usage.dispatch_phase == "pre_dispatch"
+    assert usage.state == "released"
+
+
+@pytest.mark.case("R04")
+@pytest.mark.exposure_layer("unit")
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ReadTimeout("read"),
+        httpx.WriteTimeout("write"),
+        httpx.ReadError("reset"),
+        httpx.RemoteProtocolError("eof"),
+    ],
+)
+def test_post_send_failure_stays_uncertain(
+    subscription_runner, provider_input, go_transport, resources, error
+):
+    go_transport.queue_exception(error)
+    result = subscription_runner.run(provider_input)
+    usage = resources.read(result.ticket_id)
+    assert usage.state == "uncertain"
+    assert usage.actual_dollar_cost is None
+
+
+@pytest.mark.case("R04")
+@pytest.mark.exposure_layer("unit")
+def test_uncertain_reservation_expires_with_its_period(
+    subscription_runner, provider_input, go_transport, resources, clock
+):
+    go_transport.queue_exception(httpx.ReadTimeout("read"))
+    result = subscription_runner.run(provider_input)
+    period, period_end = CONFIG.allocation_period(clock.now())
+    clock.advance_to(period_end)
+    reports = resources.close_ended_periods()
+    assert [r.period for r in reports] == [period]
+    assert resources.read(result.ticket_id).state == "expired_uncertain"
+    next_period, _ = CONFIG.allocation_period(clock.now())
+    assert (
+        resources.available("llm:opencode-go", period=next_period).requests
+        == resources.limit("llm:opencode-go").requests
+    )
+
+
+def test_success_without_reported_usage_keeps_tokens_unknown(
+    subscription_runner, provider_input, go_transport, db_session
+):
+    go_transport.queue_json({"claims": []})
+    subscription_runner.run(provider_input)
+    result = db_session.query(ResearchProviderResult).one()
+    assert (result.outcome, result.usage_known, result.reported_usage) == (
+        "success",
+        False,
+        {},
+    )
+
+
+def test_missing_key_is_pre_dispatch_and_makes_no_call(
+    db_session, resources, go_transport, provider_input
+):
+    provider = SubscriptionProvider(
+        api_key="", client_factory=default_client_factory(go_transport.transport)
+    )
+    runner = SubscriptionArtifactRunner(db_session, resources, provider)
+    result = runner.run(provider_input)
+    assert result.failure_code == "subscription_credentials_missing"
+    assert resources.read(result.ticket_id).state == "released"
+    assert go_transport.requests == []
+
+
+def test_unresolved_dispatch_is_never_sent_twice(
+    subscription_runner, provider_input, go_transport, resources, clock, db_session
+):
+    def die(*_args, **_kwargs):
+        raise RuntimeError("worker killed mid-call")
+
+    original = subscription_runner.provider.call_once
+    subscription_runner.provider.call_once = die
+    with pytest.raises(RuntimeError):
+        subscription_runner.run(provider_input)
+    db_session.rollback()
+    subscription_runner.provider.call_once = original
+
+    # The lost call may still finish: recheck later instead of re-sending
+    # (the stage pauses as unresolved once its retries run out).
+    blocked = subscription_runner.run(provider_input)
+    assert (blocked.failure_code, blocked.retryable, blocked.pause_reason) == (
+        "provider_dispatch_in_flight",
+        True,
+        None,
+    )
+    assert go_transport.requests == []
+
+    # Closing the period settles it as uncertain spend; then it may retry.
+    clock.advance_to(CONFIG.allocation_period(clock.now())[1])
+    resources.close_ended_periods()
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    assert subscription_runner.run(provider_input).artifact_id is not None
+    assert len(go_transport.requests) == 1
+
+
+def test_identical_call_in_flight_is_rechecked_then_reused(
+    subscription_runner, provider_input, go_transport, db_session
+):
+    original = subscription_runner.provider.call_once
+    overlapping = []
+
+    def call_once(*args, **kwargs):
+        # A second job asks for the same call while this one is in flight.
+        overlapping.append(subscription_runner.run(provider_input))
+        return original(*args, **kwargs)
+
+    subscription_runner.provider.call_once = call_once
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    first = subscription_runner.run(provider_input)
+    subscription_runner.provider.call_once = original
+    assert first.artifact_id is not None
+    # Retryable, not a pause that would strand the second job.
+    [blocked] = overlapping
+    assert (blocked.failure_code, blocked.retryable, blocked.pause_reason) == (
+        "provider_dispatch_in_flight",
+        True,
+        None,
+    )
+
+    # Once the first call stored its artifact, the recheck reuses it.
+    again = subscription_runner.run(provider_input)
+    assert (again.reused, again.artifact_id) == (True, first.artifact_id)
+    assert len(go_transport.requests) == 1
+
+
+def test_contract_that_cannot_read_the_output_rejects_it_and_settles(
+    subscription_runner, provider_input, go_transport, resources, db_session
+):
+    go_transport.queue_json({"claims": "not a list"}, usage={"total_tokens": 5})
+
+    def contract(_payload):
+        raise AttributeError("malformed nested value")
+
+    result = subscription_runner.run(provider_input, accept=contract)
+    assert (result.artifact_id, result.result_id is not None) == (None, True)
+    assert db_session.query(ResearchArtifact).count() == 0
+    # The call settled and was committed: nothing is left dispatched.
+    state = resources.read(result.ticket_id).state
+    assert state not in {"reserved", "dispatched", "uncertain"}
+
+
+def test_provider_floats_are_stored_as_exact_decimal_strings(
+    subscription_runner, provider_input, go_transport, resources, db_session
+):
+    # A plain JSON decimal must not break the content-hashed artifact after
+    # the call was dispatched.
+    go_transport.queue_json(
+        {"claims": [{"materiality": {"value": 20.5, "ratio": float("nan")}}]},
+        usage={"total_tokens": 5},
+    )
+    result = subscription_runner.run(provider_input)
+    assert result.artifact_id is not None
+    stored = db_session.get(ResearchArtifact, result.artifact_id).payload
+    assert stored["claims"][0]["materiality"] == {"value": "20.5", "ratio": None}
+    assert resources.read(result.ticket_id).state not in {"dispatched", "uncertain"}
+
+
+def test_timed_out_call_is_not_resent_until_its_period_closes(
+    subscription_runner, provider_input, go_transport, resources, clock
+):
+    go_transport.queue_exception(httpx.ReadTimeout("read"))
+    first = subscription_runner.run(provider_input)
+    assert resources.read(first.ticket_id).state == "uncertain"
+
+    # It may have succeeded remotely: the retry pauses instead of re-sending.
+    blocked = subscription_runner.run(provider_input)
+    assert blocked.pause_reason == "provider_dispatch_unresolved"
+    assert len(go_transport.requests) == 1
+
+    clock.advance_to(CONFIG.allocation_period(clock.now())[1])
+    resources.close_ended_periods()
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    assert subscription_runner.run(provider_input).artifact_id is not None
+    assert len(go_transport.requests) == 2
+
+
+def test_artifact_stored_while_waiting_for_the_lock_is_reused(
+    subscription_runner, provider_input, go_transport, db_session
+):
+    go_transport.queue_json({"claims": []}, usage={"total_tokens": 5})
+    first = subscription_runner.run(provider_input)
+    attempts = db_session.query(ResearchProviderAttempt).count()
+
+    # The unlocked pre-check misses the artifact another worker is storing;
+    # the check under the dispatch lock must find it.
+    real = subscription_runner.cached
+    lookups = []
+
+    def racing_cache(item):
+        lookups.append(item)
+        return None if len(lookups) == 1 else real(item)
+
+    subscription_runner.cached = racing_cache
+    again = subscription_runner.run(provider_input)
+    assert (again.artifact_id, again.reused) == (first.artifact_id, True)
+    assert len(go_transport.requests) == 1
+    assert db_session.query(ResearchProviderAttempt).count() == attempts

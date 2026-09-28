@@ -1,0 +1,324 @@
+from __future__ import annotations
+
+from dataclasses import replace
+
+import httpx
+import pytest
+from sqlalchemy import func, select
+
+from app.api.v1 import company_exposures
+from app.database import get_db
+from app.main import app
+from app.models.company_exposure import (
+    ExposureResearchRequest,
+    IssuerSecurityLinkRevision,
+    ResearchProviderAttempt,
+)
+from tests.fixtures.company_exposure.factory import make_security, make_theme
+from tests.fixtures.company_exposure.research_harness import SHADOW
+
+ADMIN_HEADERS = {"X-Admin-Key": "admin-secret"}
+PATH = "/api/v1/company-exposures/research-requests"
+
+
+@pytest.fixture
+def api(db_session, monkeypatch):
+    from app.api.v1 import config
+    from app.services import server_auth
+
+    monkeypatch.setattr(server_auth.settings, "server_auth_enabled", False)
+    monkeypatch.setattr(config.settings, "admin_api_key", "admin-secret")
+    monkeypatch.setattr(config.settings, "admin_principal_id", "test:admin")
+    dispatched = []
+    monkeypatch.setattr(
+        company_exposures,
+        "_dispatch_research",
+        lambda: dispatched.append(1) or "queued",
+    )
+    state = {"config": SHADOW, "dispatched": dispatched}
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[company_exposures.get_exposure_config] = lambda: state[
+        "config"
+    ]
+
+    async def call(method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    state["call"] = call
+    yield state
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(company_exposures.get_exposure_config, None)
+
+
+@pytest.fixture
+def subject(db_session):
+    return {
+        "security": make_security(db_session, "EXMP"),
+        "theme": make_theme(db_session, "api-theme"),
+    }
+
+
+def _body(subject, **overrides):
+    return {
+        "kind": "verify",
+        "security_id": subject["security"].id,
+        "economic_theme_id": str(subject["theme"].id),
+        "idempotency_key": "verify-exmp-1",
+        **overrides,
+    }
+
+
+def _requests(db):
+    return db.execute(
+        select(func.count()).select_from(ExposureResearchRequest)
+    ).scalar()
+
+
+@pytest.mark.case("R13")
+@pytest.mark.exposure_layer("api")
+@pytest.mark.asyncio
+async def test_body_actor_does_not_authorize_research(api, db_session, subject):
+    response = await api["call"](
+        "POST", PATH, json={**_body(subject), "actor": "admin"}
+    )
+    assert response.status_code in {401, 403}
+    assert _requests(db_session) == 0
+    assert (
+        db_session.execute(
+            select(func.count()).select_from(ResearchProviderAttempt)
+        ).scalar()
+        == 0
+    )
+    assert api["dispatched"] == []
+
+
+@pytest.mark.case("R13")
+@pytest.mark.exposure_layer("api")
+@pytest.mark.asyncio
+async def test_actor_field_is_rejected_even_for_admin(api, db_session, subject):
+    response = await api["call"](
+        "POST",
+        PATH,
+        headers=ADMIN_HEADERS,
+        json={**_body(subject), "actor": "someone-else"},
+    )
+    assert response.status_code == 422
+    assert _requests(db_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_reused_idempotency_key_for_another_theme_conflicts(
+    api, db_session, subject
+):
+    first = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=_body(subject))
+    other = make_theme(db_session, "api-theme-2")
+    db_session.commit()
+    reused = await api["call"](
+        "POST",
+        PATH,
+        headers=ADMIN_HEADERS,
+        json=_body(subject, economic_theme_id=str(other.id)),
+    )
+    assert reused.status_code == 409
+    assert reused.json()["detail"]["code"] == "idempotency_key_reused"
+    assert reused.json()["detail"]["job_id"] == first.json()["job_id"]
+    assert _requests(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_reused_idempotency_key_with_a_corrected_cik_conflicts(
+    api, db_session, subject
+):
+    body = _body(subject, supplied_cik="1234567")
+    first = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=body)
+    padded = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**body, "supplied_cik": "0001234567"}
+    )
+    assert (first.status_code, padded.status_code) == (202, 200)
+    corrected = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**body, "supplied_cik": "7654321"}
+    )
+    assert corrected.status_code == 409
+    assert corrected.json()["detail"]["code"] == "idempotency_key_reused"
+    assert _requests(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_supplied_links_with_credentials_are_rejected(api, db_session, subject):
+    body = _body(subject, supplied_links=["https://user:secret@www.sec.gov/doc.htm"])
+    response = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=body)
+    assert response.status_code == 422
+    # Refused before anything is stored on a request or shown in a preview.
+    assert _requests(db_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_request_is_queued_once_and_recorded_with_trusted_identity(
+    api, db_session, subject
+):
+    first = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=_body(subject))
+    again = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=_body(subject))
+    assert (first.status_code, again.status_code) == (202, 200)
+    assert first.json()["job_id"] == again.json()["job_id"]
+    assert (first.json()["dispatch"], again.json()["dispatch"]) == (
+        "queued",
+        "not_needed",
+    )
+    assert api["dispatched"] == [1]
+    request = db_session.execute(select(ExposureResearchRequest)).scalar_one()
+    assert request.requester_principal == "test:admin"
+    assert request.market == "US"
+
+
+@pytest.mark.asyncio
+async def test_unbound_admin_cannot_start_research(
+    api, db_session, subject, monkeypatch
+):
+    from app.api.v1 import config
+
+    monkeypatch.setattr(config.settings, "admin_principal_id", "")
+    response = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject)
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "admin_principal_unbound"
+    assert _requests(db_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_disabled_research_and_uninstalled_actions_are_typed(
+    api, db_session, subject
+):
+    api["config"] = replace(SHADOW, research_mode="disabled")
+    disabled = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject)
+    )
+    assert (disabled.status_code, disabled.json()["detail"]["code"]) == (
+        409,
+        "research_disabled",
+    )
+    api["config"] = SHADOW
+    discover = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, kind="discover")
+    )
+    assert (discover.status_code, discover.json()["detail"]["code"]) == (
+        501,
+        "discovery_not_installed",
+    )
+    hk = make_security(db_session, "0700.HK", market="HK", exchange="HKEX")
+    other_market = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, security_id=hk.id)
+    )
+    assert other_market.json()["detail"]["code"] == "market_not_installed"
+    assert _requests(db_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_supplied_cik_becomes_a_reviewable_proposal(api, db_session, subject):
+    response = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, supplied_cik="1234567")
+    )
+    assert response.status_code == 202
+    proposal = response.json()["issuer_link_proposal"]
+    assert proposal["state"] in {"proposed", "review_required"}
+    link = db_session.execute(select(IssuerSecurityLinkRevision)).scalar_one()
+    assert link.state != "accepted"
+
+
+def _registry_link(db_session, security, cik):
+    from app.domain.company_exposure.contracts import (
+        SERVICE_PRINCIPAL,
+        RegistryMatch,
+    )
+    from app.services.company_exposure.issuer_identity import IssuerIdentityAdapter
+
+    return (
+        IssuerIdentityAdapter(db_session)
+        .accept_registry_match(
+            RegistryMatch(
+                security_id=security.id,
+                market="US",
+                scheme="cik",
+                value=cik,
+                candidate_count=1,
+                ticker_confirmed=True,
+                matched_ticker=security.symbol,
+                registry_capture_revision_id=None,
+                official_record_capture_revision_id=None,
+            ),
+            SERVICE_PRINCIPAL,
+        )
+        .issuer_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_supplied_cik_for_a_cross_listing_targets_its_owner(
+    api, db_session, subject
+):
+    twin = make_security(db_session, "EXMPB", exchange="NYSE")
+    owner = _registry_link(db_session, twin, "1234567")
+    response = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, supplied_cik="1234567")
+    )
+    assert response.status_code == 202
+    proposal = db_session.execute(
+        select(IssuerSecurityLinkRevision).where(
+            IssuerSecurityLinkRevision.security_id == subject["security"].id
+        )
+    ).scalar_one()
+    # Applicable: a new issuer could never take the CIK its twin owns.
+    assert proposal.issuer_id == owner
+
+
+@pytest.mark.asyncio
+async def test_supplied_cik_can_correct_an_accepted_link(api, db_session, subject):
+    _registry_link(db_session, subject["security"], "7654321")
+    same = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, supplied_cik="7654321")
+    )
+    assert same.json()["issuer_link_proposal"] is None
+    corrected = await api["call"](
+        "POST",
+        PATH,
+        headers=ADMIN_HEADERS,
+        json=_body(subject, supplied_cik="1234567", idempotency_key="verify-exmp-2"),
+    )
+    assert corrected.status_code == 202
+    assert corrected.json()["issuer_link_proposal"] is not None
+
+
+@pytest.mark.asyncio
+async def test_request_bounds_are_validated(api, subject):
+    too_many = [f"https://www.sec.gov/{i}" for i in range(6)]
+    for body in (
+        _body(subject, supplied_links=too_many),
+        _body(subject, idempotency_key="has spaces"),
+        _body(subject, supplied_cik="12345678901"),
+        _body(subject, security_id=0),
+    ):
+        response = await api["call"]("POST", PATH, headers=ADMIN_HEADERS, json=body)
+        assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_request_by_us_symbol_resolves_the_listing(api, db_session, subject):
+    body = _body(subject)
+    body.pop("security_id")
+    response = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**body, "symbol": "exmp"}
+    )
+    assert response.status_code == 202
+    request = db_session.execute(select(ExposureResearchRequest)).scalar_one()
+    assert request.security_id == subject["security"].id
+    both = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**_body(subject), "symbol": "EXMP"}
+    )
+    assert both.status_code == 422
+    unknown = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json={**body, "symbol": "NOPE"}
+    )
+    assert unknown.json()["detail"]["code"] == "security_not_found"

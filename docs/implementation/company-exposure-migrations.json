@@ -1,0 +1,31 @@
+{
+  "migrations": [
+    {
+      "task": "01",
+      "slug": "exposure_identity_documents",
+      "filename": "20260925_0058_exposure_identity_documents.py",
+      "revision": "20260925_0058",
+      "parent": "20260926_0058",
+      "sha256": "62b5dd83db3fcfce9e68e3289f5b6e56681650d0c003ac2b1c00f0a9e2a62354",
+      "note": "main added 20260925_0057 (avg dollar volume indexes) and then 20260926_0058 (opportunity summary count index) after the plan baseline; allocated after them."
+    },
+    {
+      "task": "02",
+      "slug": "exposure_research_resources",
+      "filename": "20260925_0059_exposure_research_resources.py",
+      "revision": "20260925_0059",
+      "parent": "20260925_0058",
+      "sha256": "d407ea48e0a16fd1ff02fa822a8bfa5901554b788f1e757364e80edb65d67ea5",
+      "note": "Also adds fk_cx_derivative_attempt from passage derivatives to provider attempts."
+    },
+    {
+      "task": "03",
+      "slug": "exposure_claims_assessments",
+      "filename": "20260926_0060_exposure_claims_assessments.py",
+      "revision": "20260926_0060",
+      "parent": "20260925_0059",
+      "sha256": "63730257aeb93db147fd14b0ab9bf22c6fd0d9950b7c2b052fb2e2c424e4dcce",
+      "note": "Core claims/dossiers/holds only; membership and serving selection deferred to Tasks 18/19."
+    }
+  ]
+}
