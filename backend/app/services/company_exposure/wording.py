@@ -84,6 +84,24 @@ def _coordinated(clause: str) -> list[str]:
     return [*joined, current]
 
 
+def denied_conjuncts(clause: str) -> list[str]:
+    """Conjuncts of ``clause`` that a negation or exit governs.
+
+    A conjunct with its own finite verb carries its own polarity ("does not
+    support PCIe and supports HBM testing" affirms HBM); one without a verb
+    shares the preceding verb's ("does not support PCIe and HBM testing"
+    denies both).
+    """
+
+    denied, governed = [], False
+    for part in _AND.split(clause):
+        if _FINITE.search(part) or NEGATION.search(part) or EXIT.search(part):
+            governed = not affirmed(part) or bool(EXIT.search(part))
+        if governed:
+            denied.append(part)
+    return denied
+
+
 def clauses(quotes: list[str]) -> list[str]:
     """Clauses of the quoted sentences, split at contrastive joins and at an
     "and" joining two predicates."""

@@ -88,6 +88,7 @@ from app.services.company_exposure.wording import (
     affirmed,
     affirmed_exit,
     clauses,
+    denied_conjuncts,
     mention_spans,
     mentions,
     nearest_subject,
@@ -748,16 +749,19 @@ def _contradicts(quote: str, kind, product_terms, key_tokens, scope) -> bool:
     """
 
     # Judged per clause: "We discontinued X100; ET-9000 supports HBM
-    # testing" ends X100, not the ET-9000 claim.
-    return any(
-        _names_product(clause, product_terms, key_tokens)
-        and (not affirmed(clause) or EXIT.search(clause))
-        and (
+    # testing" ends X100, not the ET-9000 claim. For a product-to-theme link
+    # the denial must govern the theme: "ET-9000 does not support PCIe and
+    # supports HBM testing" denies PCIe only.
+    for clause in clauses([quote]):
+        if not _names_product(clause, product_terms, key_tokens):
+            continue
+        denied = denied_conjuncts(clause)
+        if denied and (
             kind not in _LINKED_KINDS
-            or any(mentions(clause, t) for t in scope.theme_terms)
-        )
-        for clause in clauses([quote])
-    )
+            or any(mentions(part, t) for part in denied for t in scope.theme_terms)
+        ):
+            return True
+    return False
 
 
 def _names_product(text: str, product_terms, key_tokens) -> bool:

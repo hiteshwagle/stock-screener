@@ -522,6 +522,9 @@ def test_whitespace_segment_label_is_no_label():
         ("We discontinued X100; ET-9000 supports HBM testing.", False),
         ("ET-9000 supports HBM testing, and we discontinued X100.", False),
         ("We discontinued the ET-9000 HBM tester line.", True),
+        # The negation governs PCIe; HBM has its own affirmative verb.
+        ("ET-9000 does not support PCIe and supports HBM testing.", False),
+        ("ET-9000 does not support PCIe and HBM testing.", True),
     ],
 )
 def test_conflicting_citation_must_be_about_the_claimed_product(conflict, disputed):
