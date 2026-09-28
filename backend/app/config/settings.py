@@ -408,8 +408,12 @@ class Settings(BaseSettings):
 
     # Scan use-case configuration
     scan_usecase_chunk_size: int = 50  # Larger local-default chunks improve scan throughput on the shared worker
+    # Processes that compute scan / feature-snapshot results. 0 = auto: the CPUs
+    # the worker may use (cgroup quota aware), capped at 4, and in-process off
+    # Linux. 1 = in-process. N = up to N processes.
+    scan_compute_processes: int = 0
     static_snapshot_chunk_size: int = 100  # Larger chunk size for CI/static batch processing
-    static_snapshot_parallel_workers: int = 8  # Bounded symbol-level parallelism for static batch processing
+    static_snapshot_parallel_workers: int = 8  # Upper bound on compute processes for static batch processing (capped at available CPUs)
     feature_snapshot_soft_time_limit_seconds: int = 10800  # 3h budget for full ALL-universe daily snapshot in Docker/Postgres
     feature_snapshot_stale_after_minutes: int = 240  # Running feature runs older than this are treated as stale and failed
     feature_metadata_repair_batch_size: int = 500  # Rows per batch when repairing published feature-run metadata

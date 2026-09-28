@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Callable, Iterator, Mapping, Protocol, Sequence
@@ -49,8 +48,14 @@ from app.domain.scanning.ports import (
     MarketRsReader,
     MarketRsResolution,
     ProgressSink,
+    SerialStockScanBatchRunner,
     StockDataProvider,
+    StockScanBatchRunner,
+    StockScanBatchRunnerFactory,
+    StockScanCall,
     StockScanner,
+    StockScanOutcome,
+    serial_stock_scan_batch_runner,
 )
 from app.domain.scanning.signature import (
     build_scan_signature_payload,
@@ -198,7 +203,12 @@ def _serialize_universe_definition(universe_def: object) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class BuildDailySnapshotCommand:
-    """Immutable value object describing the snapshot to build."""
+    """Immutable value object describing the snapshot to build.
+
+    ``parallel_workers`` is how many processes may compute a chunk's scan
+    results. Only chunks that cannot trigger per-symbol provider fetches
+    (cache-only, or fully prefetched) are spread across them.
+    """
 
     as_of_date: date
     screener_names: list[str]
@@ -212,7 +222,7 @@ class BuildDailySnapshotCommand:
     batch_only_prices: bool = False
     batch_only_fundamentals: bool = False
     require_bulk_prefetch: bool = False
-    static_parallel_workers: int = 1
+    parallel_workers: int = 1
     static_chunk_size: int | None = None
     bootstrap_cache_only_if_covered: bool = False
     bootstrap_coverage_report: dict | None = None
@@ -228,8 +238,8 @@ class BuildDailySnapshotCommand:
         object.__setattr__(self, "market", normalized_market)
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be >= 1")
-        if self.static_parallel_workers < 1:
-            raise ValueError("static_parallel_workers must be >= 1")
+        if self.parallel_workers < 1:
+            raise ValueError("parallel_workers must be >= 1")
         if self.static_chunk_size is not None and self.static_chunk_size < 1:
             raise ValueError("static_chunk_size must be >= 1 when provided")
 
@@ -340,12 +350,16 @@ class BuildDailyFeatureSnapshotUseCase:
         market_calendar: MarketCalendarPort | None = None,
         market_rs_reader: MarketRsReader | None = None,
         bootstrap_coverage_evaluator: BootstrapCoverageEvaluator | None = None,
+        scan_batch_runner_factory: StockScanBatchRunnerFactory = (
+            serial_stock_scan_batch_runner
+        ),
     ) -> None:
         self._scanner = scanner
         self._data_provider = data_provider
         self._market_calendar = market_calendar
         self._market_rs_reader = market_rs_reader
         self._bootstrap_coverage_evaluator = bootstrap_coverage_evaluator
+        self._scan_batch_runner_factory = scan_batch_runner_factory
 
     def execute(
         self,
@@ -509,18 +523,23 @@ class BuildDailyFeatureSnapshotUseCase:
             progress_state = _SnapshotRunProgress()
 
             try:
-                return self._run(
-                    uow,
-                    run_id,
-                    cmd,
-                    progress,
-                    cancel,
-                    symbols,
-                    tuple(run_warnings),
-                    len(skipped_symbols),
-                    progress_state,
-                    rs_resolution,
-                )
+                with self._scan_batch_runner_factory(
+                    self._scanner,
+                    cmd.parallel_workers if len(symbols) > 1 else 1,
+                ) as compute_runner:
+                    return self._run(
+                        uow,
+                        run_id,
+                        cmd,
+                        progress,
+                        cancel,
+                        symbols,
+                        tuple(run_warnings),
+                        len(skipped_symbols),
+                        progress_state,
+                        rs_resolution,
+                        compute_runner,
+                    )
             except Exception as exc:
                 logger.exception("Feature run %d failed", run_id)
                 try:
@@ -579,8 +598,10 @@ class BuildDailyFeatureSnapshotUseCase:
         skipped_symbols: int,
         progress_state: _SnapshotRunProgress,
         rs_resolution: MarketRsResolution | None,
+        compute_runner: StockScanBatchRunner,
     ) -> BuildDailySnapshotResult:
         start_time = time.monotonic()
+        in_process_runner = SerialStockScanBatchRunner(self._scanner)
         failure_diagnostics = FailureDiagnosticsCollector()
         effective_chunk_size = (
             cmd.static_chunk_size
@@ -712,102 +733,109 @@ class BuildDailyFeatureSnapshotUseCase:
 
             chunk_rows: list[FeatureRowWrite] = []
 
-            def _scan_symbol(
-                symbol: str,
-            ) -> tuple[
-                str,
-                FeatureRowWrite | None,
-                bool,
-                dict[str, object] | None,
-            ]:
+            def _call_for(symbol: str) -> StockScanCall | None:
                 sym = symbol.upper()
+                if cache_only_symbol_data and sym not in pre_fetched_data:
+                    return None
+                scan_kwargs: dict[str, object] = {
+                    "screener_names": cmd.screener_names,
+                    "criteria": cmd.criteria,
+                    "composite_method": cmd.composite_method,
+                }
+                if merged_requirements is not None:
+                    scan_kwargs["pre_merged_requirements"] = merged_requirements
+                # Prefetched data already carries the resolution; don't pickle
+                # the universe-wide mapping into every worker batch.
+                if rs_resolution is not None and sym not in pre_fetched_data:
+                    scan_kwargs["market_rs_resolution"] = rs_resolution
+                if sym in pre_fetched_data:
+                    scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
+                return StockScanCall(symbol=sym, kwargs=scan_kwargs)
+
+            def _scan_exception(
+                sym: str,
+                exc: BaseException,
+            ) -> tuple[None, bool, dict[str, object]]:
+                logger.debug(
+                    "Error scanning %s in run %d",
+                    sym,
+                    run_id,
+                    exc_info=exc,
+                )
+                return (
+                    None,
+                    False,
+                    {
+                        "symbol": sym,
+                        "reason": "scan_exception",
+                        "error": _format_exception(exc),
+                        "data_errors": {},
+                    },
+                )
+
+            def _interpret(
+                sym: str,
+                outcome: StockScanOutcome,
+            ) -> tuple[FeatureRowWrite | None, bool, dict[str, object] | None]:
+                if outcome.error is not None:
+                    return _scan_exception(sym, outcome.error)
+                result = outcome.result
                 try:
-                    if cache_only_symbol_data and sym not in pre_fetched_data:
-                        return (
-                            sym,
-                            None,
-                            False,
-                            {
-                                "symbol": sym,
-                                "reason": "bulk_prefetch_missing",
-                                "error": None,
-                                "data_errors": {},
-                            },
-                        )
-                    scan_kwargs: dict[str, object] = {}
-                    if merged_requirements is not None:
-                        scan_kwargs["pre_merged_requirements"] = merged_requirements
-                    if rs_resolution is not None:
-                        scan_kwargs["market_rs_resolution"] = rs_resolution
-                    if sym in pre_fetched_data:
-                        scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
-                    result = self._scanner.scan_stock_multi(
-                        symbol=sym,
-                        screener_names=cmd.screener_names,
-                        criteria=cmd.criteria,
-                        composite_method=cmd.composite_method,
-                        **scan_kwargs,
-                    )
                     result_status = _resolve_result_status(result)
                     if isinstance(result, dict) and result and result_status != "error":
                         row = _map_orchestrator_to_feature_row(
                             sym, cmd.as_of_date, result
                         )
-                        return sym, row, bool(result.get("passes_template")), None
-                    error = None
-                    if isinstance(result, dict) and result.get("error") is not None:
-                        error = str(result.get("error"))
-                    return (
-                        sym,
-                        None,
-                        False,
-                        {
-                            "symbol": sym,
-                            "reason": "scanner_error_result",
-                            "error": error,
-                            "data_errors": _extract_data_errors(result),
-                        },
-                    )
+                        return row, bool(result.get("passes_template")), None
                 except Exception as exc:
-                    logger.debug(
-                        "Error scanning %s in run %d",
-                        sym,
-                        run_id,
-                        exc_info=True,
-                    )
-                    return (
-                        sym,
-                        None,
-                        False,
-                        {
-                            "symbol": sym,
-                            "reason": "scan_exception",
-                            "error": _format_exception(exc),
-                            "data_errors": {},
-                        },
-                    )
+                    return _scan_exception(sym, exc)
+                error = None
+                if isinstance(result, dict) and result.get("error") is not None:
+                    error = str(result.get("error"))
+                return (
+                    None,
+                    False,
+                    {
+                        "symbol": sym,
+                        "reason": "scanner_error_result",
+                        "error": error,
+                        "data_errors": _extract_data_errors(result),
+                    },
+                )
 
+            calls = [_call_for(symbol) for symbol in chunk]
+            prefetch_covers_chunk = bool(pre_fetched_data) and all(
+                symbol.upper() in pre_fetched_data for symbol in chunk
+            )
+            # Symbols outside the prefetch fetch their own data (live
+            # providers); keep those serial so they respect rate limits.
+            runner = (
+                compute_runner
+                if cache_only_symbol_data or prefetch_covers_chunk
+                else in_process_runner
+            )
+            scan_outcomes = iter(
+                runner.scan_batch([call for call in calls if call is not None])
+            )
             outcomes_by_symbol: dict[
                 str,
                 tuple[FeatureRowWrite | None, bool, dict[str, object] | None],
             ] = {}
-            if (
-                cmd.require_bulk_prefetch
-                and cmd.static_parallel_workers > 1
-                and len(chunk) > 1
-            ):
-                max_workers = min(cmd.static_parallel_workers, len(chunk))
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {
-                        executor.submit(_scan_symbol, symbol): symbol for symbol in chunk
-                    }
-                    for future in as_completed(futures):
-                        sym, row, passed, diagnostic = future.result()
-                        outcomes_by_symbol[sym] = (row, passed, diagnostic)
-            else:
-                for symbol in chunk:
-                    sym, row, passed, diagnostic = _scan_symbol(symbol)
-                    outcomes_by_symbol[sym] = (row, passed, diagnostic)
+            for symbol, call in zip(chunk, calls):
+                sym = symbol.upper()
+                if call is None:
+                    outcomes_by_symbol[sym] = (
+                        None,
+                        False,
+                        {
+                            "symbol": sym,
+                            "reason": "bulk_prefetch_missing",
+                            "error": None,
+                            "data_errors": {},
+                        },
+                    )
+                else:
+                    outcomes_by_symbol[sym] = _interpret(sym, next(scan_outcomes))
 
             for symbol in chunk:
                 row, passed, diagnostic = outcomes_by_symbol.get(

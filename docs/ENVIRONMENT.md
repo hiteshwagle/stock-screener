@@ -116,5 +116,7 @@ For the private override, install the private package locally with
 |----------|---------|-------------|
 | `DEFAULT_UNIVERSE` | `all` | Default scan universe |
 | `SCAN_BATCH_SIZE` | `20` | Batch size for scan processing |
+| `SCAN_COMPUTE_PROCESSES` | `0` | Processes that compute scan and daily feature-snapshot results. `0` = automatic: the CPUs the worker container may use (cgroup CPU quota aware), capped at 4, and in-process on macOS/Windows. `1` = in-process. `N` = up to `N`. Each process adds memory, and a worker capped below 2 CPUs (such as the `docker-compose.prod.yml` scan workers at `cpus: '0.5'`) computes in-process; raise that worker's `cpus` and `memory` limits to benefit. |
+| `STATIC_SNAPSHOT_PARALLEL_WORKERS` | `8` | Upper bound on compute processes for static-site and bootstrap cache-only snapshots (also capped at available CPUs) |
 | `YFINANCE_RATE_LIMIT` | `1` | yfinance requests per second |
 | `ALPHAVANTAGE_RATE_LIMIT` | `25` | Alpha Vantage requests per day |

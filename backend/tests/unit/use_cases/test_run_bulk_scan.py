@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from datetime import date
 import time
-from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from threading import Lock
 
 import pytest
@@ -15,7 +14,7 @@ import pytest
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from app.domain.scanning.models import ScanStatus
-from app.domain.scanning.ports import MarketRsResolution
+from app.domain.scanning.ports import MarketRsResolution, SerialStockScanBatchRunner
 from app.use_cases.scanning.run_bulk_scan import (
     RunBulkScanCommand,
     RunBulkScanUseCase,
@@ -85,6 +84,33 @@ class _BulkAwareScanner:
 class _BulkAwareFakeScanner(FakeScanner):
     def get_merged_requirements(self, screener_names, criteria=None):
         return {"needs": "price+fundamentals"}
+
+
+class _RecordingRunnerFactory:
+    """Stands in for the compute pool and records the batches it is given."""
+
+    def __init__(self):
+        self.opened_with: list[int] = []
+        self.batches: list[list[str]] = []
+        self.closed = 0
+
+    def __call__(self, scanner, processes):
+        self.opened_with.append(processes)
+        factory = self
+        serial = SerialStockScanBatchRunner(scanner)
+
+        class _Runner:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                factory.closed += 1
+
+            def scan_batch(self, calls):
+                factory.batches.append([call.symbol for call in calls])
+                return serial.scan_batch(calls)
+
+        return _Runner()
 
 
 # ---------------------------------------------------------------------------
@@ -763,40 +789,20 @@ class TestRunBulkScanHappyPath:
             for event in progress.events
         ] == [(3, 2, 1)]
 
-    def test_parallel_workers_are_bounded_by_chunk_length(self, monkeypatch):
+    def test_parallel_workers_open_one_compute_runner_per_scan(self):
         scan_repo = FakeScanRepository()
         scan_repo.scans["s1"] = _make_scan("s1")
-        observed_workers: list[int] = []
-
-        class CapturingExecutor:
-            def __init__(self, max_workers):
-                observed_workers.append(max_workers)
-                self._executor = RealThreadPoolExecutor(max_workers=max_workers)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self._executor.shutdown(wait=True)
-                return False
-
-            def submit(self, *args, **kwargs):
-                return self._executor.submit(*args, **kwargs)
-
-        monkeypatch.setattr(
-            "app.use_cases.scanning.run_bulk_scan.ThreadPoolExecutor",
-            CapturingExecutor,
-            raising=False,
-        )
+        runners = _RecordingRunnerFactory()
 
         RunBulkScanUseCase(
             scanner=_BulkAwareFakeScanner(),
             data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=runners,
         ).execute(
             FakeUnitOfWork(scans=scan_repo),
             RunBulkScanCommand(
                 scan_id="s1",
-                symbols=["AAPL", "MSFT"],
+                symbols=["AAPL", "MSFT", "GOOG"],
                 chunk_size=2,
                 cache_only=True,
                 parallel_workers=10,
@@ -805,93 +811,74 @@ class TestRunBulkScanHappyPath:
             FakeCancellationToken(),
         )
 
-        assert observed_workers == [2]
+        assert runners.opened_with == [10]
+        assert runners.closed == 1
+        assert runners.batches == [["AAPL", "MSFT"], ["GOOG"]]
 
-    def test_parallel_workers_used_for_prefetched_cache_populating_scans(
-        self, monkeypatch
-    ):
+    def test_single_symbol_scan_computes_in_process(self):
         scan_repo = FakeScanRepository()
         scan_repo.scans["s1"] = _make_scan("s1")
-        observed_workers: list[int] = []
+        runners = _RecordingRunnerFactory()
 
-        class CapturingExecutor:
-            def __init__(self, max_workers):
-                observed_workers.append(max_workers)
-                self._executor = RealThreadPoolExecutor(max_workers=max_workers)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self._executor.shutdown(wait=True)
-                return False
-
-            def submit(self, *args, **kwargs):
-                return self._executor.submit(*args, **kwargs)
-
-        monkeypatch.setattr(
-            "app.use_cases.scanning.run_bulk_scan.ThreadPoolExecutor",
-            CapturingExecutor,
-            raising=False,
-        )
-
-        scanner = _BulkAwareFakeScanner()
         RunBulkScanUseCase(
-            scanner=scanner,
+            scanner=_BulkAwareFakeScanner(),
             data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=runners,
         ).execute(
             FakeUnitOfWork(scans=scan_repo),
             RunBulkScanCommand(
                 scan_id="s1",
-                symbols=["AAPL", "MSFT"],
-                chunk_size=2,
-                cache_only=False,
+                symbols=["AAPL"],
+                cache_only=True,
                 parallel_workers=4,
             ),
             FakeProgressSink(),
             FakeCancellationToken(),
         )
 
-        assert observed_workers == [2]
-        assert sorted(scanner.calls) == ["AAPL", "MSFT"]
+        assert runners.opened_with == [1]
 
-    def test_parallel_workers_ignored_for_partial_prefetch_cache_populating_scans(
-        self, monkeypatch
-    ):
+    def test_cache_only_symbols_missing_from_prefetch_never_reach_the_runner(self):
         scan_repo = FakeScanRepository()
         scan_repo.scans["s1"] = _make_scan("s1")
-        observed_workers: list[int] = []
-
-        class CapturingExecutor:
-            def __init__(self, max_workers):
-                observed_workers.append(max_workers)
-                self._executor = RealThreadPoolExecutor(max_workers=max_workers)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self._executor.shutdown(wait=True)
-                return False
-
-            def submit(self, *args, **kwargs):
-                return self._executor.submit(*args, **kwargs)
+        runners = _RecordingRunnerFactory()
 
         class PartialPrefetchProvider(FakeStockDataProvider):
             def prepare_data_bulk(self, symbols, requirements, **kwargs):
                 del requirements, kwargs
                 return {symbols[0]: self.prepare_data(symbols[0], object())}
 
-        monkeypatch.setattr(
-            "app.use_cases.scanning.run_bulk_scan.ThreadPoolExecutor",
-            CapturingExecutor,
-            raising=False,
+        result = RunBulkScanUseCase(
+            scanner=_BulkAwareFakeScanner(),
+            data_provider=PartialPrefetchProvider(),
+            scan_batch_runner_factory=runners,
+        ).execute(
+            FakeUnitOfWork(scans=scan_repo),
+            RunBulkScanCommand(
+                scan_id="s1",
+                symbols=["AAPL", "MSFT"],
+                chunk_size=2,
+                cache_only=True,
+                parallel_workers=4,
+            ),
+            FakeProgressSink(),
+            FakeCancellationToken(),
         )
+
+        assert runners.batches == [["AAPL"]]
+        assert result.total_scanned == 2
+        assert result.failed == 1
+
+    def test_parallel_workers_used_for_prefetched_cache_populating_scans(self):
+        scan_repo = FakeScanRepository()
+        scan_repo.scans["s1"] = _make_scan("s1")
+        runners = _RecordingRunnerFactory()
 
         scanner = _BulkAwareFakeScanner()
         RunBulkScanUseCase(
             scanner=scanner,
-            data_provider=PartialPrefetchProvider(),
+            data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=runners,
         ).execute(
             FakeUnitOfWork(scans=scan_repo),
             RunBulkScanCommand(
@@ -905,7 +892,40 @@ class TestRunBulkScanHappyPath:
             FakeCancellationToken(),
         )
 
-        assert observed_workers == []
+        assert runners.batches == [["AAPL", "MSFT"]]
+        assert sorted(scanner.calls) == ["AAPL", "MSFT"]
+
+    def test_parallel_workers_ignored_for_partial_prefetch_cache_populating_scans(
+        self,
+    ):
+        scan_repo = FakeScanRepository()
+        scan_repo.scans["s1"] = _make_scan("s1")
+        runners = _RecordingRunnerFactory()
+
+        class PartialPrefetchProvider(FakeStockDataProvider):
+            def prepare_data_bulk(self, symbols, requirements, **kwargs):
+                del requirements, kwargs
+                return {symbols[0]: self.prepare_data(symbols[0], object())}
+
+        scanner = _BulkAwareFakeScanner()
+        RunBulkScanUseCase(
+            scanner=scanner,
+            data_provider=PartialPrefetchProvider(),
+            scan_batch_runner_factory=runners,
+        ).execute(
+            FakeUnitOfWork(scans=scan_repo),
+            RunBulkScanCommand(
+                scan_id="s1",
+                symbols=["AAPL", "MSFT"],
+                chunk_size=2,
+                cache_only=False,
+                parallel_workers=4,
+            ),
+            FakeProgressSink(),
+            FakeCancellationToken(),
+        )
+
+        assert runners.batches == []
         assert scanner.calls == ["AAPL", "MSFT"]
 
     def test_scan_status_transitions(self):

@@ -15,7 +15,11 @@ import pytest
 from app.domain.common.errors import ValidationError
 from app.domain.feature_store.models import RunStatus
 from app.domain.relative_strength import BALANCED_RS_FORMULA_VERSION
-from app.domain.scanning.ports import MarketRsResolution
+from app.domain.scanning.ports import (
+    MarketRsResolution,
+    SerialStockScanBatchRunner,
+    StockScanOutcome,
+)
 from app.use_cases.feature_store.build_daily_snapshot import (
     BootstrapCacheCoverageInsufficient,
     BuildDailyFeatureSnapshotUseCase,
@@ -153,9 +157,9 @@ class TestBuildDailySnapshotCommand:
         assert cmd.dq_thresholds.row_count_threshold == 0.5
         assert cmd.dq_thresholds.null_max_rate == 0.1
 
-    def test_static_parallel_workers_must_be_positive(self):
-        with pytest.raises(ValueError, match="static_parallel_workers"):
-            _make_cmd(static_parallel_workers=0)
+    def test_parallel_workers_must_be_positive(self):
+        with pytest.raises(ValueError, match="parallel_workers"):
+            _make_cmd(parallel_workers=0)
 
     def test_static_chunk_size_must_be_positive_when_provided(self):
         with pytest.raises(ValueError, match="static_chunk_size"):
@@ -890,7 +894,7 @@ class TestBulkDataPreparation:
                 batch_only_prices=True,
                 batch_only_fundamentals=True,
                 static_chunk_size=4,
-                static_parallel_workers=2,
+                parallel_workers=2,
             ),
             FakeProgressSink(),
             FakeCancellationToken(),
@@ -992,7 +996,7 @@ class TestBulkDataPreparation:
                     "fundamentals_coverage_ratio": 1.0,
                 },
                 static_chunk_size=10,
-                static_parallel_workers=2,
+                parallel_workers=2,
             ),
             FakeProgressSink(),
             FakeCancellationToken(),
@@ -1057,7 +1061,7 @@ class TestBulkDataPreparation:
                 require_bulk_prefetch=True,
                 batch_only_prices=True,
                 batch_only_fundamentals=True,
-                static_parallel_workers=2,
+                parallel_workers=2,
             ),
             FakeProgressSink(),
             FakeCancellationToken(),
@@ -1681,3 +1685,114 @@ class TestDQDelegation:
         assert result.dq_passed is True
         # But warnings should mention rating distribution
         assert any("distinct rating" in w for w in result.warnings)
+
+
+class _BulkAwareScanner(FakeScanner):
+    def get_merged_requirements(self, screener_names, criteria=None):
+        return {"needs": "price+fundamentals"}
+
+
+class _RecordingRunnerFactory:
+    """Stands in for the compute pool and records the batches it is given."""
+
+    def __init__(self, outcome_override=None):
+        self.opened_with: list[int] = []
+        self.batches: list[list[str]] = []
+        self._outcome_override = outcome_override
+
+    def __call__(self, scanner, processes):
+        self.opened_with.append(processes)
+        factory = self
+        serial = SerialStockScanBatchRunner(scanner)
+
+        class _Runner:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def scan_batch(self, calls):
+                factory.batches.append([call.symbol for call in calls])
+                if factory._outcome_override is not None:
+                    return [factory._outcome_override for _ in calls]
+                return serial.scan_batch(calls)
+
+        return _Runner()
+
+
+class TestComputeRunnerRouting:
+    @_PATCH_TRADING_DAY
+    def test_fully_prefetched_live_chunks_use_the_compute_runner(self, _mock_td):
+        uow, _ = _make_uow(symbols=["AAPL", "MSFT", "GOOGL"])
+        runners = _RecordingRunnerFactory()
+        scanner = _BulkAwareScanner()
+
+        result = BuildDailyFeatureSnapshotUseCase(
+            scanner=scanner,
+            data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=runners,
+        ).execute(
+            uow,
+            _make_cmd(chunk_size=2, parallel_workers=3),
+            FakeProgressSink(),
+            FakeCancellationToken(),
+        )
+
+        assert result.status == RunStatus.PUBLISHED.value
+        assert runners.opened_with == [3]
+        assert runners.batches == [["AAPL", "MSFT"], ["GOOGL"]]
+        assert scanner.calls == ["AAPL", "MSFT", "GOOGL"]
+
+    @_PATCH_TRADING_DAY
+    def test_partially_prefetched_live_chunks_compute_in_process(self, _mock_td):
+        uow, _ = _make_uow(symbols=["AAPL", "MSFT"])
+        runners = _RecordingRunnerFactory()
+        scanner = _BulkAwareScanner()
+
+        class PartialProvider(FakeStockDataProvider):
+            def prepare_data_bulk(self, symbols, requirements, **kwargs):
+                del requirements, kwargs
+                return {symbols[0]: self._make_stock_data(symbols[0])}
+
+        BuildDailyFeatureSnapshotUseCase(
+            scanner=scanner,
+            data_provider=PartialProvider(),
+            scan_batch_runner_factory=runners,
+        ).execute(
+            uow,
+            _make_cmd(chunk_size=2, parallel_workers=3),
+            FakeProgressSink(),
+            FakeCancellationToken(),
+        )
+
+        assert runners.batches == []
+        assert scanner.calls == ["AAPL", "MSFT"]
+
+    @_PATCH_TRADING_DAY
+    def test_runner_errors_are_recorded_as_scan_exceptions(self, _mock_td):
+        uow, _ = _make_uow(symbols=["AAPL", "MSFT"])
+        runners = _RecordingRunnerFactory(
+            outcome_override=StockScanOutcome(error=ValueError("boom")),
+        )
+
+        result = BuildDailyFeatureSnapshotUseCase(
+            scanner=_BulkAwareScanner(),
+            data_provider=FakeStockDataProvider(),
+            scan_batch_runner_factory=runners,
+        ).execute(
+            uow,
+            _make_cmd(chunk_size=2, parallel_workers=2),
+            FakeProgressSink(),
+            FakeCancellationToken(),
+        )
+
+        assert result.failed_symbols == 2
+        assert result.failure_diagnostics["reason_counts"] == {"scan_exception": 2}
+        assert result.failure_diagnostics["samples"][0] == {
+            "symbol": "AAPL",
+            "reason": "scan_exception",
+            "error": "ValueError: boom",
+            "data_errors": {},
+        }
+

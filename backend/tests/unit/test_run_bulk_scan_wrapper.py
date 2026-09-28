@@ -35,6 +35,7 @@ class TestRunBulkScanViaUseCase:
     @patch(f"{_WRAPPER_PATH}.settings")
     def test_happy_path_returns_correct_dict(self, mock_settings, mock_pipeline):
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         fake_result = _FakeResult()
         mock_use_case = MagicMock()
@@ -74,6 +75,7 @@ class TestRunBulkScanViaUseCase:
     @patch(f"{_WRAPPER_PATH}.settings")
     def test_post_scan_finalization_queued_on_completed(self, mock_settings, mock_finalize):
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         mock_use_case = MagicMock()
         mock_use_case.execute.return_value = _FakeResult(status="completed")
@@ -100,6 +102,7 @@ class TestRunBulkScanViaUseCase:
         self, mock_settings, mock_finalize, mock_pipeline
     ):
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
         mock_finalize.delay.side_effect = RuntimeError("broker down")
 
         mock_use_case = MagicMock()
@@ -125,6 +128,7 @@ class TestRunBulkScanViaUseCase:
     @patch(f"{_WRAPPER_PATH}.settings")
     def test_post_scan_pipeline_skipped_on_cancelled(self, mock_settings, mock_pipeline):
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         mock_use_case = MagicMock()
         mock_use_case.execute.return_value = _FakeResult(status="cancelled")
@@ -148,6 +152,7 @@ class TestRunBulkScanViaUseCase:
     @patch(f"{_WRAPPER_PATH}.settings")
     def test_cancel_close_called_even_on_exception(self, mock_settings, mock_pipeline):
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         mock_use_case = MagicMock()
         mock_use_case.execute.side_effect = RuntimeError("boom")
@@ -182,6 +187,7 @@ class TestRunBulkScanViaUseCase:
         try/finally block that owns the cleanup.
         """
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         fake_session = MagicMock()
         fake_session.query.side_effect = RuntimeError("transient DB error")
@@ -211,6 +217,7 @@ class TestRunBulkScanViaUseCase:
     def test_manual_scan_runs_cache_only_true(self, mock_settings, mock_pipeline):
         """Round 5 Codex P2: manual scans must run cache_only=True."""
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         captured_cmd = None
 
@@ -237,10 +244,9 @@ class TestRunBulkScanViaUseCase:
             patch("app.infra.tasks.progress_sink.CeleryProgressSink"),
             patch("app.infra.tasks.cancellation.DbCancellationToken"),
             patch(
-                f"{_WRAPPER_PATH}.bounded_symbol_workers",
+                f"{_WRAPPER_PATH}.resolve_scan_compute_processes",
                 return_value=2,
-                create=True,
-            ) as mock_bounded,
+            ) as mock_resolve,
         ):
             from app.tasks.scan_tasks import _run_bulk_scan_via_use_case
             _run_bulk_scan_via_use_case(task_instance, "scan-001", ["AAPL"], {})
@@ -248,7 +254,7 @@ class TestRunBulkScanViaUseCase:
         assert captured_cmd is not None
         assert captured_cmd.cache_only is True
         assert captured_cmd.parallel_workers == 2
-        mock_bounded.assert_called_once_with(4)
+        mock_resolve.assert_called_once_with(0)
 
     @patch(f"{_WRAPPER_PATH}._run_post_scan_pipeline")
     @patch(f"{_WRAPPER_PATH}.settings")
@@ -257,6 +263,7 @@ class TestRunBulkScanViaUseCase:
         with cache_only=False — otherwise they'd fail every symbol on cold cache.
         """
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         captured_cmd = None
 
@@ -283,10 +290,9 @@ class TestRunBulkScanViaUseCase:
             patch("app.infra.tasks.progress_sink.CeleryProgressSink"),
             patch("app.infra.tasks.cancellation.DbCancellationToken"),
             patch(
-                f"{_WRAPPER_PATH}.bounded_symbol_workers",
+                f"{_WRAPPER_PATH}.resolve_scan_compute_processes",
                 return_value=2,
-                create=True,
-            ) as mock_bounded,
+            ) as mock_resolve,
         ):
             from app.tasks.scan_tasks import _run_bulk_scan_via_use_case
             _run_bulk_scan_via_use_case(task_instance, "scan-001", ["AAPL"], {})
@@ -294,12 +300,13 @@ class TestRunBulkScanViaUseCase:
         assert captured_cmd is not None
         assert captured_cmd.cache_only is False
         assert captured_cmd.parallel_workers == 2
-        mock_bounded.assert_called_once_with(4)
+        mock_resolve.assert_called_once_with(0)
 
     @patch(f"{_WRAPPER_PATH}._run_post_scan_pipeline")
     @patch(f"{_WRAPPER_PATH}.settings")
     def test_command_built_with_correct_params(self, mock_settings, mock_pipeline):
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         captured_cmd = None
 
@@ -338,6 +345,7 @@ class TestRunBulkScanViaUseCase:
     def test_none_criteria_defaults_to_empty_dict(self, mock_settings, mock_pipeline):
         """When criteria is None, the wrapper passes {} to the command."""
         mock_settings.scan_usecase_chunk_size = 25
+        mock_settings.scan_compute_processes = 0
 
         captured_cmd = None
 
