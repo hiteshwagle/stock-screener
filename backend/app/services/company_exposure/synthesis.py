@@ -8,7 +8,8 @@ theme application:
 * ``issuer_offers_product`` — the issuer sells/ships/offers the product;
 * ``product_supports_application`` — the product is designed for / supports
   / tests the application;
-* ``segment_of_issuer`` — a segment/subsidiary belongs to the issuer.
+* ``segment_of_issuer`` — a segment/subsidiary belongs to the issuer; the
+  link runs from the issuer (source) to the segment (target).
 
 Customer/supplier relationships (``supplies_to``, ``customer_of``,
 ``manufactures``) never carry an application across companies: "A supplies
@@ -31,6 +32,7 @@ from app.services.company_exposure.wording import (
     affirmed,
     clauses,
     mentions,
+    owned_by,
     predicated,
 )
 
@@ -119,6 +121,10 @@ def validate_synthesis(
             and (
                 predicated(clause, link.source, link.target, wording)
                 if link.relationship in _PREDICATED
+                # The chain runs issuer -> segment: the target must belong
+                # to the source, never the reverse ("X is part of Acme").
+                else owned_by(clause, link.source, link.target, wording)
+                if link.relationship == "segment_of_issuer"
                 else wording.search(clause)
             )
             for clause in linking

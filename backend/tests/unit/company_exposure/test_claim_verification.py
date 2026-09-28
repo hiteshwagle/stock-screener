@@ -888,6 +888,60 @@ def test_another_products_negated_status_does_not_deny_the_claim():
 
 
 @pytest.mark.parametrize(
+    ("conflict", "disputed"),
+    [
+        # Not discontinued is compatible with shipping.
+        ("ET-9000 has not been discontinued.", False),
+        ("ET-9000 is not shipping in volume.", True),
+        ("We discontinued the ET-9000 line.", True),
+    ],
+)
+def test_status_conflicts_must_deny_the_claimed_status(conflict, disputed):
+    support = "ET-9000 is shipping in volume."
+    result = validate_candidate(
+        claim(
+            "commercial_status",
+            commercial_status="shipping_or_operating",
+            support=[{"ref": "P1", "quote": support}],
+            conflicts=[{"ref": "P2", "quote": conflict}],
+        ),
+        evidence(item("P1", support), item("P2", conflict)),
+        SCOPE,
+    )
+    assert ("conflicting_primary_evidence" in result.hold_reasons) is disputed
+
+
+@pytest.mark.parametrize(
+    ("premise", "permitted"),
+    [
+        ("Acme is a subsidiary of Example Corp.", True),
+        ("Example Corp's subsidiary Acme designs memory testers.", True),
+        ("Acme is wholly owned by Example Corp.", True),
+        # Ownership pointing the other way cannot carry Acme's business.
+        ("Example Corp is a subsidiary of Acme.", False),
+        ("Example Corp is part of Acme.", False),
+    ],
+)
+def test_segment_links_must_point_from_owner_to_segment(premise, permitted):
+    from app.services.company_exposure.synthesis import (
+        Link,
+        Premise,
+        validate_synthesis,
+    )
+
+    decision = validate_synthesis(
+        [Premise("P1", premise, True), Premise("P2", "Acme supports HBM.", True)],
+        [
+            Link("Example Corp", "Acme", "segment_of_issuer", "P1"),
+            Link("Acme", "HBM", "product_supports_application", "P2"),
+        ],
+        subject="Example Corp",
+        application="HBM",
+    )
+    assert decision.permitted is permitted
+
+
+@pytest.mark.parametrize(
     ("kind", "support", "conflict", "disputed"),
     [
         # A negation about something else does not deny the relationship.

@@ -449,7 +449,10 @@ class ResearchStageRunner:
 
     def _issuer(self, request) -> _Issuer | None:
         resolution = self.identity.resolve_security(request.security_id)
-        if not resolution.resolved:
+        # A pending correction (a reviewed CIK proposed for a linked listing)
+        # means the accepted link may name the wrong company: nothing is
+        # acquired, verified or sealed on it until the review is decided.
+        if not resolution.resolved or resolution.pending_review:
             return None
         return _Issuer(
             resolution.issuer_id, resolution.identifiers, resolution.link_revision_id
@@ -472,6 +475,11 @@ class ResearchStageRunner:
 
     # --------------------------------------------------------------- stages
     def _resolve_issuer(self, request) -> StageOutcome:
+        if self.identity.resolve_security(request.security_id).pending_review:
+            # Never race the registry against an administrator's proposal.
+            return StageOutcome.pause(
+                ResearchJobState.REVIEW_REQUIRED, "issuer_link_review_pending"
+            )
         issuer = self._issuer(request)
         if issuer is not None:
             return StageOutcome.complete(

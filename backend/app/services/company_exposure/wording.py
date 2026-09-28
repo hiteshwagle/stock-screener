@@ -345,3 +345,44 @@ def predicated(clause: str, source: str, target: str, wording: re.Pattern) -> bo
         and mentions(segment, target)
         for segment in CJK_SEGMENT.split(clause)
     )
+
+
+# "owned by", "part of", "a subsidiary of": the owner follows the wording.
+_OWNER_FOLLOWS = re.compile(r"\s*(?:of|by)\b", re.IGNORECASE)
+_CJK_POSSESSIVE = ("の", "的")
+
+
+def owned_by(clause: str, owner: str, owned: str, wording: re.Pattern) -> bool:
+    """Whether ``clause`` states that ``owned`` belongs to ``owner``.
+
+    "Acme is part of Example Corp" and "Example Corp's subsidiary Acme" put
+    Acme under Example Corp; "Example Corp is part of Acme" does not. With
+    "of"/"by" after the wording the owned party precedes it and the owner
+    follows; otherwise the owner comes first (possessive or adjacent name).
+    CJK wording needs the owner marked possessive ("Example Corpの子会社").
+    """
+
+    for match in wording.finditer(clause):
+        before, rest = clause[: match.start()], clause[match.end() :]
+        if not match.group().isascii():
+            if any(
+                f"{owner}{mark}" in before.replace(" ", "")
+                or f"{owner}{mark}" in before
+                for mark in _CJK_POSSESSIVE
+            ) and mentions(clause, owned):
+                return True
+            continue
+        # "part of" and "owned by" carry their preposition in the match.
+        joined = re.search(r"\b(?:of|by)$", match.group(), re.IGNORECASE)
+        follows = None if joined else _OWNER_FOLLOWS.match(rest)
+        if joined or follows:
+            tail = rest if joined else rest[follows.end() :]
+            tail = CLAUSE_BOUNDARY.split(tail)[0]
+            if mentions(before, owned) and mentions(tail, owner):
+                return True
+            continue
+        owners = mention_spans(before, owner)
+        owneds = mention_spans(clause, owned)
+        if owners and owneds and owners[0][0] < owneds[0][0]:
+            return True
+    return False

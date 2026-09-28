@@ -51,6 +51,32 @@ def test_repeat_request_reuses_job(harness):
     assert harness.run_all()[0].stage == "resolve_issuer"
 
 
+def test_pending_cik_correction_pauses_research_on_the_old_link(harness):
+    from app.services.company_exposure.research_requests import ResearchRequestInput
+
+    harness.serve_sec()
+    harness.go.queue_builder(claims_for)
+    harness.request()
+    harness.run_all()  # the listing is now linked to CIK 1234567
+    # A corrective CIK for the linked listing is a pending proposal.
+    corrected = harness.requests.request(
+        ResearchRequestInput(
+            economic_theme_id=harness.theme.id,
+            security_id=harness.security.id,
+            supplied_cik="7654321",
+        ),
+        "test:admin",
+        idempotency_key="verify-corrected",
+    )
+    assert corrected.issuer_link_proposal is not None
+    harness.db.commit()
+    step = harness.step()
+    # Nothing is acquired or verified for the old issuer while review waits.
+    assert (step.request_id, step.stage) == (corrected.id, "resolve_issuer")
+    assert harness.requests.repo.latest_state(corrected.id) == "review_required"
+    assert step.detail["condition"] == "issuer_link_review_pending"
+
+
 def test_disabled_research_and_discovery_are_refused(harness, db_session):
     harness.build(replace(SHADOW, research_mode="disabled"))
     with pytest.raises(ResearchUnavailable, match="research_disabled"):

@@ -96,7 +96,7 @@ from app.services.company_exposure.wording import (
 )
 
 VERIFICATION_POLICY = "verification-v1"
-PROMPT_VERSION = "claim-extraction-v1"
+PROMPT_VERSION = "claim-extraction-v2"
 MAX_OUTPUT_TOKENS = 4000
 
 PRIMARY_SOURCE_KINDS = frozenset(
@@ -186,7 +186,8 @@ Return only JSON: {"claims": [...]}. Each claim:
      "premises": [{"ref": "P#", "quote": "..."}],
      "links": [{"source": "...", "target": "...", "relationship":
        "issuer_offers_product|product_supports_application|segment_of_issuer|supplies_to|customer_of|manufactures",
-       "ref": "P#"}]}
+       "ref": "P#"}]}  (links run from the issuer toward the application:
+       segment_of_issuer has the issuer as source and its segment as target)
   materiality: null or {"type": "disclosed", "metric", "value", "unit", "period", "scope",
      "scope_label", "ref", "quote"} or {"type": "ratio", "metric", "numerator": {...},
      "denominator": {...}} (each with value, unit, currency, period, scope, label, ref, quote)
@@ -755,7 +756,9 @@ def _customer_direction(text: str, issuer_names=()) -> str | None:
     return "sells" if sells else "buys"
 
 
-def _contradicts(quote: str, kind, product_terms, key_tokens, scope) -> bool:
+def _contradicts(
+    quote: str, kind, product_terms, key_tokens, scope, status=None
+) -> bool:
     """A cited conflict that is about this claim and actually denies it.
 
     It must name the claimed product, deny or end it (negated or exit
@@ -771,10 +774,28 @@ def _contradicts(quote: str, kind, product_terms, key_tokens, scope) -> bool:
         if not _names_product(clause, product_terms, key_tokens):
             continue
         if any(
-            _denies(kind, part, scope.theme_terms) for part in denied_conjuncts(clause)
+            _denies(kind, part, scope.theme_terms, status)
+            for part in denied_conjuncts(clause)
         ):
             return True
     return False
+
+
+def _denies_status(part: str, status) -> bool:
+    """Whether a denied conjunct contradicts the claimed status.
+
+    "ET-9000 has not been discontinued" is compatible with shipping; it
+    contradicts only a discontinued claim. An active status is contradicted
+    by its own wording denied ("is not shipping") or by an asserted exit.
+    """
+
+    if status is None or status == CommercialStatus.UNKNOWN:
+        return False
+    if status == CommercialStatus.DISCONTINUED:
+        return bool(EXIT.search(part)) and not affirmed_exit(part)
+    if status in _ACTIVE_STATUSES and EXIT.search(part) and affirmed_exit(part):
+        return True
+    return not affirmed(part) and any(p.search(part) for p in _STATUS_WORDING[status])
 
 
 # Wording a denied materiality statement must carry to be about the measure.
@@ -785,7 +806,7 @@ _MATERIALITY_WORDING = re.compile(
 )
 
 
-def _denies(kind, part: str, theme_terms) -> bool:
+def _denies(kind, part: str, theme_terms, status=None) -> bool:
     """Whether a denied conjunct denies this kind of proposition.
 
     "ET-9000 does not support PCIe" says nothing about a customer, a status
@@ -798,7 +819,7 @@ def _denies(kind, part: str, theme_terms) -> bool:
     if kind == ClaimKind.CUSTOMER_RELATIONSHIP:
         return bool(CUSTOMER.search(part))
     if kind == ClaimKind.COMMERCIAL_STATUS:
-        return any(p.search(part) for ps in _STATUS_WORDING.values() for p in ps)
+        return _denies_status(part, status)
     if kind == ClaimKind.EXPOSURE_END:
         return bool(EXIT.search(part)) and not affirmed_exit(part)
     return bool(_MATERIALITY_WORDING.search(part))
@@ -1151,7 +1172,7 @@ def validate_candidate(
     conflicting_primary = any(
         c.direction == "conflicting"
         and c.role == EvidenceRole.ORIGINAL_PRIMARY
-        and _contradicts(c.quote, kind, product_terms, key_tokens, scope)
+        and _contradicts(c.quote, kind, product_terms, key_tokens, scope, status)
         for c in cited
     )
 
