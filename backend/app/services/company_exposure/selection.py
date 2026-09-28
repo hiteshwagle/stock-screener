@@ -294,7 +294,7 @@ def measure_signature(
         unit,
         (currency or "").upper() or None,
         period,
-        scope_label,
+        canonical_label(scope_label),
         getattr(qualitative_label, "value", qualitative_label),
     )
 

@@ -569,6 +569,9 @@ def test_customer_wording_must_cover_the_claimed_product(quote, supported):
         ("NVIDIA is our customer for ET-9000 HBM solutions.", True),
         # Same parties and words, reversed relationship.
         ("We are NVIDIA's customer for ET-9000 HBM solutions.", False),
+        # The issuer's own name reads as "we"/"our".
+        ("Example Test Systems Corp is NVIDIA's customer for ET-9000.", False),
+        ("NVIDIA is Example Test Systems Corp's customer for ET-9000.", True),
     ],
 )
 def test_customer_direction_must_match_the_evidence(statement, supported):
@@ -868,6 +871,65 @@ def test_negated_or_modal_language_cannot_support_shipping(text, hold):
     )
     assert result.commercial_status == CommercialStatus.UNKNOWN
     assert hold in result.hold_reasons
+
+
+def test_another_products_negated_status_does_not_deny_the_claim():
+    text = "Legacy X100 is not shipping; ET-9000 is shipping in volume."
+    result = validate_candidate(
+        claim(
+            commercial_status="shipping_or_operating",
+            support=[{"ref": "P1", "quote": text}],
+        ),
+        evidence(item("P1", text)),
+        SCOPE,
+    )
+    assert result.commercial_status == CommercialStatus.SHIPPING_OR_OPERATING
+    assert "negated_commercial_status" not in result.hold_reasons
+
+
+@pytest.mark.parametrize(
+    ("kind", "support", "conflict", "disputed"),
+    [
+        # A negation about something else does not deny the relationship.
+        (
+            "customer_relationship",
+            "NVIDIA is our customer for ET-9000 HBM solutions.",
+            "ET-9000 does not support PCIe testing.",
+            False,
+        ),
+        (
+            "customer_relationship",
+            "NVIDIA is our customer for ET-9000 HBM solutions.",
+            "NVIDIA is no longer our customer for ET-9000.",
+            True,
+        ),
+        # Exit wording supports an exit; only a denied exit contradicts it.
+        (
+            "exposure_end",
+            "We exited the ET-9000 HBM test equipment business in June 2025.",
+            "We discontinued the ET-9000 line in June 2025.",
+            False,
+        ),
+        (
+            "exposure_end",
+            "We exited the ET-9000 HBM test equipment business in June 2025.",
+            "We have not discontinued the ET-9000 line.",
+            True,
+        ),
+    ],
+)
+def test_conflicts_must_deny_the_claimed_kind(kind, support, conflict, disputed):
+    result = validate_candidate(
+        claim(
+            kind,
+            statement=support,
+            support=[{"ref": "P1", "quote": support}],
+            conflicts=[{"ref": "P2", "quote": conflict}],
+        ),
+        evidence(item("P1", support), item("P2", conflict)),
+        SCOPE,
+    )
+    assert ("conflicting_primary_evidence" in result.hold_reasons) is disputed
 
 
 @pytest.mark.parametrize(

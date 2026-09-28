@@ -159,12 +159,15 @@ class ResearchRequests:
     ) -> ProposalRef | None:
         """A supplied CIK is a reviewable proposal, never a trusted identifier."""
 
-        if self.identity.resolve_security(security_id).resolved:
+        already_linked, issuer_id = self.identity.reviewed_link_target(
+            security_id, "US", "cik", cik
+        )
+        if already_linked:
             return None
         return self.identity.propose_link(
             LinkProposal(
                 security_id=security_id,
-                issuer_id=None,
+                issuer_id=issuer_id,
                 identifiers=(("US", "cik", cik),),
                 evidence={
                     "reference": "administrator-supplied CIK",

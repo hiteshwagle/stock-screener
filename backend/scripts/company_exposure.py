@@ -93,18 +93,14 @@ def resolve_issuer(
     )
 
     identity = IssuerIdentityAdapter(session)
-    current = identity.resolve_security(security_id)
-    # A CIK another listing's issuer already owns (a cross-listing) links
-    # this listing to that issuer; a new issuer could never take the CIK.
-    owner = identity.identifier_owner("US", "cik", cik)
-    if current.resolved:
-        if owner == current.issuer_id:
-            return {"state": "already_linked", "issuer_id": str(current.issuer_id)}
-        if owner is None and ("US", "cik") not in current.identifiers:
-            # The current issuer simply lacks a CIK: give it this one.
-            owner = current.issuer_id
-        # Otherwise the reviewed CIK replaces a stale link
-        # (security_already_linked_elsewhere, ticker_changed_since_prior_link).
+    # A cross-listing joins the issuer owning the CIK; a stale accepted link
+    # (security_already_linked_elsewhere, ticker_changed_since_prior_link) is
+    # corrected unless the CIK already belongs to its issuer.
+    already_linked, owner = identity.reviewed_link_target(
+        security_id, "US", "cik", cik
+    )
+    if already_linked:
+        return {"state": "already_linked", "issuer_id": str(owner)}
     if not apply:
         return {
             "state": "dry_run",

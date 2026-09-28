@@ -85,6 +85,35 @@ def test_original_filing_arriving_after_amendment_does_not_win(dossier):
     assert result.set_aside[0]["reason"] == "older_than_selected"
 
 
+def test_label_spelling_is_not_a_same_date_disagreement(dossier):
+    from dataclasses import replace
+
+    measure = validate_measure(
+        metric="revenue_percent",
+        value=Decimal(20),
+        unit="percent",
+        period="FY2025",
+        scope="segment_or_subsidiary",
+        scope_label="Memory test",
+        quote="Memory test was 20% of revenue",
+        passage_id=str(dossier.passages["materiality"].id),
+        period_evidence=("FY2025",),
+    )
+    first = verified_claim(
+        "materiality",
+        passage=dossier.passages["materiality"],
+        quote="Memory test was 20% of revenue",
+        supported_as_of=ORIGINAL_10K,
+        period="FY2025",
+        status="unknown",
+        materiality=measure,
+    )
+    respelled = replace(first, materiality=replace(measure, scope_label="memory  test"))
+    result = dossier.service.assess(dossier.attempt(first, respelled))
+    assert result.conflicts == ()
+    assert result.claim("materiality").hold_kinds == ()
+
+
 def test_same_date_disagreement_holds_the_proposition(dossier):
     shipping = verified_claim(
         "commercial_status",

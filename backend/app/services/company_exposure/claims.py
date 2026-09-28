@@ -700,14 +700,17 @@ def _customer_clauses(
     own = " ".join([*scope.issuer_names, *scope.theme_terms, *product_terms]).casefold()
     counterparty = [p for p in _name_parts(statement) if p.casefold() not in own]
     # A statement that says who buys must match a clause saying the same.
-    direction = _customer_direction(statement)
+    direction = _customer_direction(statement, scope.issuer_names)
     return [
         clause
         for clause in clauses(quotes)
         if CUSTOMER.search(clause)
         and _names_product(clause, product_terms, key_tokens)
         and (not counterparty or any(mentions(clause, p) for p in counterparty))
-        and (direction is None or _customer_direction(clause) == direction)
+        and (
+            direction is None
+            or _customer_direction(clause, scope.issuer_names) == direction
+        )
     ]
 
 
@@ -716,24 +719,36 @@ def _customer_clauses(
 _ISSUER_SELLS = re.compile(
     r"\b(?:is|are|was|were|became|becomes|remains?)\s+(?:(?:one|a|an)\s+of\s+)?"
     r"our\s+(?:\w+\s+){0,2}?customers?\b|\bour\s+(?:\w+\s+)?customers?\b"
-    r"|\bwe\s+(?:sell|sold|supply|supplied|ship|shipped|deliver|delivered)\b"
+    r"|\bwe\s+(?:sells?|sold|suppl(?:y|ies|ied)|ships?|shipped|delivers?|delivered)\b"
     r"|\b(?:sales|shipments|deliveries)\s+to\b"
     r"|\b(?:buys?|bought|purchases?|purchased|orders?|ordered)\b.{0,60}?\bfrom\s+us\b",
     re.IGNORECASE,
 )
 _ISSUER_BUYS = re.compile(
-    r"\bwe\s+(?:are|were|became|remain)\b.{0,40}?\bcustomers?\b"
+    r"\bwe\s+(?:are|is|was|were|became|becomes|remains?)\b.{0,40}?\bcustomers?\b"
     r"|\bour\s+(?:\w+\s+)?(?:suppliers?|vendors?)\b"
-    r"|\bwe\s+(?:buy|bought|purchase|purchased|source|sourced|order|ordered)\b"
+    r"|\bwe\s+(?:buys?|bought|purchases?|purchased|sources?|sourced|orders?|ordered)\b"
     r"|\b(?:supplies|supplied|sells|sold|ships|shipped|delivers|delivered)\b"
     r".{0,60}?\bto\s+us\b|\bpurchases\s+from\b",
     re.IGNORECASE,
 )
 
 
-def _customer_direction(text: str) -> str | None:
+def _first_person(text: str, issuer_names) -> str:
+    """Read the issuer's own name as "we"/"our": "Example Corp is NVIDIA's
+    customer" states the same direction as "We are NVIDIA's customer"."""
+
+    for name in sorted((n for n in issuer_names if n), key=len, reverse=True):
+        pattern = re.escape(name)
+        text = re.sub(pattern + r"['’]s\b", "our", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b" + pattern + r"\b", "we", text, flags=re.IGNORECASE)
+    return text
+
+
+def _customer_direction(text: str, issuer_names=()) -> str | None:
     """ "sells" or "buys" from the issuer's side, or None if unstated/mixed."""
 
+    text = _first_person(text, issuer_names)
     sells, buys = bool(_ISSUER_SELLS.search(text)), bool(_ISSUER_BUYS.search(text))
     if sells == buys:
         return None
@@ -755,13 +770,38 @@ def _contradicts(quote: str, kind, product_terms, key_tokens, scope) -> bool:
     for clause in clauses([quote]):
         if not _names_product(clause, product_terms, key_tokens):
             continue
-        denied = denied_conjuncts(clause)
-        if denied and (
-            kind not in _LINKED_KINDS
-            or any(mentions(part, t) for part in denied for t in scope.theme_terms)
+        if any(
+            _denies(kind, part, scope.theme_terms) for part in denied_conjuncts(clause)
         ):
             return True
     return False
+
+
+# Wording a denied materiality statement must carry to be about the measure.
+_MATERIALITY_WORDING = re.compile(
+    r"\b(?:revenues?|sales|turnover|profits?|income|earnings|margins?|backlog|"
+    r"material(?:ly|ity)?|significant|percent|share)\b|%|売上|營收|营收|收入",
+    re.IGNORECASE,
+)
+
+
+def _denies(kind, part: str, theme_terms) -> bool:
+    """Whether a denied conjunct denies this kind of proposition.
+
+    "ET-9000 does not support PCIe" says nothing about a customer, a status
+    or a revenue share; an exit claim is contradicted only by a denied exit
+    ("has not discontinued ET-9000"), never by exit wording itself.
+    """
+
+    if kind in _LINKED_KINDS:
+        return any(mentions(part, t) for t in theme_terms)
+    if kind == ClaimKind.CUSTOMER_RELATIONSHIP:
+        return bool(CUSTOMER.search(part))
+    if kind == ClaimKind.COMMERCIAL_STATUS:
+        return any(p.search(part) for ps in _STATUS_WORDING.values() for p in ps)
+    if kind == ClaimKind.EXPOSURE_END:
+        return bool(EXIT.search(part)) and not affirmed_exit(part)
+    return bool(_MATERIALITY_WORDING.search(part))
 
 
 def _names_product(text: str, product_terms, key_tokens) -> bool:
@@ -824,6 +864,10 @@ def _synthesis_scope_holds(
     return holds
 
 
+# Tokens that name some product or company: model numbers, acronyms.
+_PRODUCT_LIKE = re.compile(r"\b[A-Za-z][\w-]*\d[\w-]*|\b[A-Z]{2,}[\w-]*")
+
+
 def _status_guard(
     status: CommercialStatus, quotes: list[str], product_terms, key_tokens
 ) -> tuple[CommercialStatus, list[str], list[str]]:
@@ -845,7 +889,16 @@ def _status_guard(
     bearing = [c for c in every if any(pattern.search(c) for pattern in wording)]
     # "no longer" is exit wording, not a denial of the discontinuation.
     denial = _DENIAL if status == CommercialStatus.DISCONTINUED else NEGATION
-    if any(denial.search(c) for c in bearing):
+    # Only a denial about the claimed product: "Legacy X100 is not shipping;
+    # ET-9000 is shipping" still states ET-9000's status, while "...but has
+    # not begun volume shipments" (subject elided) still denies it.
+    if any(
+        denial.search(c)
+        and (
+            _names_product(c, product_terms, key_tokens) or not _PRODUCT_LIKE.search(c)
+        )
+        for c in bearing
+    ):
         return CommercialStatus.UNKNOWN, ["negated_commercial_status"], []
     stating = [
         clause

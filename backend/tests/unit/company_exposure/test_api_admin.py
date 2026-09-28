@@ -228,6 +228,69 @@ async def test_supplied_cik_becomes_a_reviewable_proposal(api, db_session, subje
     assert link.state != "accepted"
 
 
+def _registry_link(db_session, security, cik):
+    from app.domain.company_exposure.contracts import (
+        SERVICE_PRINCIPAL,
+        RegistryMatch,
+    )
+    from app.services.company_exposure.issuer_identity import IssuerIdentityAdapter
+
+    return (
+        IssuerIdentityAdapter(db_session)
+        .accept_registry_match(
+            RegistryMatch(
+                security_id=security.id,
+                market="US",
+                scheme="cik",
+                value=cik,
+                candidate_count=1,
+                ticker_confirmed=True,
+                matched_ticker=security.symbol,
+                registry_capture_revision_id=None,
+                official_record_capture_revision_id=None,
+            ),
+            SERVICE_PRINCIPAL,
+        )
+        .issuer_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_supplied_cik_for_a_cross_listing_targets_its_owner(
+    api, db_session, subject
+):
+    twin = make_security(db_session, "EXMPB", exchange="NYSE")
+    owner = _registry_link(db_session, twin, "1234567")
+    response = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, supplied_cik="1234567")
+    )
+    assert response.status_code == 202
+    proposal = db_session.execute(
+        select(IssuerSecurityLinkRevision).where(
+            IssuerSecurityLinkRevision.security_id == subject["security"].id
+        )
+    ).scalar_one()
+    # Applicable: a new issuer could never take the CIK its twin owns.
+    assert proposal.issuer_id == owner
+
+
+@pytest.mark.asyncio
+async def test_supplied_cik_can_correct_an_accepted_link(api, db_session, subject):
+    _registry_link(db_session, subject["security"], "7654321")
+    same = await api["call"](
+        "POST", PATH, headers=ADMIN_HEADERS, json=_body(subject, supplied_cik="7654321")
+    )
+    assert same.json()["issuer_link_proposal"] is None
+    corrected = await api["call"](
+        "POST",
+        PATH,
+        headers=ADMIN_HEADERS,
+        json=_body(subject, supplied_cik="1234567", idempotency_key="verify-exmp-2"),
+    )
+    assert corrected.status_code == 202
+    assert corrected.json()["issuer_link_proposal"] is not None
+
+
 @pytest.mark.asyncio
 async def test_request_bounds_are_validated(api, subject):
     too_many = [f"https://www.sec.gov/{i}" for i in range(6)]

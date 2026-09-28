@@ -177,6 +177,27 @@ class IssuerIdentityAdapter:
 
         return self._identifier_owner(normalized_identifier(market, scheme, value))
 
+    def reviewed_link_target(
+        self, security_id: int, market: str, scheme: str, value: str
+    ) -> tuple[bool, UUID | None]:
+        """Where an administrator-reviewed identifier links this listing.
+
+        Returns ``(already_linked, issuer_id)``; ``issuer_id`` None means a
+        new issuer. A cross-listing joins the issuer that already owns the
+        identifier (a new issuer could never take it); an accepted link is
+        kept only when the identifier already belongs to its issuer or that
+        issuer simply lacks one of this scheme, and is otherwise corrected.
+        """
+
+        current = self.resolve_security(security_id)
+        owner = self.identifier_owner(market, scheme, value)
+        if current.resolved:
+            if owner == current.issuer_id:
+                return True, owner
+            if owner is None and (market, scheme) not in current.identifiers:
+                return False, current.issuer_id
+        return False, owner
+
     def identifiers_for(self, issuer_id: UUID) -> dict[tuple[str, str], str]:
         rows = self.session.execute(
             select(IssuerIdentifierRevision)
