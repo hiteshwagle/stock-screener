@@ -52,11 +52,19 @@ def sentences(text: str) -> list[str]:
             continue
         head = text[start : match.start()]
         last = head.rsplit(None, 1)[-1] if head.split() else ""
-        if last.endswith(".") and (
-            last[:-1].casefold().lstrip("(") in _ABBREVIATIONS
-            or (len(last) == 2 and last[0].isupper())
+        following = text[match.end() :].split(None, 1)
+        # "Example Corp. offers ET-9000" continues in lowercase; "…serves
+        # Example Corp. HBM demand increased." starts a new sentence.
+        continues = bool(following) and not following[0][:1].isupper()
+        if (
+            last.endswith(".")
+            and continues
+            and (
+                last[:-1].casefold().lstrip("(") in _ABBREVIATIONS
+                or (len(last) == 2 and last[0].isupper())
+            )
         ):
-            continue  # "Corp." or an initial, not a sentence end
+            continue  # "Corp." or an initial inside a sentence
         parts.append(head)
         start = match.end()
     parts.append(text[start:])

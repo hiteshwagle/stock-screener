@@ -357,7 +357,7 @@ def _issuers_own(clause: str, term: str, issuer_names) -> bool:
 
 def _named_other_subject(before: str, issuer_names) -> bool:
     """Whether the verb before a product has a proper-name subject that is
-    not the issuer ("Acme uses", "Applied Materials buys")."""
+    not the issuer ("Acme uses", "The chipmaker Applied Materials buys")."""
 
     verbs = list(FINITE.finditer(before))
     if not verbs:
@@ -368,8 +368,10 @@ def _named_other_subject(before: str, issuer_names) -> bool:
     ):
         return False
     tokens = [w for w in subject.split() if w.casefold() not in _FUNCTION_WORDS]
-    # Every word capitalised: a proper name, not "Memory makers use".
-    return bool(tokens) and all(w[:1].isupper() for w in tokens)
+    # The subject's head names it: "The semiconductor manufacturer Acme uses"
+    # is Acme, whatever lowercase descriptors precede it; "Memory makers use"
+    # has a common-noun head.
+    return bool(tokens) and tokens[-1][:1].isupper()
 
 
 def _linking_clauses(

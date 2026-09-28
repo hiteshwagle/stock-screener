@@ -125,6 +125,10 @@ def test_abbreviations_and_decimals_do_not_end_a_premise():
         "Revenue was 20.5 million.",
         "Next.",
     ]
+    assert sentences("Our ET-9000 serves Example Corp. HBM demand increased.") == [
+        "Our ET-9000 serves Example Corp.",
+        "HBM demand increased.",
+    ]
     decision = validate_synthesis(
         [
             Premise("P1", "Example Corp. offers the ET-9000.", True),
@@ -478,7 +482,10 @@ def test_non_text_scope_label_is_rejected_output():
         ("Our ET-9000 tester is available and supports HBM testing.", True),
         # A named third party using the product says nothing of ownership.
         ("Acme uses ET-9000 for HBM testing.", False),
+        ("The semiconductor manufacturer Acme uses ET-9000 for HBM testing.", False),
         ("Memory makers use the ET-9000 for HBM testing.", True),
+        # A company suffix can end a sentence: HBM is not ET-9000's object.
+        ("Our ET-9000 serves Example Corp. HBM demand increased.", False),
     ],
 )
 def test_linked_product_must_be_the_issuers_own(text, linked):
