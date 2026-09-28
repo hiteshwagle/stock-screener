@@ -77,9 +77,17 @@ def proposition_key(
             "kind": kind,
             "product": product_key,
             "scope": scope,
-            "scope_label": scope_label,
+            # "Data Center" and "data  center" name one segment; the stored
+            # claim keeps the original spelling for display.
+            "scope_label": canonical_label(scope_label),
         }
     )
+
+
+def canonical_label(label: str | None) -> str | None:
+    """Identity form of a scope label: case- and whitespace-insensitive."""
+
+    return " ".join(label.split()).casefold() if label else label
 
 
 def decimal_text(value) -> str | None:

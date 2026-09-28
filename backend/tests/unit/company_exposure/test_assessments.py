@@ -152,6 +152,26 @@ def test_identity_scope_change_records_a_new_revision(dossier, change):
     assert manifest["scope"]["issuer_names"] == list(moved.issuer_names)
 
 
+def test_scope_label_spelling_does_not_split_a_proposition(dossier):
+    from app.domain.company_exposure.contracts import ReportingScope
+
+    def labelled(label, date):
+        return replace(
+            verified_claim(
+                "role", passage=dossier.passages["role"], supported_as_of=date
+            ),
+            reporting_scope=ReportingScope.SEGMENT_OR_SUBSIDIARY,
+            scope_label=label,
+        )
+
+    dossier.persist(dossier.attempt(labelled("Data Center", FY2024_DATE)))
+    result = dossier.service.assess(
+        dossier.attempt(labelled("data  center", FY2025_DATE))
+    )
+    # One proposition, superseded by the newer evidence, not a duplicate.
+    assert [s.action for s in result.selections] == ["replaced"]
+
+
 def test_first_assessment_links_evidence_and_seals(dossier):
     role = verified_claim(
         "role", passage=dossier.passages["role"], supported_as_of=ROLE_DATE

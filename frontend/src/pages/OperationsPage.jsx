@@ -32,6 +32,7 @@ import {
 import { fetchAlerts, acknowledgeAlert } from '../api/telemetry';
 import { cancelOperationsJob, fetchOperationsJobs } from '../api/operations';
 import { useRuntimeActivity } from '../hooks/useRuntimeActivity';
+import { useRuntime } from '../contexts/RuntimeContext';
 import SocialSignalHealthPanel from '../features/socialSignals/SocialSignalHealthPanel';
 import ExposureResearchWorkspace from '../features/companyExposure/ExposureResearchWorkspace';
 
@@ -496,6 +497,8 @@ export default function OperationsPage() {
   const [marketFilter, setMarketFilter] = useState('all');
   const [taskSearch, setTaskSearch] = useState('');
   const activityQuery = useRuntimeActivity();
+  // Exposure routes are registered only with the themes feature.
+  const { features } = useRuntime();
 
   const alertsQuery = useQuery({
     queryKey: ['telemetry', 'alerts'],
@@ -754,7 +757,7 @@ export default function OperationsPage() {
         <AlertsTable alerts={alerts} onAcknowledge={(id) => ackMutation.mutate(id)} />
       )}
       <SocialSignalHealthPanel />
-      <ExposureResearchWorkspace />
+      {features.themes && <ExposureResearchWorkspace />}
     </Container>
   );
 }

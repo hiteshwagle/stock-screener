@@ -9,6 +9,11 @@ const acknowledgeAlert = vi.fn();
 const fetchOperationsJobs = vi.fn();
 const cancelOperationsJob = vi.fn();
 const useRuntimeActivity = vi.fn();
+const runtimeState = vi.hoisted(() => ({ features: { themes: true } }));
+
+vi.mock('../contexts/RuntimeContext', () => ({
+  useRuntime: () => runtimeState,
+}));
 
 vi.mock('../api/telemetry', () => ({
   fetchAlerts: (...args) => fetchAlerts(...args),
@@ -115,6 +120,7 @@ const OPERATIONS_PAYLOAD = {
 
 describe('OperationsPage', () => {
   beforeEach(() => {
+    runtimeState.features = { themes: true };
     vi.clearAllMocks();
     fetchAlerts.mockResolvedValue({ summaries: [SUMMARY_US], alerts: [ALERT_US] });
     fetchOperationsJobs.mockResolvedValue(OPERATIONS_PAYLOAD);
@@ -328,5 +334,17 @@ describe('OperationsPage', () => {
 
     expect(await screen.findByText('Batch sizing pending')).toBeInTheDocument();
     expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
+  });
+
+  it('shows exposure research only when the themes feature is enabled', async () => {
+    renderWithProviders(<OperationsPage />);
+    expect(await screen.findByText('Company exposure research (shadow)')).toBeInTheDocument();
+  });
+
+  it('hides exposure research when its routes are not registered', async () => {
+    runtimeState.features = { themes: false };
+    renderWithProviders(<OperationsPage />);
+    expect(await screen.findByText('Batch 3/5 · refreshing prices')).toBeInTheDocument();
+    expect(screen.queryByText('Company exposure research (shadow)')).not.toBeInTheDocument();
   });
 });
