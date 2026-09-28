@@ -98,8 +98,10 @@ def is_primary_support(
 def within_synthesis_bound(primary_leaf_ids, explicit_links) -> bool:
     """Pure admissibility bound; entailment and scope checks remain mandatory."""
 
+    # At least one explicit link: a zero-edge "chain" whose subject is its
+    # application would otherwise pass on any unrelated primary premise.
     leaves = set(primary_leaf_ids)
     return (
         0 < len(leaves) <= MAX_SYNTHESIS_PRIMARY_PREMISES
-        and len(tuple(explicit_links)) <= MAX_SYNTHESIS_LINKS
+        and 0 < len(tuple(explicit_links)) <= MAX_SYNTHESIS_LINKS
     )

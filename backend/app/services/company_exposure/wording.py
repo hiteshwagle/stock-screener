@@ -9,7 +9,17 @@ from __future__ import annotations
 
 import re
 
-SENTENCES = re.compile(r"(?<=[.!?。！？])\s*")
+# A sentence ends at CJK terminal punctuation, or at "." "!" "?" followed by
+# whitespace; a period inside a number ("20.5") or after an abbreviation
+# ("Example Corp. offers ET-9000") does not end one.
+SENTENCES = re.compile(r"(?<=[。！？])\s*|(?<=[.!?])\s+")
+_ABBREVIATIONS = frozenset(
+    {
+        "corp", "inc", "co", "ltd", "llc", "plc", "bhd", "no", "nos", "vs",
+        "mr", "mrs", "ms", "dr", "st", "jr", "sr", "e.g", "i.e", "etc",
+        "approx", "u.s", "u.k", "fig", "dept", "est",
+    }
+)  # fmt: skip
 NEGATION = re.compile(
     r"\b(not|no longer|never|has not|have not|yet to|without)\b|していない|しておらず|未|尚未|沒有|没有|並未|并未",
     re.IGNORECASE,
@@ -33,11 +43,28 @@ EXIT = re.compile(
 
 
 def sentences(text: str) -> list[str]:
-    return [s for s in SENTENCES.split(text) if s.strip()]
+    parts, start = [], 0
+    for match in SENTENCES.finditer(text):
+        if (
+            match.end() == match.start()
+            and text[match.start() - 1 : match.start()] not in "。！？"
+        ):
+            continue
+        head = text[start : match.start()]
+        last = head.rsplit(None, 1)[-1] if head.split() else ""
+        if last.endswith(".") and (
+            last[:-1].casefold().lstrip("(") in _ABBREVIATIONS
+            or (len(last) == 2 and last[0].isupper())
+        ):
+            continue  # "Corp." or an initial, not a sentence end
+        parts.append(head)
+        start = match.end()
+    parts.append(text[start:])
+    return [s for s in parts if s.strip()]
 
 
 # Finite verbs that give each side of an "and" its own predicate.
-_FINITE = re.compile(
+FINITE = re.compile(
     r"\b(?:is|are|was|were|has|have|had|won|wins|grew|grows|rose|rises|fell|falls|"
     r"increased|decreased|declined|remains?|remained|became|becomes|received|"
     r"launched|reported|supports?|supported|serves?|served|uses?|used|sells?|sold|"
@@ -57,7 +84,7 @@ _ADVERBS = frozenset(
 def _own_subject(part: str) -> bool:
     """Whether ``part`` names a subject before its first finite verb."""
 
-    verb = _FINITE.search(part)
+    verb = FINITE.search(part)
     if verb is None:
         return False
     words = [w for w in part[: verb.start()].split() if w.casefold() not in _ADVERBS]
@@ -76,7 +103,7 @@ def _coordinated(clause: str) -> list[str]:
     parts = _AND.split(clause)
     joined, current = [], parts[0]
     for part in parts[1:]:
-        if _FINITE.search(current) and _own_subject(part):
+        if FINITE.search(current) and _own_subject(part):
             joined.append(current)
             current = part
         else:
@@ -95,7 +122,7 @@ def denied_conjuncts(clause: str) -> list[str]:
 
     denied, governed = [], False
     for part in _AND.split(clause):
-        if _FINITE.search(part) or NEGATION.search(part) or EXIT.search(part):
+        if FINITE.search(part) or NEGATION.search(part) or EXIT.search(part):
             governed = not affirmed(part) or bool(EXIT.search(part))
         if governed:
             denied.append(part)

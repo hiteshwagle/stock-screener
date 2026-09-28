@@ -100,6 +100,46 @@ def test_model_supplied_theme_word_is_not_a_product_term():
     assert "cooccurrence_only" in result.hold_reasons
 
 
+def test_synthesis_needs_an_explicit_link():
+    from app.services.company_exposure.synthesis import Premise, validate_synthesis
+
+    # Subject == application with no edge must not pass as a chain.
+    decision = validate_synthesis(
+        [Premise("P1", "Revenue increased in fiscal 2025.", True)],
+        [],
+        subject="HBM",
+        application="HBM",
+    )
+    assert not decision.permitted
+
+
+def test_abbreviations_and_decimals_do_not_end_a_premise():
+    from app.services.company_exposure.synthesis import (
+        Link,
+        Premise,
+        validate_synthesis,
+    )
+    from app.services.company_exposure.wording import sentences
+
+    assert sentences("Revenue was 20.5 million. Next.") == [
+        "Revenue was 20.5 million.",
+        "Next.",
+    ]
+    decision = validate_synthesis(
+        [
+            Premise("P1", "Example Corp. offers the ET-9000.", True),
+            Premise("P2", "The ET-9000 supports HBM testing.", True),
+        ],
+        [
+            Link("Example Corp.", "ET-9000", "issuer_offers_product", "P1"),
+            Link("ET-9000", "HBM", "product_supports_application", "P2"),
+        ],
+        subject="Example Corp.",
+        application="HBM",
+    )
+    assert decision.permitted, decision.reasons
+
+
 def test_negated_premise_cannot_carry_a_synthesis_link():
     from app.services.company_exposure.synthesis import (
         Link,
@@ -436,6 +476,9 @@ def test_non_text_scope_label_is_rejected_output():
         ("Our ET-9000 sales rose, and our X200 supports HBM testing.", False),
         ("Our ET-9000 sales rose and X200 supports HBM testing.", False),
         ("Our ET-9000 tester is available and supports HBM testing.", True),
+        # A named third party using the product says nothing of ownership.
+        ("Acme uses ET-9000 for HBM testing.", False),
+        ("Memory makers use the ET-9000 for HBM testing.", True),
     ],
 )
 def test_linked_product_must_be_the_issuers_own(text, linked):

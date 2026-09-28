@@ -155,6 +155,8 @@ def test_synthesis_bound():
     assert not within_synthesis_bound(["a", "b", "c", "d"], [])
     assert not within_synthesis_bound(["a"], ["j1", "j2", "j3"])
     assert not within_synthesis_bound([], [])
+    # A synthesis needs at least one explicit link.
+    assert not within_synthesis_bound(["a"], [])
 
 
 def test_named_empty_outcomes_are_explicit():

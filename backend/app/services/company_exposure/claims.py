@@ -76,6 +76,7 @@ from app.services.company_exposure.wording import (
     CLAUSE_BOUNDARY,
     CUSTOMER,
     EXIT,
+    FINITE,
     ISSUER_SUBJECT,
     ISSUER_SUBJECT_CJK,
     NEGATION,
@@ -345,8 +346,29 @@ def _issuers_own(clause: str, term: str, issuer_names) -> bool:
             continue
         if THIRD_PARTY.search(" ".join(words[-3:])):
             continue
+        # "Acme uses ET-9000 for HBM testing": a named subject other than the
+        # issuer acts on the product, which says nothing of its ownership.
+        if _named_other_subject(before, names):
+            continue
         return True
     return False
+
+
+def _named_other_subject(before: str, issuer_names) -> bool:
+    """Whether the verb before a product has a proper-name subject that is
+    not the issuer ("Acme uses", "Applied Materials buys")."""
+
+    verbs = list(FINITE.finditer(before))
+    if not verbs:
+        return False
+    subject = PHRASE_BOUNDARY.split(before[: verbs[-1].start()])[-1]
+    if ISSUER_SUBJECT.search(subject) or any(
+        mentions(subject, n) for n in issuer_names
+    ):
+        return False
+    tokens = [w for w in subject.split() if w.casefold() not in _FUNCTION_WORDS]
+    # Every word capitalised: a proper name, not "Memory makers use".
+    return bool(tokens) and all(w[:1].isupper() for w in tokens)
 
 
 def _linking_clauses(
