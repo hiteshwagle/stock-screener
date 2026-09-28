@@ -7,6 +7,7 @@ outcomes, input ordering, and recovery when a worker dies.
 from __future__ import annotations
 
 import os
+import signal
 import threading
 import time
 
@@ -113,6 +114,52 @@ def test_pool_start_failure_computes_in_process(monkeypatch):
         outcomes = runner.scan_batch(_calls("A", "B"))
 
     assert [outcome.result["pid"] for outcome in outcomes] == [_PARENT_PID, _PARENT_PID]
+
+
+class _SoftLimit(Exception):
+    pass
+
+
+class _SlowScanner:
+    def scan_stock_multi(self, symbol, **kwargs):
+        time.sleep(1)
+        return {"symbol": symbol}
+
+
+def test_exception_raised_in_parent_while_waiting_propagates():
+    # Celery's soft time limit is a signal handler raising in the parent.
+    def raise_soft_limit(signum, frame):
+        raise _SoftLimit()
+
+    previous = signal.signal(signal.SIGALRM, raise_soft_limit)
+    try:
+        with ProcessStockScanBatchRunner(_SlowScanner(), 2) as runner:
+            signal.setitimer(signal.ITIMER_REAL, 0.2)
+            with pytest.raises(_SoftLimit):
+                runner.scan_batch(_calls("A", "B"))
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _start_pool_in_daemon(queue):
+    with ProcessStockScanBatchRunner(_PidScanner(), 2) as runner:
+        outcomes = runner.scan_batch(_calls("A", "B"))
+    queue.put([outcome.result["pid"] for outcome in outcomes])
+
+
+def test_pool_starts_inside_a_daemonic_celery_style_process():
+    # Celery prefork children are daemonic billiard processes.
+    import billiard
+
+    ctx = billiard.get_context("fork")
+    queue = ctx.Queue()
+    child = ctx.Process(target=_start_pool_in_daemon, args=(queue,), daemon=True)
+    child.start()
+    pids = queue.get(timeout=30)
+    child.join()
+
+    assert child.pid not in pids  # computed by the pool, not serially in the child
 
 
 def test_runner_releases_its_scanner_registration():

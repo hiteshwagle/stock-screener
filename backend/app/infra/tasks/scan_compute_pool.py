@@ -183,7 +183,13 @@ class ProcessStockScanBatchRunner:
                     )
                     self._shutdown()
                 outcomes.extend(self._serial.scan_batch(batch))
-            except Exception:
+            except Exception as exc:
+                # Raised in the parent while waiting (e.g. Celery's soft time
+                # limit), not by the worker: propagate it.
+                if not future.done() or (
+                    not future.cancelled() and future.exception() is not exc
+                ):
+                    raise
                 logger.warning(
                     "Scan compute batch failed in a worker; recomputing it in-process",
                     exc_info=True,

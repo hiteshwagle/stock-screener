@@ -744,7 +744,9 @@ class BuildDailyFeatureSnapshotUseCase:
                 }
                 if merged_requirements is not None:
                     scan_kwargs["pre_merged_requirements"] = merged_requirements
-                if rs_resolution is not None:
+                # Prefetched data already carries the resolution; don't pickle
+                # the universe-wide mapping into every worker batch.
+                if rs_resolution is not None and sym not in pre_fetched_data:
                     scan_kwargs["market_rs_resolution"] = rs_resolution
                 if sym in pre_fetched_data:
                     scan_kwargs["pre_fetched_data"] = pre_fetched_data[sym]
