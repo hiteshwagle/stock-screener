@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.domain.company_exposure.contracts import (
     RESEARCH_STAGES,
     SETTLED_JOB_STATES,
+    TERMINAL_JOB_STATES,
     UNKNOWN_MATERIALITY_WORDING,
     as_utc,
     utc_now,
@@ -109,6 +110,8 @@ class ResearchJobReader:
             "created_at": _iso(request.created_at),
             "state": state,
             "settled": state in SETTLED_JOB_STATES,
+            # Settled but resumable (review, storage, allowance) is not done.
+            "terminal": state in TERMINAL_JOB_STATES,
             "condition": condition,
             "assessment_revision_id": revision_id,
             "stages": [

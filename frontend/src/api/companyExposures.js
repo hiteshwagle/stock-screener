@@ -18,6 +18,16 @@ export const researchPreviewKey = (jobId, revisionId) => [
 // The server decides when a job stops making progress on its own.
 export const isResearchJobSettled = (job) => Boolean(job?.settled);
 
+// A settled job may still resume (review, storage, allowance): only a
+// terminal one stops changing.
+export const RESUMABLE_REFRESH_MS = 30_000;
+export const ACTIVE_REFRESH_MS = 5_000;
+
+export const researchJobRefreshMs = (job) => {
+  if (job?.terminal) return false;
+  return isResearchJobSettled(job) ? RESUMABLE_REFRESH_MS : ACTIVE_REFRESH_MS;
+};
+
 export const requestExposureResearch = async (adminKey, {
   kind = 'verify', symbol, securityId, economicThemeId, idempotencyKey, suppliedCik,
 }) => {

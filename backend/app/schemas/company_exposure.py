@@ -76,6 +76,7 @@ class ResearchJobResponse(BaseModel):
     created_at: str | None
     state: str | None
     settled: bool
+    terminal: bool
     condition: str | None
     assessment_revision_id: str | None
     stages: list[dict[str, Any]]

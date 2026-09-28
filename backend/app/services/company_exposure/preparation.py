@@ -572,10 +572,48 @@ def select_passages(
             score += 1
         scored.append((score, block.ordinal, block))
     scored.sort(key=lambda item: (-item[0], item[1]))
-    chosen = sorted((item[2] for item in scored[:limit]), key=lambda b: b.ordinal)
+    chosen = [item[2] for item in scored[:limit]]
+    chosen += _companions(prepared, chosen, limit - len(chosen))
     return PassageSelection(
-        blocks=tuple(chosen), omitted_matches=max(0, len(scored) - limit)
+        blocks=tuple(sorted(chosen, key=lambda b: b.ordinal)),
+        omitted_matches=max(0, len(scored) - limit),
     )
+
+
+# Model-number-like product names ("ET-9000", "X200"); period tokens such as
+# "FY2024" or "Q1" are not products.
+_PRODUCT_TOKEN = re.compile(r"(?<![\w-])[A-Za-z][A-Za-z-]*\d[\w-]*")
+_PERIOD_TOKEN = re.compile(r"^(?:fy|cy|q|h)\d", re.IGNORECASE)
+
+
+def _companions(prepared: PreparedEvidence, chosen, capacity: int) -> list:
+    """Blocks naming a product the theme passages name, within capacity.
+
+    A synthesis joins premises across passages: "Our ET-9000 tester is
+    commercially available" never names the theme, yet it is the status or
+    ownership premise for "ET-9000 supports HBM testing".
+    """
+
+    if capacity <= 0 or not chosen:
+        return []
+    products = {
+        token
+        for block in chosen
+        for token in _PRODUCT_TOKEN.findall(block.text)
+        if len(token) >= 3 and not _PERIOD_TOKEN.match(token)
+    }
+    if not products:
+        return []
+    taken = {block.ordinal for block in chosen}
+    ranked = []
+    for block in prepared.blocks:
+        if block.kind == "heading" or block.ordinal in taken:
+            continue
+        score = sum(occurrences(block.text, product) for product in products)
+        if score:
+            ranked.append((-score, block.ordinal, block))
+    ranked.sort(key=lambda item: item[:2])
+    return [item[2] for item in ranked[:capacity]]
 
 
 def persist_passages(

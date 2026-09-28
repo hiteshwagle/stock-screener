@@ -229,6 +229,31 @@ def test_malformed_pdf_is_a_typed_failure(
     assert raised.value.code in {"malformed_pdf", "pdf_extraction_failed"}
 
 
+def test_selection_keeps_product_premises_that_do_not_name_the_theme(
+    evidence_preparer, db_session, store
+):
+    html = (
+        "<html><body>"
+        "<p>Our ET-9000 tester is commercially available.</p>"
+        "<p>Revenue grew in FY2024 across all regions.</p>"
+        "<p>The ET-9000 supports HBM testing.</p>"
+        "</body></html>"
+    )
+    revision = _revision(
+        db_session, store, html.encode("utf-8"), "text/html", "html:premises"
+    )
+    prepared = evidence_preparer.prepare(revision)
+    selection = select_passages(prepared, QuestionSet(terms=("HBM",)))
+    # The availability premise is kept for synthesis; unrelated text is not.
+    assert [b.text for b in selection.blocks] == [
+        "Our ET-9000 tester is commercially available.",
+        "The ET-9000 supports HBM testing.",
+    ]
+    # Theme passages still come first when the limit is tight.
+    tight = select_passages(prepared, QuestionSet(terms=("HBM",)), limit=1)
+    assert [b.text for b in tight.blocks] == ["The ET-9000 supports HBM testing."]
+
+
 def test_non_english_text_keeps_original_script(evidence_preparer, db_session, store):
     html = (
         "<html><body><p>当社はHBM向けテスターを量産出荷していない。</p></body></html>"

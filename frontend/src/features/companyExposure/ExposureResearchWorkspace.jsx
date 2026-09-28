@@ -5,8 +5,8 @@ import {
 } from '@mui/material';
 
 import {
-  getResearchJob, getResearchJobPreview, isResearchJobSettled,
-  requestExposureResearch, researchJobKey, researchPreviewKey,
+  getResearchJob, getResearchJobPreview, requestExposureResearch,
+  researchJobKey, researchJobRefreshMs, researchPreviewKey,
 } from '../../api/companyExposures';
 import ExposureResearchPanel from './ExposureResearchPanel';
 
@@ -34,7 +34,8 @@ export default function ExposureResearchWorkspace() {
     queryKey: researchJobKey(jobId),
     queryFn: () => getResearchJob(adminKey, jobId),
     enabled: Boolean(adminKey && jobId),
-    refetchInterval: (query) => (isResearchJobSettled(query.state.data) ? false : 5_000),
+    // Paused jobs keep a slow poll: an operator may resume them via the CLI.
+    refetchInterval: (query) => researchJobRefreshMs(query.state.data),
   });
   const revisionId = job.data?.assessment_revision_id;
   const preview = useQuery({

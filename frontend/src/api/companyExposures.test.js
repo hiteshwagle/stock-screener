@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import apiClient from './client';
 import {
-  getResearchJob, getResearchJobPreview, isResearchJobSettled, requestExposureResearch,
-  researchJobKey, researchPreviewKey,
+  ACTIVE_REFRESH_MS, RESUMABLE_REFRESH_MS, getResearchJob, getResearchJobPreview,
+  isResearchJobSettled, requestExposureResearch, researchJobKey, researchJobRefreshMs,
+  researchPreviewKey,
 } from './companyExposures';
 
 vi.mock('./client', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
@@ -49,6 +50,15 @@ describe('company exposure research client', () => {
   it('keeps job and preview query keys distinct', () => {
     expect(researchJobKey('j1')).toEqual(['companyExposure', 'researchJob', 'j1']);
     expect(researchPreviewKey('j1', 'r1')).toEqual(['companyExposure', 'researchPreview', 'j1', 'r1']);
+  });
+
+  it('keeps polling resumable jobs slowly and stops only when terminal', () => {
+    expect(researchJobRefreshMs({ state: 'researching', settled: false, terminal: false }))
+      .toBe(ACTIVE_REFRESH_MS);
+    expect(researchJobRefreshMs({ state: 'review_required', settled: true, terminal: false }))
+      .toBe(RESUMABLE_REFRESH_MS);
+    expect(researchJobRefreshMs({ state: 'ready_for_publication', settled: true, terminal: true }))
+      .toBe(false);
   });
 
   it('stops polling only when the server reports the job settled', () => {
