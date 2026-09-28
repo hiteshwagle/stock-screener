@@ -148,19 +148,6 @@ def _build_market_plan(
                 market=market,
             ),
             _stage(
-                key="breadth",
-                operation=BootstrapOperation.CALCULATE_DAILY_BREADTH_WITH_GAPFILL,
-                queue_kind=BootstrapQueueKind.MARKET_JOBS,
-                market=market,
-                execution_policy="refresh_guarded",
-            ),
-            _stage(
-                key="exposure",
-                operation=BootstrapOperation.CALCULATE_MARKET_EXPOSURE,
-                queue_kind=BootstrapQueueKind.MARKET_JOBS,
-                market=market,
-            ),
-            _stage(
                 key="groups",
                 operation=(
                     BootstrapOperation.CALCULATE_DAILY_GROUP_RANKINGS
@@ -184,13 +171,6 @@ def _build_market_plan(
         ]
     )
 
-    if not supports_breadth:
-        stages = [
-            stage
-            for stage in stages
-            if stage.key not in {"breadth", "exposure"}
-        ]
-
     if supports_group_rankings:
         stages.append(
             _stage(
@@ -200,6 +180,28 @@ def _build_market_plan(
                 market=market,
                 strict=True,
             )
+        )
+
+    # Breadth and exposure run last: nothing downstream reads them, and a
+    # breadth failure the task cannot catch (OOM kill, soft time limit) ends
+    # the chain. Placed here it can no longer withhold the scanner.
+    if supports_breadth:
+        stages.extend(
+            [
+                _stage(
+                    key="breadth",
+                    operation=BootstrapOperation.CALCULATE_DAILY_BREADTH_WITH_GAPFILL,
+                    queue_kind=BootstrapQueueKind.MARKET_JOBS,
+                    market=market,
+                    execution_policy="refresh_guarded",
+                ),
+                _stage(
+                    key="exposure",
+                    operation=BootstrapOperation.CALCULATE_MARKET_EXPOSURE,
+                    queue_kind=BootstrapQueueKind.MARKET_JOBS,
+                    market=market,
+                ),
+            ]
         )
 
     return MarketBootstrapPlan(market=market, stages=tuple(stages))

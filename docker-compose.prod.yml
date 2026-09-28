@@ -134,7 +134,10 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 512M
+          # US breadth (~10.5k symbols) peaked at 502 MiB in 512M: ~220 MiB is
+          # the idle prefork parent, which solo would drop but solo does not
+          # enforce soft/hard time limits, the backstop for renewed leases.
+          memory: 768M
         reservations:
           memory: 128M
     healthcheck:

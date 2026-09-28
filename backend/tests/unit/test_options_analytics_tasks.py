@@ -165,3 +165,37 @@ def test_options_registry_entry_follows_its_own_feature_flag(monkeypatch) -> Non
 
     assert tasks["daily-market-pipeline-us"]["is_enabled"] is True
     assert tasks["daily-us-options-analytics"]["is_enabled"] is False
+
+
+def test_options_skip_closes_activity_as_completed_not_failed(monkeypatch) -> None:
+    """A superseded source run is a deliberate no-op, not an Options failure."""
+    from app.interfaces.tasks import options_analytics_tasks as module
+    from app.tasks.data_fetch_lock import disable_serialized_data_fetch_lock
+
+    activities = []
+    monkeypatch.setattr(module.settings, "options_analytics_enabled", True)
+    monkeypatch.setattr(module, "SessionLocal", lambda: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(
+        module,
+        "get_refresh_options_analytics_use_case",
+        lambda _session: SimpleNamespace(
+            execute=lambda _command: {
+                "status": "skipped",
+                "source_run_id": 33,
+                "reason_codes": ["source_run_not_latest"],
+            }
+        ),
+    )
+    for name in ("started", "completed", "failed"):
+        monkeypatch.setattr(
+            module,
+            f"mark_market_activity_{name}",
+            lambda _db, _name=name, **values: activities.append((_name, values)),
+        )
+
+    with disable_serialized_data_fetch_lock():
+        module.refresh_options_analytics.run(source_run_id=33, market="US")
+
+    status, values = activities[-1]
+    assert status == "completed"
+    assert values["message"] == "Options Analytics skipped: source_run_not_latest"

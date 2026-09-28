@@ -180,6 +180,49 @@ class TestSnapshotCacheHelpers:
         # A newly published run switches the key, invalidating the old entry.
         assert daily_snapshot_cache_key("us", "scan-def") != key
 
+    def test_cache_key_changes_when_late_derived_outputs_land(self):
+        # Breadth and exposure now finish after the scan publishes; a snapshot
+        # cached before they land must not be served once they do.
+        before = daily_snapshot_cache_key("us", "scan-abc", derived_outputs="b=none;e=none")
+        after = daily_snapshot_cache_key("us", "scan-abc", derived_outputs="b=2026-09-25;e=none")
+        assert before != after
+        assert before.startswith("daily_snapshot:v4:US:scan-abc:")
+
+    def test_derived_outputs_version_tracks_latest_breadth_and_exposure(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.models.market_breadth import MarketBreadth
+        from app.models.market_exposure import MarketExposure
+
+        engine = create_engine("sqlite:///:memory:")
+        MarketBreadth.__table__.create(engine)
+        MarketExposure.__table__.create(engine)
+        db = sessionmaker(engine)()
+        version = daily_snapshot_service.derived_outputs_version
+        assert version(db, "US") == "b=none;e=none"
+        db.add(MarketBreadth(market="US", date=date(2026, 9, 25)))
+        db.add(MarketBreadth(market="HK", date=date(2026, 9, 26)))
+        db.commit()
+        assert version(db, "US") == "b=2026-09-25;e=none"
+        exposure = MarketExposure(
+            market="US",
+            date=date(2026, 9, 25),
+            exposure_score=50.0,
+            stance="neutral",
+            updated_at=datetime(2026, 9, 25, 21, tzinfo=timezone.utc),
+        )
+        db.add(exposure)
+        db.commit()
+        first = version(db, "US")
+        assert first.startswith("b=2026-09-25;e=2026-09-25 21:00:00")
+        # A same-date rerun rewrites the exposure row in place; its values are
+        # in the payload, so the version must change with it.
+        exposure.exposure_score = 61.0
+        exposure.updated_at = datetime(2026, 9, 25, 22, tzinfo=timezone.utc)
+        db.commit()
+        assert version(db, "US") != first
+
     def test_cache_key_without_scan(self):
         key = daily_snapshot_cache_key("hk", None)
         assert key == "daily_snapshot:v4:HK:no-scan"

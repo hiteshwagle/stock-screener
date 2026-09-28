@@ -146,9 +146,9 @@ export const DEFAULT_BOOTSTRAP_STAGES = [
   { key: 'universe', label: 'Universe Refresh' },
   { key: 'prices', label: 'Price Refresh' },
   { key: 'fundamentals', label: 'Fundamentals Refresh' },
-  { key: 'breadth', label: 'Breadth Calculation' },
   { key: 'groups', label: 'Group Rankings' },
   { key: 'scan', label: 'Scan' },
+  { key: 'breadth', label: 'Breadth Calculation' },
 ];
 
 export const DEFAULT_CAPABILITIES = {

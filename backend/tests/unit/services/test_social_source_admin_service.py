@@ -332,3 +332,25 @@ def test_audits_are_immutable_and_outcomes_are_redacted(db_session):
     with pytest.raises(ValueError, match="social_audit_append_only"):
         db_session.flush()
     db_session.rollback()
+
+
+def _deployment(mode, provider):
+    from types import SimpleNamespace
+    return SimpleNamespace(social_signals_mode=mode, social_ingest_provider=provider)
+
+
+def test_deployment_settings_seed_runtime_until_an_admin_changes_it(db_session):
+    from app.services.social_source_admin_service import SocialSourceAdminService
+    service = SocialSourceAdminService(db_session)
+    service.ensure_seed_sources()
+
+    applied = service.apply_deployment_settings(_deployment("live", "xui"))
+    assert (applied.mode, applied.provider) == ("live", "xui")
+    # Repeated restarts are no-ops, and a later env edit still applies.
+    assert service.apply_deployment_settings(_deployment("live", "xui")).version == applied.version
+    assert service.apply_deployment_settings(_deployment("validation", "xui")).mode == "validation"
+
+    runtime = service.read_runtime()
+    service.apply_runtime("off", "disabled", runtime.version, "server-admin")
+    kept = service.apply_deployment_settings(_deployment("live", "xui"))
+    assert (kept.mode, kept.provider) == ("off", "disabled")

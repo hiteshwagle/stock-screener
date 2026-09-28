@@ -16,6 +16,7 @@ from ..domain.bootstrap.plan import (
     MarketBootstrapPlan,
     build_bootstrap_plan,
 )
+from ..domain.markets.catalog import get_market_catalog
 from ..domain.relative_strength import BALANCED_RS_FORMULA_VERSION
 from ..services.bootstrap_dispatch_lifecycle import (
     BootstrapDispatchLifecycle,
@@ -77,6 +78,7 @@ def _build_market_bootstrap_signatures(market_plan: MarketBootstrapPlan) -> list
         calculate_market_exposure,
     )
     from app.tasks.cache_tasks import smart_refresh_cache
+    from app.tasks.daily_market_pipeline_tasks import dispatch_options_after_snapshot
     from app.tasks.fundamentals_tasks import refresh_all_fundamentals
     from app.tasks.group_history_tasks import ensure_group_history
     from app.tasks.group_rank_tasks import (
@@ -115,12 +117,29 @@ def _build_market_bootstrap_signatures(market_plan: MarketBootstrapPlan) -> list
         BootstrapOperation.BUILD_DAILY_SNAPSHOT: build_daily_snapshot,
         BootstrapOperation.ENSURE_GROUP_HISTORY: ensure_group_history,
     }
-    return [
-        task_by_operation[stage.operation]
-        .si(**stage.kwargs)
-        .set(queue=_queue_for_stage(stage))
-        for stage in market_plan.stages
-    ]
+    supports_options = (
+        get_market_catalog().get(market_plan.market).capabilities.options_analytics
+    )
+    signatures = []
+    for stage in market_plan.stages:
+        signatures.append(
+            task_by_operation[stage.operation]
+            .si(**stage.kwargs)
+            .set(queue=_queue_for_stage(stage))
+        )
+        # Same follow-on as the daily pipeline. Deliberately not a plan stage:
+        # Options is asynchronous and must never gate bootstrap. It takes the
+        # snapshot result (.s) to pick the run and never raises.
+        if (
+            supports_options
+            and stage.operation == BootstrapOperation.BUILD_DAILY_SNAPSHOT
+        ):
+            signatures.append(
+                dispatch_options_after_snapshot.s(market=market_plan.market).set(
+                    queue="celery"
+                )
+            )
+    return signatures
 
 
 @celery_app.task(

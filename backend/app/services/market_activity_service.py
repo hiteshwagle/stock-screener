@@ -14,6 +14,7 @@ from ..services.bootstrap_run_manifest import (
     BootstrapRunManifestRepository,
 )
 from ..services.runtime_activity_contract import (
+    SIDE_ACTIVITY_STAGE_KEYS,
     PersistedRuntimeActivity,
     RuntimeActivityRecord,
     RuntimeActivityUpdate,
@@ -33,7 +34,10 @@ from ..wiring.bootstrap import get_data_fetch_lock
 
 RUNTIME_ACTIVITY_CATEGORY = "runtime_activity"
 MARKET_ACTIVITY_KEY_PREFIX = "runtime.activity.market."
-DATA_FETCH_RUNTIME_STAGE_KEYS = frozenset({"prices"})
+# Stages whose tasks hold the data-fetch lock (Options runs under
+# serialized_data_fetch_task), so an orphaned running record can be told from
+# a live one and replaced once stale.
+DATA_FETCH_RUNTIME_STAGE_KEYS = frozenset({"prices", "options"})
 _LIVE_RUNTIME_TASK_LOOKUP_FAILED = object()
 logger = logging.getLogger(__name__)
 
@@ -42,16 +46,30 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _activity_key(market: str) -> str:
-    return f"{MARKET_ACTIVITY_KEY_PREFIX}{str(market).upper()}"
+def _activity_id(market: str, stage_key: str | None = None) -> str:
+    """Record identity: side stages (see ``SIDE_ACTIVITY_STAGE_KEYS``) get their
+    own record, because the reducer lets only one running owner hold a record
+    and a shared one would hide the pipeline's progress and failures."""
+    market_code = str(market).upper()
+    return (
+        f"{market_code}:{stage_key}"
+        if stage_key in SIDE_ACTIVITY_STAGE_KEYS
+        else market_code
+    )
+
+
+def _activity_key(market: str, stage_key: str | None = None) -> str:
+    return f"{MARKET_ACTIVITY_KEY_PREFIX}{_activity_id(market, stage_key)}"
 
 
 def _get_setting(db: Session, key: str) -> AppSetting | None:
     return db.query(AppSetting).filter(AppSetting.key == key).first()
 
 
-def _load_market_activity(db: Session, market: str) -> dict[str, Any] | None:
-    setting = _get_setting(db, _activity_key(market))
+def _load_market_activity(
+    db: Session, market: str, stage_key: str | None = None
+) -> dict[str, Any] | None:
+    setting = _get_setting(db, _activity_key(market, stage_key))
     if setting is None:
         return None
     try:
@@ -159,7 +177,12 @@ def _stage_market_activity(
     market: str,
     payload: RuntimeActivityUpdate | RuntimeActivityRecord | dict[str, Any],
 ) -> dict[str, Any]:
-    key = _activity_key(market)
+    stage_key = (
+        payload.get("stage_key")
+        if isinstance(payload, dict)
+        else getattr(payload, "stage_key", None)
+    )
+    key = _activity_key(market, stage_key)
     setting = _get_setting(db, key)
     existing_payload = None
     if setting is not None:
@@ -583,9 +606,11 @@ def get_runtime_activity_status(db: Session) -> dict[str, Any]:
 
     market_payloads = []
     for market in enabled_markets:
-        record = _load_market_activity(db, market)
-        market_payloads.append(
-            _market_payload(
+        for stage_key in (None, *SIDE_ACTIVITY_STAGE_KEYS):
+            record = _load_market_activity(db, market, stage_key)
+            if record is None and stage_key is not None:
+                continue
+            payload = _market_payload(
                 market=market,
                 record=record,
                 bootstrap_state=bootstrap_status.bootstrap_state,
@@ -593,7 +618,9 @@ def get_runtime_activity_status(db: Session) -> dict[str, Any]:
                 primary_market=primary_market,
                 bootstrap_run=bootstrap_run,
             )
-        )
+            # Unique per row: a market can have a pipeline and a side row.
+            payload["activity_id"] = _activity_id(market, stage_key)
+            market_payloads.append(payload)
 
     return build_runtime_activity_status(
         bootstrap_status=bootstrap_status,

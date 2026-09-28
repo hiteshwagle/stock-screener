@@ -19,11 +19,11 @@ def test_bootstrap_plan_uses_semantic_operations_instead_of_task_name_strings():
         BootstrapOperation.WAIT_FOR_BOOTSTRAP_PRICE_WARMUP,
         BootstrapOperation.REFRESH_ALL_FUNDAMENTALS,
         BootstrapOperation.CALCULATE_MARKET_RS_SNAPSHOT,
-        BootstrapOperation.CALCULATE_DAILY_BREADTH_WITH_GAPFILL,
-        BootstrapOperation.CALCULATE_MARKET_EXPOSURE,
         BootstrapOperation.CALCULATE_DAILY_GROUP_RANKINGS,
         BootstrapOperation.BUILD_DAILY_SNAPSHOT,
         BootstrapOperation.ENSURE_GROUP_HISTORY,
+        BootstrapOperation.CALCULATE_DAILY_BREADTH_WITH_GAPFILL,
+        BootstrapOperation.CALCULATE_MARKET_EXPOSURE,
     ]
     assert all(not hasattr(stage, "task_name") for stage in market_plan.stages)
 
@@ -100,7 +100,11 @@ def test_non_us_bootstrap_uses_market_feature_snapshot(monkeypatch):
     )
     assert breadth.kwargs["execution_policy"] == "refresh_guarded"
     assert groups.kwargs["execution_policy"] == "refresh_guarded"
-    snapshot = signatures[-2]
+    snapshot = next(
+        signature
+        for signature in signatures
+        if signature.task == "app.interfaces.tasks.feature_store_tasks.build_daily_snapshot"
+    )
     assert snapshot.kwargs["market"] == "HK"
     assert snapshot.kwargs["universe_name"] == "market:HK"
     assert snapshot.kwargs["publish_pointer_key"] == "latest_published_market:HK"
@@ -108,7 +112,6 @@ def test_non_us_bootstrap_uses_market_feature_snapshot(monkeypatch):
     assert [signature.kwargs.get("activity_lifecycle") for signature in signatures] == [
         "bootstrap"
     ] * 10
-    assert signatures[-1].task == "app.tasks.group_history_tasks.ensure_group_history"
 
 
 def test_runtime_bootstrap_signatures_follow_bootstrap_plan(monkeypatch):
@@ -169,14 +172,18 @@ def test_runtime_bootstrap_signatures_follow_bootstrap_plan(monkeypatch):
         "app.tasks.runtime_bootstrap_tasks.wait_for_bootstrap_price_warmup",
         "app.tasks.fundamentals_tasks.refresh_all_fundamentals",
         "app.tasks.market_rs_tasks.calculate_market_rs_snapshot",
-        "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
-        "app.tasks.breadth_tasks.calculate_market_exposure",
         "app.tasks.group_rank_tasks.calculate_daily_group_rankings",
         "app.interfaces.tasks.feature_store_tasks.build_daily_snapshot",
         "app.tasks.group_history_tasks.ensure_group_history",
+        "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
+        "app.tasks.breadth_tasks.calculate_market_exposure",
     ]
     assert signatures[2].queue == "celery"
-    snapshot = signatures[-2]
+    snapshot = next(
+        signature
+        for signature in signatures
+        if signature.task == "app.interfaces.tasks.feature_store_tasks.build_daily_snapshot"
+    )
     assert snapshot.kwargs["publish_pointer_key"] == "latest_published_market:HK"
 
 
@@ -244,12 +251,19 @@ def test_us_primary_bootstrap_loads_ibd_mappings_before_prices(monkeypatch):
         "app.tasks.runtime_bootstrap_tasks.wait_for_bootstrap_price_warmup",
         "app.tasks.fundamentals_tasks.refresh_all_fundamentals",
         "app.tasks.market_rs_tasks.calculate_market_rs_snapshot",
-        "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
-        "app.tasks.breadth_tasks.calculate_market_exposure",
         "app.tasks.group_rank_tasks.calculate_daily_group_rankings",
         "app.interfaces.tasks.feature_store_tasks.build_daily_snapshot",
+        "app.tasks.daily_market_pipeline_tasks.dispatch_options_after_snapshot",
         "app.tasks.group_history_tasks.ensure_group_history",
+        "app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill",
+        "app.tasks.breadth_tasks.calculate_market_exposure",
     ]
+    options = signatures[task_names.index(
+        "app.tasks.daily_market_pipeline_tasks.dispatch_options_after_snapshot"
+    )]
+    # Mutable (.s): it must receive the snapshot result to pick the run id.
+    assert options.kwargs == {"market": "US"}
+    assert options.options["queue"] == "celery"
     assert signatures[1].kwargs == {
         "market": "US",
         "activity_lifecycle": "bootstrap",
@@ -282,9 +296,7 @@ def test_bootstrap_includes_every_daily_pipeline_compute_step():
     daily_compute = {
         task
         for task in daily
-        if "guard" not in task
-        and "smart_refresh" not in task
-        and "dispatch_options_after_snapshot" not in task
+        if "guard" not in task and "smart_refresh" not in task
     }
 
     plan = build_bootstrap_plan(

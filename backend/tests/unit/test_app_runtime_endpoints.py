@@ -334,6 +334,16 @@ async def test_runtime_bootstrap_status_endpoint_returns_persisted_state(
     monkeypatch.setattr(
         module, "get_runtime_bootstrap_status", lambda _db: _FakeBootstrapStatus()
     )
+
+    class _Readiness:
+        def stage_status(self, _db, market):
+            return {"breadth": "missing"} if market == "US" else {}
+
+        def feature_status(self, _db, *, enabled_markets):
+            assert enabled_markets == ["US", "HK"]
+            return {"cot": "ready", "options": "missing", "social": "disabled"}
+
+    monkeypatch.setattr(module, "get_bootstrap_readiness_service", _Readiness)
     app.dependency_overrides[get_db] = lambda: _FakeDb()
 
     try:
@@ -348,6 +358,8 @@ async def test_runtime_bootstrap_status_endpoint_returns_persisted_state(
     assert payload["primary_market"] == "US"
     assert payload["enabled_markets"] == ["US", "HK"]
     assert payload["bootstrap_state"] == "running"
+    assert payload["market_stages"] == {"US": {"breadth": "missing"}, "HK": {}}
+    assert payload["features"] == {"cot": "ready", "options": "missing", "social": "disabled"}
 
 
 @pytest.mark.asyncio

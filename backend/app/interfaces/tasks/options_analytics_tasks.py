@@ -96,6 +96,17 @@ def refresh_options_analytics(
                 force=force,
             )
         )
+        if result.get("status") == "skipped":
+            # A deliberate no-op (e.g. a newer source run superseded this
+            # one) closes the activity; it is not an Options failure.
+            _mark_activity_safely(
+                mark_market_activity_completed,
+                db,
+                **activity,
+                message="Options Analytics skipped: "
+                + ", ".join(result.get("reason_codes") or ["unspecified"]),
+            )
+            return result
         expected = int(result.get("expected_count") or 0)
         completed = int(result.get("completed_count") or 0)
         message = (

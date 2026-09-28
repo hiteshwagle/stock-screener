@@ -59,6 +59,34 @@ class BootstrapReadiness:
         ]
 
 
+def has_compatible_cot_publication(db: Session) -> bool:
+    """A COT publication the deployed read path accepts (see ``CotQueryService``).
+
+    An upgrade that bumps a registry, schema or calculation version leaves a
+    pointer the read path rejects, so pointer existence alone is not enough.
+    """
+    from ..domain.cot.models import (
+        COT_CALCULATION_VERSION,
+        COT_REGISTRY_VERSION,
+        COT_SCHEMA_VERSION,
+    )
+    from ..infra.db.models.cot import CotImportRun, CotPublicationPointer
+    from ..infra.db.repositories.cot_repository import LATEST_PUBLICATION_KEY
+
+    return (
+        db.query(CotPublicationPointer.key)
+        .join(CotImportRun, CotImportRun.id == CotPublicationPointer.run_id)
+        .filter(
+            CotPublicationPointer.key == LATEST_PUBLICATION_KEY,
+            CotImportRun.registry_version == COT_REGISTRY_VERSION,
+            CotImportRun.schema_version == COT_SCHEMA_VERSION,
+            CotImportRun.calculation_version == COT_CALCULATION_VERSION,
+        )
+        .first()
+        is not None
+    )
+
+
 class BootstrapReadinessService:
     def normalize_market(self, market: str) -> str:
         return get_market_catalog().get(market).code
@@ -328,6 +356,72 @@ class BootstrapReadinessService:
                 for market in normalized_markets
             },
         )
+
+    def stage_status(self, db: Session, market: str) -> dict[str, str]:
+        """Stored output of each derived stage the market supports.
+
+        Separate from ``evaluate``: these stages never gate the scanner, so a
+        failed breadth run shows here as ``missing`` instead of blocking.
+        """
+        market = self.normalize_market(market)
+        capabilities = get_market_catalog().get(market).capabilities
+        outputs = {}
+        if capabilities.breadth:
+            outputs.update(breadth=MarketBreadth, exposure=MarketExposure)
+        if capabilities.group_rankings:
+            outputs["groups"] = IBDGroupRank
+        return {
+            stage: (
+                "ready"
+                if db.query(model.id).filter(model.market == market).limit(1).first()
+                else "missing"
+            )
+            for stage, model in outputs.items()
+        }
+
+    def feature_status(self, db: Session, *, enabled_markets: list[str]) -> dict[str, str]:
+        """Publication state of optional features backed by external providers."""
+        from ..config import settings
+        from ..infra.db.models.options_analytics import OptionsAnalyticsPointer
+        from ..infra.db.models.social_signals import (
+            SocialSignalRunPointer,
+            SocialSourceRegistry,
+        )
+        from ..use_cases.options_analytics import (
+            OPTIONS_ANALYTICS_CALCULATION_VERSION,
+        )
+
+        def published(query) -> str:
+            return "ready" if query.limit(1).first() is not None else "missing"
+
+        options_on = settings.options_analytics_enabled and any(
+            get_market_catalog().get(market).capabilities.options_analytics
+            for market in enabled_markets
+        )
+        registry = db.get(SocialSourceRegistry, 1)
+        social_on = (
+            registry is not None
+            and registry.mode == "live"
+            and registry.provider != "disabled"
+        )
+        return {
+            "cot": "ready" if has_compatible_cot_publication(db) else "missing",
+            "options": (
+                published(
+                    # The read path keys publications by calculation version.
+                    db.query(OptionsAnalyticsPointer).filter(
+                        OptionsAnalyticsPointer.market == "US",
+                        OptionsAnalyticsPointer.calculation_version
+                        == OPTIONS_ANALYTICS_CALCULATION_VERSION,
+                    )
+                )
+                if options_on
+                else "disabled"
+            ),
+            "social": (
+                published(db.query(SocialSignalRunPointer)) if social_on else "disabled"
+            ),
+        }
 
     def _has_expected_formula(
         self,

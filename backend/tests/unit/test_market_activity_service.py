@@ -1217,9 +1217,9 @@ def test_runtime_activity_status_exposes_bootstrap_stage_metadata(
         {"key": "prices", "label": "Price Refresh"},
         {"key": "fundamentals", "label": "Fundamentals Refresh"},
         {"key": "market_rs", "label": "Market RS"},
-        {"key": "breadth", "label": "Breadth Calculation"},
         {"key": "groups", "label": "Group Rankings"},
         {"key": "scan", "label": "Scan"},
+        {"key": "breadth", "label": "Breadth Calculation"},
     ]
 
 
@@ -1285,3 +1285,79 @@ def test_runtime_activity_status_hides_background_warning_when_secondary_work_is
     payload = module.get_runtime_activity_status(db_session)
 
     assert payload["bootstrap"]["background_warning"] is None
+
+
+def test_options_activity_cannot_mask_a_concurrent_breadth_failure(db_session, monkeypatch):
+    """Breadth now runs after the snapshot, concurrently with the Options follow-on."""
+    from app.services import market_activity_service as module
+
+    monkeypatch.setattr(
+        module,
+        "get_runtime_bootstrap_status",
+        lambda _db: _bootstrap_status(required=False, enabled=["US"], state="ready"),
+    )
+    monkeypatch.setattr(module, "get_data_fetch_lock", lambda: _FakeLock())
+    common = {"market": "US", "lifecycle": "daily_refresh"}
+    module.mark_market_activity_started(
+        db_session, stage_key="options", task_id="options-1", **common
+    )
+    module.mark_market_activity_started(
+        db_session, stage_key="breadth", task_id="breadth-1", **common
+    )
+    module.mark_market_activity_failed(
+        db_session, stage_key="breadth", task_id="breadth-1", message="OOM", **common
+    )
+    module.mark_market_activity_completed(
+        db_session, stage_key="options", task_id="options-1", **common
+    )
+
+    markets = module.get_runtime_activity_status(db_session)["markets"]
+    rows = {row["stage_key"]: row["status"] for row in markets}
+    assert rows == {"breadth": "failed", "options": "completed"}
+    # Clients key rows by this; two rows share market "US".
+    assert [row["activity_id"] for row in markets] == ["US", "US:options"]
+
+
+def test_side_stage_rows_never_count_toward_bootstrap_progress():
+    from types import SimpleNamespace
+
+    from app.services.runtime_activity_presenter import build_runtime_activity_status
+
+    def row(stage_key, percent):
+        return {
+            "market": "US",
+            "lifecycle": "bootstrap",
+            "stage_key": stage_key,
+            "status": "running",
+            "progress_mode": "determinate",
+            "percent": percent,
+            "current": None,
+            "total": None,
+            "message": None,
+            "task_name": None,
+            "task_id": f"{stage_key}-1",
+            "updated_at": "2026-09-28T00:00:00+00:00",
+        }
+
+    status = build_runtime_activity_status(
+        bootstrap_status=SimpleNamespace(
+            enabled_markets=["US"],
+            primary_market="US",
+            bootstrap_state="running",
+            bootstrap_required=True,
+        ),
+        bootstrap_run={},
+        market_payloads=[row("prices", 50.0), row("options", 0.0)],
+    )
+    alone = build_runtime_activity_status(
+        bootstrap_status=SimpleNamespace(
+            enabled_markets=["US"],
+            primary_market="US",
+            bootstrap_state="running",
+            bootstrap_required=True,
+        ),
+        bootstrap_run={},
+        market_payloads=[row("prices", 50.0)],
+    )
+    assert alone["bootstrap"]["percent"] is not None
+    assert status["bootstrap"]["percent"] == alone["bootstrap"]["percent"]

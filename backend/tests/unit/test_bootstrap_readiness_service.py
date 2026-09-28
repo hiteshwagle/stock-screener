@@ -600,3 +600,120 @@ def test_sql_service_requires_published_completed_auto_scan_for_market(
     assert result.missing_markets == ["US"]
     assert result.market_results["US"].core_ready is True
     assert result.market_results["US"].scan_ready is False
+
+
+def test_stage_status_reports_outputs_per_capable_market(readiness_db) -> None:
+    readiness_db.add(MarketBreadth(market="US", date=date(2026, 5, 1)))
+    readiness_db.commit()
+    service = BootstrapReadinessService()
+
+    assert service.stage_status(readiness_db, "US") == {
+        "breadth": "ready",
+        "exposure": "missing",
+        "groups": "missing",
+    }
+    # DE computes breadth but has no group rankings; AU has neither.
+    assert service.stage_status(readiness_db, "DE") == {
+        "breadth": "missing",
+        "exposure": "missing",
+    }
+    assert service.stage_status(readiness_db, "AU") == {}
+
+
+def test_feature_status_is_independent_of_market_readiness(readiness_db, monkeypatch) -> None:
+    import app.infra.db.models.cot  # noqa: F401
+    import app.infra.db.models.options_analytics  # noqa: F401
+    import app.infra.db.models.social_signals  # noqa: F401
+    from app.config import settings
+    from app.infra.db.models.social_signals import SocialSourceRegistry
+
+    Base.metadata.create_all(readiness_db.get_bind())
+    service = BootstrapReadinessService()
+    monkeypatch.setattr(settings, "options_analytics_enabled", True)
+
+    assert service.feature_status(readiness_db, enabled_markets=["US"]) == {
+        "cot": "missing",
+        "options": "missing",
+        "social": "disabled",
+    }
+    assert service.feature_status(readiness_db, enabled_markets=["HK"])["options"] == "disabled"
+
+    readiness_db.add(SocialSourceRegistry(id=1, mode="live", provider="xui"))
+    readiness_db.commit()
+    assert service.feature_status(readiness_db, enabled_markets=["US"])["social"] == "missing"
+
+
+def test_feature_status_ignores_publications_from_older_versions(readiness_db, monkeypatch) -> None:
+    """An upgrade that bumps a version leaves a pointer the read path rejects."""
+    import app.infra.db.models.social_signals  # noqa: F401
+    from app.config import settings
+    from app.domain.cot.models import (
+        COT_CALCULATION_VERSION,
+        COT_REGISTRY_VERSION,
+        COT_SCHEMA_VERSION,
+    )
+    from app.infra.db.models.cot import CotImportRun, CotPublicationPointer
+    from app.infra.db.models.options_analytics import OptionsAnalyticsPointer
+    from app.use_cases.options_analytics import OPTIONS_ANALYTICS_CALCULATION_VERSION
+
+    Base.metadata.create_all(readiness_db.get_bind())
+    monkeypatch.setattr(settings, "options_analytics_enabled", True)
+    service = BootstrapReadinessService()
+
+    def cot_run(run_id, calculation_version):
+        readiness_db.add(
+            CotImportRun(
+                id=run_id,
+                origin="test",
+                status="published",
+                registry_version=COT_REGISTRY_VERSION,
+                schema_version=COT_SCHEMA_VERSION,
+                calculation_version=calculation_version,
+            )
+        )
+
+    cot_run(1, "cot-positions-v0")
+    readiness_db.add(CotPublicationPointer(key="latest_published", run_id=1, report_date=date(2026, 9, 22)))
+    readiness_db.add(OptionsAnalyticsPointer(market="US", calculation_version="options-analytics-v0", run_id=1))
+    readiness_db.commit()
+    stale = service.feature_status(readiness_db, enabled_markets=["US"])
+    assert (stale["cot"], stale["options"]) == ("missing", "missing")
+
+    cot_run(2, COT_CALCULATION_VERSION)
+    readiness_db.query(CotPublicationPointer).update({"run_id": 2})
+    readiness_db.add(
+        OptionsAnalyticsPointer(market="US", calculation_version=OPTIONS_ANALYTICS_CALCULATION_VERSION, run_id=2)
+    )
+    readiness_db.commit()
+    current = service.feature_status(readiness_db, enabled_markets=["US"])
+    assert (current["cot"], current["options"]) == ("ready", "ready")
+
+
+
+def test_cot_readiness_only_counts_the_pointer_readers_load(readiness_db) -> None:
+    from app.domain.cot.models import (
+        COT_CALCULATION_VERSION,
+        COT_REGISTRY_VERSION,
+        COT_SCHEMA_VERSION,
+    )
+    from app.infra.db.models.cot import CotImportRun, CotPublicationPointer
+    from app.services.bootstrap_readiness_service import has_compatible_cot_publication
+
+    Base.metadata.create_all(readiness_db.get_bind())
+    readiness_db.add(
+        CotImportRun(
+            id=1,
+            origin="test",
+            status="published",
+            registry_version=COT_REGISTRY_VERSION,
+            schema_version=COT_SCHEMA_VERSION,
+            calculation_version=COT_CALCULATION_VERSION,
+        )
+    )
+    readiness_db.add(CotPublicationPointer(key="staging", run_id=1, report_date=date(2026, 9, 22)))
+    readiness_db.commit()
+    assert has_compatible_cot_publication(readiness_db) is False
+
+    readiness_db.add(CotPublicationPointer(key="latest_published", run_id=1, report_date=date(2026, 9, 22)))
+    readiness_db.commit()
+    assert has_compatible_cot_publication(readiness_db) is True

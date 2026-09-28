@@ -18,6 +18,10 @@ SEED_SOCIAL_SOURCES = (
 )
 
 
+# Audit actor for runtime values mirrored from the environment at startup.
+DEPLOYMENT_ACTOR = "deployment"
+
+
 class SocialSourceStateError(ValueError):
     pass
 
@@ -66,7 +70,8 @@ class SocialSourceAdminService:
 
     PostgreSQL locks the migration-seeded row; SQLite's no-op UPDATE acquires
     the database write lock before any validation reads. No process-local lock
-    is involved. Startup readers never initialize or apply environment values.
+    is involved. Readers never initialize or apply environment values; only
+    ``apply_deployment_settings`` does, at startup.
     """
 
     def __init__(self, db):
@@ -154,17 +159,37 @@ class SocialSourceAdminService:
             raise SocialSourceStateError("invalid_runtime")
         with self._transaction(lock=True) as registry:
             self._version(registry, expected_version)
-            if (registry.mode, registry.provider) == (mode, provider):
-                return SocialRuntimeState(mode, provider, registry.version)
-            before = {"mode": registry.mode, "provider": registry.provider, "version": str(registry.version)}
-            registry.mode, registry.provider = mode, provider
-            registry.version += 1
-            registry.updated_at = datetime.now(timezone.utc)
-            self._audit("runtime_changed", actor, {"mode": mode, "provider": provider, "version": str(registry.version)}, before)
-            return SocialRuntimeState(mode, provider, registry.version)
+            return self._set_runtime(registry, mode, provider, actor)
 
-    def apply_deployment_settings(self, settings, expected_version, actor):
-        return self.apply_runtime(settings.social_signals_mode, settings.social_ingest_provider, expected_version, actor)
+    def _set_runtime(self, registry, mode, provider, actor):
+        if (registry.mode, registry.provider) == (mode, provider):
+            return SocialRuntimeState(mode, provider, registry.version)
+        before = {"mode": registry.mode, "provider": registry.provider, "version": str(registry.version)}
+        registry.mode, registry.provider = mode, provider
+        registry.version += 1
+        registry.updated_at = datetime.now(timezone.utc)
+        self._audit("runtime_changed", actor, {"mode": mode, "provider": provider, "version": str(registry.version)}, before)
+        return SocialRuntimeState(mode, provider, registry.version)
+
+    def apply_deployment_settings(self, settings):
+        """Mirror SOCIAL_SIGNALS_MODE/SOCIAL_INGEST_PROVIDER until an admin sets the runtime.
+
+        Migration 0035 seeds the registry as off/disabled, so "never set" means
+        no runtime change by any actor other than the deployment itself. Checked
+        under the registry lock, so concurrent API workers apply it once.
+        """
+        mode, provider = settings.social_signals_mode, settings.social_ingest_provider
+        if mode not in {"off", "validation", "live"} or provider not in {"disabled", "official", "xui"}:
+            raise SocialSourceStateError("invalid_runtime")
+        with self._transaction(lock=True) as registry:
+            admin_set = self.db.query(SocialSourceAuditEvent.id).filter(
+                SocialSourceAuditEvent.scope == "runtime",
+                SocialSourceAuditEvent.action == "runtime_changed",
+                SocialSourceAuditEvent.actor != DEPLOYMENT_ACTOR,
+            ).first()
+            if admin_set:
+                return SocialRuntimeState(registry.mode, registry.provider, registry.version)
+            return self._set_runtime(registry, mode, provider, DEPLOYMENT_ACTOR)
 
     def reserve_official_capacity(self, day, requested_posts, daily_limit):
         """Atomically reserve the conservative maximum size of one official read."""

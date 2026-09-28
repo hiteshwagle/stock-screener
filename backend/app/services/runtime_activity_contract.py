@@ -32,14 +32,21 @@ PERSISTED_RUNTIME_ACTIVITY_FIELDS = frozenset(
     }
 )
 
+# Stages that run beside a market's pipeline rather than inside it (Options
+# is dispatched after the snapshot and overlaps the late breadth stage). They
+# keep their own activity record and row, and never count as bootstrap progress.
+SIDE_ACTIVITY_STAGE_KEYS = ("options",)
+
 RUNTIME_STAGE_SEQUENCE = (
     "universe",
     "prices",
     "fundamentals",
     "market_rs",
-    "breadth",
     "groups",
     "scan",
+    # Breadth runs after the scan in both bootstrap and the daily pipeline so
+    # its failure cannot withhold the scanner.
+    "breadth",
 )
 
 STAGE_LABELS = {

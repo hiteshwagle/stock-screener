@@ -194,6 +194,17 @@ class RuntimeBootstrapStatusResponse(BaseModel):
     bootstrap_state: str
     supported_markets: list[str] = Field(default_factory=_supported_market_codes)
     bootstrap_stages: list[BootstrapStageResponse] = Field(default_factory=list)
+    market_stages: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per enabled market, 'ready' or 'missing' output for each derived "
+            "stage it supports (breadth, exposure, groups). Never gates readiness."
+        ),
+    )
+    features: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional features (cot, options, social): ready, missing or disabled.",
+    )
 
 
 class RuntimeBootstrapRequest(BaseModel):
@@ -240,6 +251,10 @@ class RuntimeActivitySummaryResponse(BaseModel):
 class RuntimeActivityMarketResponse(BaseModel):
     """Per-market runtime activity row."""
 
+    activity_id: str | None = Field(
+        default=None,
+        description="Unique row identity: the market, or market:stage for side stages (Options).",
+    )
     market: str
     lifecycle: str
     stage_key: str | None = None
