@@ -95,14 +95,19 @@ def daily_snapshot_cache_key(
 
 
 def derived_outputs_version(db: Session, market: str) -> str:
-    """Latest breadth and exposure dates: the late inputs of a Daily Snapshot."""
+    """Version of the late (post-scan) inputs of a Daily Snapshot.
+
+    The payload takes only the date from breadth, but exposure's values, and a
+    same-date rerun rewrites the exposure row in place: so exposure is
+    versioned by its last write, which also moves on each new date.
+    """
     code = market.upper()
 
-    def latest(model) -> str:
-        value = db.query(func.max(model.date)).filter(model.market == code).scalar()
-        return value.isoformat() if hasattr(value, "isoformat") else str(value or "none")
+    def latest(column) -> str:
+        value = db.query(func.max(column)).filter(column.class_.market == code).scalar()
+        return str(value) if value is not None else "none"
 
-    return f"b={latest(MarketBreadth)};e={latest(MarketExposure)}"
+    return f"b={latest(MarketBreadth.date)};e={latest(MarketExposure.updated_at)}"
 
 
 def daily_snapshot_etag(payload_json: str) -> str:

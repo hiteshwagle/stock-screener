@@ -205,9 +205,23 @@ class TestSnapshotCacheHelpers:
         db.add(MarketBreadth(market="HK", date=date(2026, 9, 26)))
         db.commit()
         assert version(db, "US") == "b=2026-09-25;e=none"
-        db.add(MarketExposure(market="US", date=date(2026, 9, 25), exposure_score=50.0, stance="neutral"))
+        exposure = MarketExposure(
+            market="US",
+            date=date(2026, 9, 25),
+            exposure_score=50.0,
+            stance="neutral",
+            updated_at=datetime(2026, 9, 25, 21, tzinfo=timezone.utc),
+        )
+        db.add(exposure)
         db.commit()
-        assert version(db, "US") == "b=2026-09-25;e=2026-09-25"
+        first = version(db, "US")
+        assert first.startswith("b=2026-09-25;e=2026-09-25 21:00:00")
+        # A same-date rerun rewrites the exposure row in place; its values are
+        # in the payload, so the version must change with it.
+        exposure.exposure_score = 61.0
+        exposure.updated_at = datetime(2026, 9, 25, 22, tzinfo=timezone.utc)
+        db.commit()
+        assert version(db, "US") != first
 
     def test_cache_key_without_scan(self):
         key = daily_snapshot_cache_key("hk", None)

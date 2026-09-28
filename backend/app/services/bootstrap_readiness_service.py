@@ -71,11 +71,13 @@ def has_compatible_cot_publication(db: Session) -> bool:
         COT_SCHEMA_VERSION,
     )
     from ..infra.db.models.cot import CotImportRun, CotPublicationPointer
+    from ..infra.db.repositories.cot_repository import LATEST_PUBLICATION_KEY
 
     return (
         db.query(CotPublicationPointer.key)
         .join(CotImportRun, CotImportRun.id == CotPublicationPointer.run_id)
         .filter(
+            CotPublicationPointer.key == LATEST_PUBLICATION_KEY,
             CotImportRun.registry_version == COT_REGISTRY_VERSION,
             CotImportRun.schema_version == COT_SCHEMA_VERSION,
             CotImportRun.calculation_version == COT_CALCULATION_VERSION,
