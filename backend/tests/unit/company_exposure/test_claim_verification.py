@@ -895,6 +895,8 @@ def test_negated_or_modal_language_cannot_support_shipping(text, hold):
         "Legacy X100 is not shipping; ET-9000 is shipping in volume.",
         # No model number: the other product is still a named subject.
         "Legacy Widget is not shipping; ET-9000 is shipping in volume.",
+        # A leading adverb does not elide the named subject after it.
+        "Currently, Legacy Widget is not shipping; ET-9000 is shipping in volume.",
     ],
 )
 def test_another_products_negated_status_does_not_deny_the_claim(text):
@@ -985,6 +987,13 @@ def test_segment_links_must_point_from_owner_to_segment(premise, permitted):
             "customer_relationship",
             "NVIDIA is our customer for ET-9000 HBM solutions.",
             "AMD is not our customer for ET-9000.",
+            False,
+        ),
+        # A shared name part is not the same counterparty.
+        (
+            "customer_relationship",
+            "Advanced Micro Devices is our customer for ET-9000 HBM solutions.",
+            "Advanced Materials is not our customer for ET-9000.",
             False,
         ),
         # Exit wording supports an exit; only a denied exit contradicts it.

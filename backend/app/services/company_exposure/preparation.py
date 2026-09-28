@@ -580,9 +580,14 @@ def select_passages(
     )
 
 
-# Model-number-like product names ("ET-9000", "X200"); period tokens such as
-# "FY2024" or "Q1" are not products.
-_PRODUCT_TOKEN = re.compile(r"(?<![\w-])[A-Za-z][A-Za-z-]*\d[\w-]*")
+# Product-like names: model numbers ("ET-9000", "X200"), internal capitals
+# ("UltraFLEX", "PowerEdge") and marked trademarks ("Aurora®"). Period
+# tokens such as "FY2024" or "Q1" are not products.
+_PRODUCT_TOKEN = re.compile(
+    r"(?<![\w-])(?:[A-Za-z][A-Za-z-]*\d[\w-]*"
+    r"|[A-Z]?[a-z]+[A-Z][\w-]*"
+    r"|[A-Z][\w-]+(?=\s*[®™]))"
+)
 _PERIOD_TOKEN = re.compile(r"^(?:fy|cy|q|h)\d", re.IGNORECASE)
 
 

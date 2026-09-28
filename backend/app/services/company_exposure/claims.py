@@ -827,9 +827,11 @@ def _denies(kind, part: str, theme_terms, status=None, counterparty=()) -> bool:
     if kind in _LINKED_KINDS:
         return any(mentions(part, t) for t in theme_terms)
     if kind == ClaimKind.CUSTOMER_RELATIONSHIP:
-        # "AMD is not our customer" says nothing about the claimed NVIDIA.
-        return bool(CUSTOMER.search(part)) and (
-            not counterparty or any(mentions(part, p) for p in counterparty)
+        # "AMD is not our customer" says nothing about the claimed NVIDIA, and
+        # "Advanced Materials" is not "Advanced Micro Devices": every part of
+        # the counterparty's name must be denied, not one shared token.
+        return bool(CUSTOMER.search(part)) and all(
+            mentions(part, p) for p in counterparty
         )
     if kind == ClaimKind.COMMERCIAL_STATUS:
         return _denies_status(part, status)
@@ -902,9 +904,9 @@ def _synthesis_scope_holds(
 # ("...but has not begun volume shipments"), so it continues the product
 # named before it rather than naming another.
 _ELIDED_SUBJECT = re.compile(
-    r"^\s*(?:and\s+|but\s+)?(?:has|have|had|is|are|was|were|does|do|did|will|"
-    r"would|can|could|may|might|remains?|continues?|not|never|yet|still|"
-    r"currently)\b",
+    r"^\s*(?:and\s+|but\s+)?(?:(?:currently|still|also|now|yet),?\s+)?"
+    r"(?:has|have|had|is|are|was|were|does|do|did|will|would|can|could|may|"
+    r"might|remains?|continues?|not|never)\b",
     re.IGNORECASE,
 )
 

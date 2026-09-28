@@ -254,6 +254,29 @@ def test_selection_keeps_product_premises_that_do_not_name_the_theme(
     assert [b.text for b in tight.blocks] == ["The ET-9000 supports HBM testing."]
 
 
+def test_selection_keeps_premises_for_alphabetic_product_names(
+    evidence_preparer, db_session, store
+):
+    html = (
+        "<html><body>"
+        "<p>Our UltraFLEX tester is commercially available.</p>"
+        "<p>Our Aurora® handler ships in volume.</p>"
+        "<p>Operating expenses rose in FY2024.</p>"
+        "<p>UltraFLEX supports HBM testing, as does Aurora® with HBM stacks.</p>"
+        "</body></html>"
+    )
+    revision = _revision(
+        db_session, store, html.encode("utf-8"), "text/html", "html:alpha"
+    )
+    prepared = evidence_preparer.prepare(revision)
+    selection = select_passages(prepared, QuestionSet(terms=("HBM",)))
+    assert [b.text for b in selection.blocks] == [
+        "Our UltraFLEX tester is commercially available.",
+        "Our Aurora® handler ships in volume.",
+        "UltraFLEX supports HBM testing, as does Aurora® with HBM stacks.",
+    ]
+
+
 def test_non_english_text_keeps_original_script(evidence_preparer, db_session, store):
     html = (
         "<html><body><p>当社はHBM向けテスターを量産出荷していない。</p></body></html>"
