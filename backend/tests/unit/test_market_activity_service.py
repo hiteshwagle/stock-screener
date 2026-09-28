@@ -1311,8 +1311,53 @@ def test_options_activity_cannot_mask_a_concurrent_breadth_failure(db_session, m
         db_session, stage_key="options", task_id="options-1", **common
     )
 
-    rows = {
-        row["stage_key"]: row["status"]
-        for row in module.get_runtime_activity_status(db_session)["markets"]
-    }
+    markets = module.get_runtime_activity_status(db_session)["markets"]
+    rows = {row["stage_key"]: row["status"] for row in markets}
     assert rows == {"breadth": "failed", "options": "completed"}
+    # Clients key rows by this; two rows share market "US".
+    assert [row["activity_id"] for row in markets] == ["US", "US:options"]
+
+
+def test_side_stage_rows_never_count_toward_bootstrap_progress():
+    from types import SimpleNamespace
+
+    from app.services.runtime_activity_presenter import build_runtime_activity_status
+
+    def row(stage_key, percent):
+        return {
+            "market": "US",
+            "lifecycle": "bootstrap",
+            "stage_key": stage_key,
+            "status": "running",
+            "progress_mode": "determinate",
+            "percent": percent,
+            "current": None,
+            "total": None,
+            "message": None,
+            "task_name": None,
+            "task_id": f"{stage_key}-1",
+            "updated_at": "2026-09-28T00:00:00+00:00",
+        }
+
+    status = build_runtime_activity_status(
+        bootstrap_status=SimpleNamespace(
+            enabled_markets=["US"],
+            primary_market="US",
+            bootstrap_state="running",
+            bootstrap_required=True,
+        ),
+        bootstrap_run={},
+        market_payloads=[row("prices", 50.0), row("options", 0.0)],
+    )
+    alone = build_runtime_activity_status(
+        bootstrap_status=SimpleNamespace(
+            enabled_markets=["US"],
+            primary_market="US",
+            bootstrap_state="running",
+            bootstrap_required=True,
+        ),
+        bootstrap_run={},
+        market_payloads=[row("prices", 50.0)],
+    )
+    assert alone["bootstrap"]["percent"] is not None
+    assert status["bootstrap"]["percent"] == alone["bootstrap"]["percent"]

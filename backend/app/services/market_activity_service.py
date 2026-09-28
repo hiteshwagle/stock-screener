@@ -14,6 +14,7 @@ from ..services.bootstrap_run_manifest import (
     BootstrapRunManifestRepository,
 )
 from ..services.runtime_activity_contract import (
+    SIDE_ACTIVITY_STAGE_KEYS,
     PersistedRuntimeActivity,
     RuntimeActivityRecord,
     RuntimeActivityUpdate,
@@ -42,16 +43,20 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# Stages that run beside a market's pipeline rather than inside it (Options
-# is dispatched after the snapshot and overlaps the late breadth stage). They
-# keep their own record: the reducer lets only one running owner hold a
-# record, so a shared one would hide the pipeline's progress and failures.
-SIDE_ACTIVITY_STAGE_KEYS = ("options",)
+def _activity_id(market: str, stage_key: str | None = None) -> str:
+    """Record identity: side stages (see ``SIDE_ACTIVITY_STAGE_KEYS``) get their
+    own record, because the reducer lets only one running owner hold a record
+    and a shared one would hide the pipeline's progress and failures."""
+    market_code = str(market).upper()
+    return (
+        f"{market_code}:{stage_key}"
+        if stage_key in SIDE_ACTIVITY_STAGE_KEYS
+        else market_code
+    )
 
 
 def _activity_key(market: str, stage_key: str | None = None) -> str:
-    key = f"{MARKET_ACTIVITY_KEY_PREFIX}{str(market).upper()}"
-    return f"{key}:{stage_key}" if stage_key in SIDE_ACTIVITY_STAGE_KEYS else key
+    return f"{MARKET_ACTIVITY_KEY_PREFIX}{_activity_id(market, stage_key)}"
 
 
 def _get_setting(db: Session, key: str) -> AppSetting | None:
@@ -598,9 +603,11 @@ def get_runtime_activity_status(db: Session) -> dict[str, Any]:
 
     market_payloads = []
     for market in enabled_markets:
-        record = _load_market_activity(db, market)
-        market_payloads.append(
-            _market_payload(
+        for stage_key in (None, *SIDE_ACTIVITY_STAGE_KEYS):
+            record = _load_market_activity(db, market, stage_key)
+            if record is None and stage_key is not None:
+                continue
+            payload = _market_payload(
                 market=market,
                 record=record,
                 bootstrap_state=bootstrap_status.bootstrap_state,
@@ -608,20 +615,9 @@ def get_runtime_activity_status(db: Session) -> dict[str, Any]:
                 primary_market=primary_market,
                 bootstrap_run=bootstrap_run,
             )
-        )
-        for stage_key in SIDE_ACTIVITY_STAGE_KEYS:
-            side_record = _load_market_activity(db, market, stage_key)
-            if side_record is not None:
-                market_payloads.append(
-                    _market_payload(
-                        market=market,
-                        record=side_record,
-                        bootstrap_state=bootstrap_status.bootstrap_state,
-                        bootstrap_required=bootstrap_status.bootstrap_required,
-                        primary_market=primary_market,
-                        bootstrap_run=bootstrap_run,
-                    )
-                )
+            # Unique per row: a market can have a pipeline and a side row.
+            payload["activity_id"] = _activity_id(market, stage_key)
+            market_payloads.append(payload)
 
     return build_runtime_activity_status(
         bootstrap_status=bootstrap_status,

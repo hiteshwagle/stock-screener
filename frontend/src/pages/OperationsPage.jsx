@@ -607,7 +607,7 @@ export default function OperationsPage() {
           {hasMarketActivity ? (
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 3 }}>
               {marketActivity.map((activity) => (
-                <MarketActivityCard key={activity.market} activity={activity} />
+                <MarketActivityCard key={activity.activity_id ?? activity.market} activity={activity} />
               ))}
             </Stack>
           ) : (

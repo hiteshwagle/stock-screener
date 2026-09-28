@@ -7,6 +7,7 @@ from typing import Any
 from .runtime_activity_contract import (
     ACTIVE_ACTIVITY_STATUSES,
     RUNTIME_STAGE_SEQUENCE,
+    SIDE_ACTIVITY_STAGE_KEYS,
     RuntimeActivityRecord,
     bootstrap_stage_metadata,
     stage_index,
@@ -56,7 +57,10 @@ def build_runtime_activity_status(
     summary_status = "warning" if has_warning else ("active" if active_markets else "idle")
 
     bootstrap_records = [
-        record for record in activity_records if record.lifecycle == "bootstrap"
+        record
+        for record in activity_records
+        if record.lifecycle == "bootstrap"
+        and record.stage_key not in SIDE_ACTIVITY_STAGE_KEYS
     ]
     primary_record = next(
         (record for record in bootstrap_records if record.market == primary_market),

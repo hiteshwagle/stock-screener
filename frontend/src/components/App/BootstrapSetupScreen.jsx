@@ -261,7 +261,7 @@ export default function BootstrapSetupScreen({
                     <Stack spacing={1}>
                       {marketActivity.map((market) => (
                         <Box
-                          key={market.market}
+                          key={market.activity_id ?? market.market}
                           sx={{
                             display: 'flex',
                             alignItems: 'center',

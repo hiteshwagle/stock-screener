@@ -251,6 +251,10 @@ class RuntimeActivitySummaryResponse(BaseModel):
 class RuntimeActivityMarketResponse(BaseModel):
     """Per-market runtime activity row."""
 
+    activity_id: str | None = Field(
+        default=None,
+        description="Unique row identity: the market, or market:stage for side stages (Options).",
+    )
     market: str
     lifecycle: str
     stage_key: str | None = None
