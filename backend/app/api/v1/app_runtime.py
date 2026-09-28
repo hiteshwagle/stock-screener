@@ -31,6 +31,7 @@ from ...services.market_activity_service import get_runtime_activity_status
 from ...services.runtime_activity_contract import bootstrap_stage_metadata
 from ...services.runtime_preferences_service import (
     RuntimeBootstrapStatus,
+    get_bootstrap_readiness_service,
     get_runtime_bootstrap_status,
     save_runtime_preferences,
 )
@@ -134,8 +135,15 @@ def get_bootstrap_status(
     db: Session = Depends(get_db),
 ) -> RuntimeBootstrapStatusResponse:
     """Return the persisted local bootstrap state and effective readiness."""
+    status = get_runtime_bootstrap_status(db)
+    readiness = get_bootstrap_readiness_service()
     return RuntimeBootstrapStatusResponse(
-        **_bootstrap_status_payload(get_runtime_bootstrap_status(db))
+        **_bootstrap_status_payload(status),
+        market_stages={
+            market: readiness.stage_status(db, market)
+            for market in status.enabled_markets
+        },
+        features=readiness.feature_status(db, enabled_markets=status.enabled_markets),
     )
 
 

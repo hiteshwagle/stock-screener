@@ -329,6 +329,67 @@ class BootstrapReadinessService:
             },
         )
 
+    def stage_status(self, db: Session, market: str) -> dict[str, str]:
+        """Stored output of each derived stage the market supports.
+
+        Separate from ``evaluate``: these stages never gate the scanner, so a
+        failed breadth run shows here as ``missing`` instead of blocking.
+        """
+        market = self.normalize_market(market)
+        capabilities = get_market_catalog().get(market).capabilities
+        outputs = {}
+        if capabilities.breadth:
+            outputs.update(breadth=MarketBreadth, exposure=MarketExposure)
+        if capabilities.group_rankings:
+            outputs["groups"] = IBDGroupRank
+        return {
+            stage: (
+                "ready"
+                if db.query(model.id).filter(model.market == market).limit(1).first()
+                else "missing"
+            )
+            for stage, model in outputs.items()
+        }
+
+    def feature_status(self, db: Session, *, enabled_markets: list[str]) -> dict[str, str]:
+        """Publication state of optional features backed by external providers."""
+        from ..config import settings
+        from ..infra.db.models.cot import CotPublicationPointer
+        from ..infra.db.models.options_analytics import OptionsAnalyticsPointer
+        from ..infra.db.models.social_signals import (
+            SocialSignalRunPointer,
+            SocialSourceRegistry,
+        )
+
+        def published(query) -> str:
+            return "ready" if query.limit(1).first() is not None else "missing"
+
+        options_on = settings.options_analytics_enabled and any(
+            get_market_catalog().get(market).capabilities.options_analytics
+            for market in enabled_markets
+        )
+        registry = db.get(SocialSourceRegistry, 1)
+        social_on = (
+            registry is not None
+            and registry.mode == "live"
+            and registry.provider != "disabled"
+        )
+        return {
+            "cot": published(db.query(CotPublicationPointer)),
+            "options": (
+                published(
+                    db.query(OptionsAnalyticsPointer).filter(
+                        OptionsAnalyticsPointer.market == "US"
+                    )
+                )
+                if options_on
+                else "disabled"
+            ),
+            "social": (
+                published(db.query(SocialSignalRunPointer)) if social_on else "disabled"
+            ),
+        }
+
     def _has_expected_formula(
         self,
         db: Session,

@@ -600,3 +600,44 @@ def test_sql_service_requires_published_completed_auto_scan_for_market(
     assert result.missing_markets == ["US"]
     assert result.market_results["US"].core_ready is True
     assert result.market_results["US"].scan_ready is False
+
+
+def test_stage_status_reports_outputs_per_capable_market(readiness_db) -> None:
+    readiness_db.add(MarketBreadth(market="US", date=date(2026, 5, 1)))
+    readiness_db.commit()
+    service = BootstrapReadinessService()
+
+    assert service.stage_status(readiness_db, "US") == {
+        "breadth": "ready",
+        "exposure": "missing",
+        "groups": "missing",
+    }
+    # DE computes breadth but has no group rankings; AU has neither.
+    assert service.stage_status(readiness_db, "DE") == {
+        "breadth": "missing",
+        "exposure": "missing",
+    }
+    assert service.stage_status(readiness_db, "AU") == {}
+
+
+def test_feature_status_is_independent_of_market_readiness(readiness_db, monkeypatch) -> None:
+    import app.infra.db.models.cot  # noqa: F401
+    import app.infra.db.models.options_analytics  # noqa: F401
+    import app.infra.db.models.social_signals  # noqa: F401
+    from app.config import settings
+    from app.infra.db.models.social_signals import SocialSourceRegistry
+
+    Base.metadata.create_all(readiness_db.get_bind())
+    service = BootstrapReadinessService()
+    monkeypatch.setattr(settings, "options_analytics_enabled", True)
+
+    assert service.feature_status(readiness_db, enabled_markets=["US"]) == {
+        "cot": "missing",
+        "options": "missing",
+        "social": "disabled",
+    }
+    assert service.feature_status(readiness_db, enabled_markets=["HK"])["options"] == "disabled"
+
+    readiness_db.add(SocialSourceRegistry(id=1, mode="live", provider="xui"))
+    readiness_db.commit()
+    assert service.feature_status(readiness_db, enabled_markets=["US"])["social"] == "missing"
