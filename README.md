@@ -95,6 +95,12 @@ Scanning and all core features work with **no API keys**. The AI chatbot require
 
 Optional web-search keys (`TAVILY_API_KEY`, `SERPER_API_KEY`) enable the chatbot's research mode. Full reference: **[Environment Variables](docs/ENVIRONMENT.md)**.
 
+When stock-screener is launched as part of the parent TradingAgent integration,
+configuration comes only from the parent's `.env.integration`. The production
+override no longer injects an entire environment file into every service;
+`docker-compose.yml` explicitly allowlists stock-screener settings. Standalone
+stock-screener deployments continue to use `.env.docker` with `--env-file`.
+
 ## Application pages
 
 | Route | Page | Description |

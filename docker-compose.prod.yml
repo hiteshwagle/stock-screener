@@ -7,7 +7,9 @@
 #   scripts/docker-compose-enabled-markets.sh --env-file .env.docker \
 #     -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# Requires .env.docker file with at minimum:
+# The --env-file supplies Compose interpolation. Runtime variables are explicitly
+# allowlisted by docker-compose.yml; the complete file is not injected wholesale.
+# Requires an environment file with at minimum:
 #   - CORS_ORIGINS (e.g., https://stocks.yourdomain.com)
 #   - At least one LLM API key for chatbot functionality
 #
@@ -43,10 +45,8 @@ services:
         max-file: "3"
 
   backend:
-    env_file:
-      - .env.docker
     environment:
-      # Override CORS from .env.docker, with sensible default
+      # Override CORS from the Compose interpolation source, with a safe default.
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost,http://localhost:80}
     deploy:
       resources:
@@ -62,8 +62,6 @@ services:
         max-file: "5"
 
   celery-general:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -84,8 +82,6 @@ services:
         max-file: "5"
 
   celery-datafetch:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -106,8 +102,6 @@ services:
         max-file: "3"
 
   celery-social:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -128,8 +122,6 @@ services:
         max-file: "3"
 
   celery-marketjobs-us:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -153,8 +145,6 @@ services:
         max-file: "3"
 
   celery-marketjobs-hk:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -175,8 +165,6 @@ services:
         max-file: "3"
 
   celery-marketjobs-jp:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -197,8 +185,6 @@ services:
         max-file: "3"
 
   celery-marketjobs-tw:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -219,8 +205,6 @@ services:
         max-file: "3"
 
   celery-userscans:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -241,8 +225,6 @@ services:
         max-file: "3"
 
   celery-userscans-us:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -263,8 +245,6 @@ services:
         max-file: "3"
 
   celery-userscans-hk:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -285,8 +265,6 @@ services:
         max-file: "3"
 
   celery-userscans-jp:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -307,8 +285,6 @@ services:
         max-file: "3"
 
   celery-userscans-tw:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -329,8 +305,6 @@ services:
         max-file: "3"
 
   celery-beat:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
@@ -345,8 +319,6 @@ services:
         max-file: "3"
 
   db-backup:
-    env_file:
-      - .env.docker
     deploy:
       resources:
         limits:
